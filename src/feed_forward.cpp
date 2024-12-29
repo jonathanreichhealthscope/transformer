@@ -1,4 +1,7 @@
-#include "feed_forward.hpp"
+#include "../include/feed_forward.hpp"
+#ifdef USE_CUDA
+#include "cuda/feed_forward_kernels.cuh"
+#endif
 #include <random>
 #include <cmath>
 
@@ -145,55 +148,60 @@ Matrix FeedForward::backward(const Matrix& grad, const Matrix& input) const {
 }
 
 Matrix FeedForward::backward_cuda(const Matrix& grad, const Matrix& input) const {
-    const size_t batch_size = input.rows();
-    const size_t hidden_size = w1.rows();
+#ifdef USE_CUDA
+    const size_t batch_size = grad.rows();
+    const size_t hidden_size = grad.cols();
     const size_t intermediate_size = w1.cols();
     
     // Allocate device memory
-    float *d_grad, *d_input, *d_w1, *d_w2, *d_intermediate, *d_dx;
-    cudaMalloc(&d_grad, batch_size * hidden_size * sizeof(float));
-    cudaMalloc(&d_input, batch_size * hidden_size * sizeof(float));
-    cudaMalloc(&d_w1, hidden_size * intermediate_size * sizeof(float));
-    cudaMalloc(&d_w2, intermediate_size * hidden_size * sizeof(float));
-    cudaMalloc(&d_intermediate, batch_size * intermediate_size * sizeof(float));
-    cudaMalloc(&d_dx, batch_size * hidden_size * sizeof(float));
+    float *d_grad, *d_w2, *d_intermediate, *d_input, *d_w1, *d_dx;
+    CUDA_CHECK(cudaMalloc(&d_grad, batch_size * hidden_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_w2, hidden_size * intermediate_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_intermediate, batch_size * intermediate_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_input, batch_size * intermediate_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_w1, hidden_size * intermediate_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_dx, batch_size * hidden_size * sizeof(float)));
     
     // Copy data to device
-    cudaMemcpy(d_grad, grad.data(), batch_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_input, input.data(), batch_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_w1, w1.data(), hidden_size * intermediate_size * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_w2, w2.data(), intermediate_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_grad, grad.data(), batch_size * hidden_size * sizeof(float),
+                         cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_w2, w2.data(), hidden_size * intermediate_size * sizeof(float),
+                         cudaMemcpyHostToDevice));
     
     // Launch kernels
     const int block_size = 256;
-    const int grid_size = (batch_size * std::max(hidden_size, intermediate_size) + block_size - 1) / block_size;
+    const int grid_size = (batch_size * hidden_size + block_size - 1) / block_size;
     
-    feed_forward_backward_kernel_1<<<grid_size, block_size>>>(
+    CUDA_LAUNCH(feed_forward_backward_kernel_1, grid_size, block_size, 0, 0,
         d_grad, d_w2, d_intermediate,
         batch_size, hidden_size, intermediate_size
     );
     
-    gelu_backward_kernel<<<grid_size, block_size>>>(
+    CUDA_LAUNCH(gelu_backward_kernel, grid_size, block_size, 0, 0,
         d_intermediate, d_input,
         batch_size * intermediate_size
     );
     
-    feed_forward_backward_kernel_2<<<grid_size, block_size>>>(
+    CUDA_LAUNCH(feed_forward_backward_kernel_2, grid_size, block_size, 0, 0,
         d_intermediate, d_w1, d_dx,
         batch_size, hidden_size, intermediate_size
     );
     
     // Copy result back to host
     Matrix dx(batch_size, hidden_size);
-    cudaMemcpy(dx.data(), d_dx, batch_size * hidden_size * sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(dx.data(), d_dx, batch_size * hidden_size * sizeof(float),
+                         cudaMemcpyDeviceToHost));
     
     // Free device memory
-    cudaFree(d_grad);
-    cudaFree(d_input);
-    cudaFree(d_w1);
-    cudaFree(d_w2);
-    cudaFree(d_intermediate);
-    cudaFree(d_dx);
+    CUDA_CHECK(cudaFree(d_grad));
+    CUDA_CHECK(cudaFree(d_w2));
+    CUDA_CHECK(cudaFree(d_intermediate));
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_w1));
+    CUDA_CHECK(cudaFree(d_dx));
     
     return dx;
+#else
+    throw std::runtime_error("CUDA support not enabled");
+#endif
 } 
