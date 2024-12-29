@@ -217,4 +217,9 @@ Matrix MultiHeadAttention::standard_attention(
     
     scores.apply_softmax();
     return matmul(scores, V);
+}
+
+Matrix MultiHeadAttention::backward(const Matrix& grad, const Matrix& input) const {
+    // For now, return a simple gradient
+    return Matrix(input.rows(), input.cols());
 } 

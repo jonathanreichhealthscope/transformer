@@ -54,6 +54,7 @@ set(CORE_SOURCES
 # Neural network components
 set(NN_SOURCES
     src/attention.cpp
+    src/attention_mask.cpp
     src/transformer.cpp
     src/layernorm.cpp
     src/feed_forward.cpp

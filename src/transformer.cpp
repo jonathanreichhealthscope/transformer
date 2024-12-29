@@ -531,4 +531,12 @@ Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_
 #else
     throw std::runtime_error("CUDA support not enabled");
 #endif
+}
+
+Matrix TransformerLayer::backward_cuda(const Matrix& grad, const Matrix& input) const {
+#ifdef USE_CUDA
+    throw std::runtime_error("CUDA implementation not available");
+#else
+    return backward(grad, input);
+#endif
 } 

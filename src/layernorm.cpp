@@ -60,4 +60,36 @@ std::unique_ptr<LayerNorm> LayerNorm::load(std::istream& is) {
     ln->gamma = std::move(gamma);
     ln->beta = std::move(beta);
     return ln;
+}
+
+Matrix LayerNorm::backward(const Matrix& grad, const Matrix& input) const {
+    const size_t batch_size = input.rows();
+    const size_t hidden_size = input.cols();
+    Matrix dx(batch_size, hidden_size);
+    
+    for (size_t i = 0; i < batch_size; ++i) {
+        // Compute mean and variance
+        float mean = 0.0f;
+        float var = 0.0f;
+        for (size_t j = 0; j < hidden_size; ++j) {
+            mean += input(i, j);
+        }
+        mean /= hidden_size;
+        
+        for (size_t j = 0; j < hidden_size; ++j) {
+            float diff = input(i, j) - mean;
+            var += diff * diff;
+        }
+        var /= hidden_size;
+        
+        float std = std::sqrt(var + eps);
+        float inv_std = 1.0f / std;
+        
+        // Compute gradients
+        for (size_t j = 0; j < hidden_size; ++j) {
+            dx(i, j) = gamma[j] * grad(i, j) * inv_std;
+        }
+    }
+    
+    return dx;
 } 
