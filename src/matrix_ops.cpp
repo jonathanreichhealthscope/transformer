@@ -20,15 +20,15 @@ Matrix &Matrix::operator+=(const Matrix &other) {
   return *this;
 }
 
-Matrix& Matrix::operator-=(const Matrix& other) {
-    if (rows_ != other.rows_ || cols_ != other.cols_) {
-        throw std::runtime_error("Matrix dimensions don't match for subtraction");
-    }
-    
-    for (size_t i = 0; i < data_.size(); ++i) {
-        data_[i] -= other.data_[i];
-    }
-    return *this;
+Matrix &Matrix::operator-=(const Matrix &other) {
+  if (rows_ != other.rows_ || cols_ != other.cols_) {
+    throw std::runtime_error("Matrix dimensions don't match for subtraction");
+  }
+
+  for (size_t i = 0; i < data_.size(); ++i) {
+    data_[i] -= other.data_[i];
+  }
+  return *this;
 }
 
 void Matrix::apply_softmax() {

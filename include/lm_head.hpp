@@ -1,8 +1,8 @@
 #pragma once
 #include "components.hpp"
+#include <functional>
 #include <memory>
 #include <vector>
-#include <functional>
 
 class LanguageModelHead {
 private:
@@ -101,5 +101,5 @@ public:
     return params;
   }
 
-  Vector& get_bias() { return bias; }
+  Vector &get_bias() { return bias; }
 };
