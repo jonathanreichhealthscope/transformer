@@ -29,20 +29,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sentencepiece)
 
-# Download and build cereal
-FetchContent_Declare(
-    cereal
-    GIT_REPOSITORY https://github.com/USCiLab/cereal.git
-    GIT_TAG v1.3.2
-)
-FetchContent_MakeAvailable(cereal)
-
 # Include directories
 include_directories(${CUDA_INCLUDE_DIRS})
 include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${sentencepiece_SOURCE_DIR}/src)
-include_directories(${cereal_SOURCE_DIR}/include)
 
 # Core source files
 set(CORE_SOURCES
@@ -110,7 +101,6 @@ target_link_libraries(transformer_lib
     CUDA::cudart
     CUDA::cublas
     CUDA::curand
-    cereal
 )
 
 target_link_libraries(transformer

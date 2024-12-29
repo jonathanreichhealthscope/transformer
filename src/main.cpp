@@ -1,6 +1,7 @@
 #include "../include/transformer.hpp"
 #include <iostream>
 #include <vector>
+#include <algorithm>
 
 int main() {
     // Create transformer configuration

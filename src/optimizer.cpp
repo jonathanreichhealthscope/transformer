@@ -1,94 +1,50 @@
-#include "optimizer.hpp"
+#include "../include/optimizer.hpp"
 #include <cmath>
 
-AdamOptimizer::AdamOptimizer(float lr, float b1, float b2, float eps)
+Optimizer::Optimizer(float lr, float b1, float b2, float eps)
     : learning_rate(lr), beta1(b1), beta2(b2), epsilon(eps), t(0) {}
 
-void AdamOptimizer::update(const std::vector<Matrix>& params, 
-                          const std::vector<Matrix>& grads) {
-    // Initialize moment vectors if needed
-    if (m.empty()) {
-        m.reserve(params.size());
-        v.reserve(params.size());
-        for (const auto& param : params) {
-            m.emplace_back(param.rows(), param.cols(), 0.0f);
-            v.emplace_back(param.rows(), param.cols(), 0.0f);
+void Optimizer::add_parameter(Matrix& param) {
+    parameters.push_back(&param);
+    gradients.push_back(Matrix(param.rows(), param.cols(), 0.0f));
+}
+
+void Optimizer::update(const std::vector<Matrix>& params, const std::vector<Matrix>& grads) {
+    t++;
+    for (size_t i = 0; i < parameters.size(); ++i) {
+        // Accumulate gradients
+        gradients[i] = grads[i];
+    }
+}
+
+void Optimizer::step() {
+    for (size_t i = 0; i < parameters.size(); ++i) {
+        // Simple SGD update
+        for (size_t j = 0; j < parameters[i]->rows(); ++j) {
+            for (size_t k = 0; k < parameters[i]->cols(); ++k) {
+                (*parameters[i])(j, k) -= learning_rate * gradients[i](j, k);
+            }
         }
     }
-    
-    // Increment timestep
-    t++;
-    
-    // Compute bias correction terms
-    float bc1 = 1.0f - std::pow(beta1, t);
-    float bc2 = 1.0f - std::pow(beta2, t);
-    float lr_t = learning_rate * std::sqrt(bc2) / bc1;
-    
-    // Update each parameter
-    for (size_t i = 0; i < params.size(); ++i) {
-        const auto& param = params[i];
-        const auto& grad = grads[i];
-        
-        // Update moment estimates
-        for (size_t row = 0; row < param.rows(); ++row) {
-            for (size_t col = 0; col < param.cols(); ++col) {
-                float g = grad(row, col);
-                
-                // Update biased first moment estimate
-                m[i](row, col) = beta1 * m[i](row, col) + (1.0f - beta1) * g;
-                
-                // Update biased second raw moment estimate
-                v[i](row, col) = beta2 * v[i](row, col) + (1.0f - beta2) * g * g;
-                
-                // Compute bias-corrected moment estimates
-                float m_hat = m[i](row, col);
-                float v_hat = v[i](row, col);
-                
-                // Update parameters
-                float update = lr_t * m_hat / (std::sqrt(v_hat) + epsilon);
-                const_cast<Matrix&>(param)(row, col) -= update;
+    zero_grad();
+}
+
+void Optimizer::zero_grad() {
+    for (auto& grad : gradients) {
+        for (size_t i = 0; i < grad.rows(); ++i) {
+            for (size_t j = 0; j < grad.cols(); ++j) {
+                grad(i, j) = 0.0f;
             }
         }
     }
 }
 
-void AdamOptimizer::save(std::ostream& os) const {
-    // Save optimizer state
+void Optimizer::save(std::ostream& os) const {
     os.write(reinterpret_cast<const char*>(&learning_rate), sizeof(learning_rate));
-    os.write(reinterpret_cast<const char*>(&beta1), sizeof(beta1));
-    os.write(reinterpret_cast<const char*>(&beta2), sizeof(beta2));
-    os.write(reinterpret_cast<const char*>(&epsilon), sizeof(epsilon));
     os.write(reinterpret_cast<const char*>(&t), sizeof(t));
-    
-    // Save moment vectors
-    size_t size = m.size();
-    os.write(reinterpret_cast<const char*>(&size), sizeof(size));
-    
-    for (size_t i = 0; i < size; ++i) {
-        m[i].save(os);
-        v[i].save(os);
-    }
 }
 
-void AdamOptimizer::load(std::istream& is) {
-    // Load optimizer state
+void Optimizer::load(std::istream& is) {
     is.read(reinterpret_cast<char*>(&learning_rate), sizeof(learning_rate));
-    is.read(reinterpret_cast<char*>(&beta1), sizeof(beta1));
-    is.read(reinterpret_cast<char*>(&beta2), sizeof(beta2));
-    is.read(reinterpret_cast<char*>(&epsilon), sizeof(epsilon));
     is.read(reinterpret_cast<char*>(&t), sizeof(t));
-    
-    // Load moment vectors
-    size_t size;
-    is.read(reinterpret_cast<char*>(&size), sizeof(size));
-    
-    m.clear();
-    v.clear();
-    m.reserve(size);
-    v.reserve(size);
-    
-    for (size_t i = 0; i < size; ++i) {
-        m.push_back(Matrix::load(is));
-        v.push_back(Matrix::load(is));
-    }
 } 

@@ -1,46 +1,33 @@
 #pragma once
+#include "components.hpp"
 #include <vector>
 #include <memory>
-#include <mutex>
-#include "components.hpp"
+#ifdef USE_CUDA
+#include "cuda/cuda_utils.cuh"
+#endif
 
 class MemoryPool {
 private:
-    struct Block {
-        float* data;
-        size_t size;
-        bool in_use;
-    };
-    
-    std::vector<Block> blocks;
-    std::mutex mutex;
-    
-    static MemoryPool& instance() {
-        static MemoryPool pool;
-        return pool;
-    }
-    
-public:
-    static float* allocate(size_t size);
-    static void deallocate(float* ptr);
-    static void clear_pool();
-    
-    // CUDA memory pool
-    static float* cuda_allocate(size_t size);
-    static void cuda_deallocate(float* ptr);
-};
+    std::vector<std::unique_ptr<float[]>> blocks;
+    size_t block_size;
+    size_t current_block;
 
-// Smart pointer for automatic memory management
-template<typename T>
-class PooledPtr {
-private:
-    T* ptr;
-    bool is_cuda;
-    
+#ifdef USE_CUDA
+    std::vector<float*> cuda_blocks;
+    size_t cuda_current_block;
+#endif
+
 public:
-    explicit PooledPtr(size_t size, bool cuda = false);
-    ~PooledPtr();
+    explicit MemoryPool(size_t block_size = 1024 * 1024);
+    ~MemoryPool();
     
-    T* get() { return ptr; }
-    const T* get() const { return ptr; }
+    // CPU memory management
+    float* allocate(size_t size);
+    void reset();
+
+#ifdef USE_CUDA
+    // CUDA memory management
+    float* cuda_allocate(size_t size);
+    void cuda_reset();
+#endif
 }; 

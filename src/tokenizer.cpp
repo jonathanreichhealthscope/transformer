@@ -1,92 +1,60 @@
 #include "../include/tokenizer.hpp"
 #include <fstream>
-#include <stdexcept>
 
-Tokenizer::Tokenizer(const std::string& model_path) {
-    // Initialize SentencePiece processor
-    processor = std::make_unique<sentencepiece::SentencePieceProcessor>();
-    const auto status = processor->Load(model_path);
-    
-    if (!status.ok()) {
-        throw std::runtime_error("Failed to load SentencePiece model: " + status.ToString());
-    }
-    
-    // Initialize vocabulary size
-    vocab_size_ = processor->GetPieceSize();
-    
-    // Build token mappings
-    for (int i = 0; i < vocab_size_; ++i) {
-        const auto& piece = processor->IdToPiece(i);
-        token_to_id[piece] = i;
-        id_to_token[i] = piece;
+Tokenizer::Tokenizer(size_t vocab_size_) : vocab_size(vocab_size_) {
+    // Initialize with basic vocabulary
+    vocab.resize(vocab_size);
+    for (size_t i = 0; i < vocab_size; ++i) {
+        vocab[i] = "<token" + std::to_string(i) + ">";
     }
 }
 
-std::vector<int> Tokenizer::encode(const std::string& text) const {
-    std::vector<int> ids;
-    if (!processor->Encode(text, &ids).ok()) {
-        throw std::runtime_error("Failed to encode text");
+std::vector<int> Tokenizer::encode(const std::string& text) {
+    // Simple character-based tokenization for now
+    std::vector<int> tokens;
+    for (char c : text) {
+        // Map character to token ID (simple mapping for demonstration)
+        int token_id = static_cast<int>(c) % vocab_size;
+        tokens.push_back(token_id);
     }
-    return ids;
+    return tokens;
 }
 
-std::string Tokenizer::decode(const std::vector<int>& tokens) const {
+std::string Tokenizer::decode(const std::vector<int>& tokens) {
     std::string text;
-    if (!processor->Decode(tokens, &text).ok()) {
-        throw std::runtime_error("Failed to decode tokens");
+    for (int token_id : tokens) {
+        if (token_id >= 0 && static_cast<size_t>(token_id) < vocab_size) {
+            text += vocab[token_id];
+        }
     }
     return text;
 }
 
-void Tokenizer::save(const std::string& path) const {
-    std::ofstream file(path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Failed to open file for saving tokenizer");
-    }
-    
+void Tokenizer::save(std::ostream& os) const {
     // Save vocab size
-    file.write(reinterpret_cast<const char*>(&vocab_size_), sizeof(vocab_size_));
+    os.write(reinterpret_cast<const char*>(&vocab_size), sizeof(vocab_size));
     
-    // Save token mappings
-    size_t map_size = token_to_id.size();
-    file.write(reinterpret_cast<const char*>(&map_size), sizeof(map_size));
-    
-    for (const auto& [token, id] : token_to_id) {
-        size_t token_length = token.length();
-        file.write(reinterpret_cast<const char*>(&token_length), sizeof(token_length));
-        file.write(token.c_str(), token_length);
-        file.write(reinterpret_cast<const char*>(&id), sizeof(id));
+    // Save vocabulary
+    for (const auto& token : vocab) {
+        size_t len = token.length();
+        os.write(reinterpret_cast<const char*>(&len), sizeof(len));
+        os.write(token.c_str(), len);
     }
 }
 
-Tokenizer Tokenizer::load(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Failed to open file for loading tokenizer");
-    }
+std::unique_ptr<Tokenizer> Tokenizer::load(std::istream& is) {
+    size_t vocab_size;
+    is.read(reinterpret_cast<char*>(&vocab_size), sizeof(vocab_size));
     
-    // Create tokenizer with empty model path
-    Tokenizer tokenizer("");
+    auto tokenizer = std::make_unique<Tokenizer>(vocab_size);
     
-    // Load vocab size
-    file.read(reinterpret_cast<char*>(&tokenizer.vocab_size_), sizeof(tokenizer.vocab_size_));
-    
-    // Load token mappings
-    size_t map_size;
-    file.read(reinterpret_cast<char*>(&map_size), sizeof(map_size));
-    
-    for (size_t i = 0; i < map_size; ++i) {
-        size_t token_length;
-        file.read(reinterpret_cast<char*>(&token_length), sizeof(token_length));
-        
-        std::string token(token_length, '\0');
-        file.read(&token[0], token_length);
-        
-        int id;
-        file.read(reinterpret_cast<char*>(&id), sizeof(id));
-        
-        tokenizer.token_to_id[token] = id;
-        tokenizer.id_to_token[id] = token;
+    // Load vocabulary
+    for (size_t i = 0; i < vocab_size; ++i) {
+        size_t len;
+        is.read(reinterpret_cast<char*>(&len), sizeof(len));
+        std::string token(len, '\0');
+        is.read(&token[0], len);
+        tokenizer->vocab[i] = token;
     }
     
     return tokenizer;

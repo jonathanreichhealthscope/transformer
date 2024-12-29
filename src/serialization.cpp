@@ -1,8 +1,4 @@
 #include "../include/serialization.hpp"
-#include <cereal/archives/binary.hpp>
-#include <cereal/types/memory.hpp>
-#include <cereal/types/vector.hpp>
-#include <cereal/types/string.hpp>
 #include <fstream>
 
 void save_model(const std::string& path, const Transformer& model) {
@@ -10,7 +6,6 @@ void save_model(const std::string& path, const Transformer& model) {
     if (!os) {
         throw std::runtime_error("Failed to open file for saving");
     }
-    
     model.save(os);
 }
 
@@ -19,6 +14,5 @@ void load_model(const std::string& path, Transformer& model) {
     if (!is) {
         throw std::runtime_error("Failed to open file for loading");
     }
-    
     model.load(is);
 } 

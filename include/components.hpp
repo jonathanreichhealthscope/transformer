@@ -6,18 +6,11 @@
 #include <cmath>
 #include <iostream>
 #include <iomanip>
-#include <cereal/access.hpp>
 
 class Vector {
 private:
     std::vector<float> data_;
     size_t size_;
-
-    friend class cereal::access;
-    template<class Archive>
-    void serialize(Archive & ar) {
-        ar(data_);
-    }
 
 public:
     // Constructors
@@ -64,18 +57,8 @@ public:
     float* data() { return data_.data(); }
     const float* data() const { return data_.data(); }
 
-    void save(std::ostream& os) const {
-        os.write(reinterpret_cast<const char*>(&size_), sizeof(size_));
-        os.write(reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(float));
-    }
-
-    static Vector load(std::istream& is) {
-        size_t size;
-        is.read(reinterpret_cast<char*>(&size), sizeof(size));
-        Vector result(size);
-        is.read(reinterpret_cast<char*>(result.data_.data()), size * sizeof(float));
-        return result;
-    }
+    void save(std::ostream& os) const;
+    static Vector load(std::istream& is);
 };
 
 // Vector operations
@@ -90,12 +73,6 @@ private:
     std::vector<float> data_;
     size_t rows_;
     size_t cols_;
-
-    friend class cereal::access;
-    template<class Archive>
-    void serialize(Archive & ar) {
-        ar(data_, rows_, cols_);
-    }
 
     // Helper to get index in flat array
     size_t index(size_t row, size_t col) const {
