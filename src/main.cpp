@@ -88,7 +88,7 @@ int main() {
     }
 
     // Example input
-    std::string input_text = "who am I?";
+    std::string input_text = "I go to";
     std::cout << "\nProcessing input: '" << input_text << "'\n";
 
     // Tokenize input
