@@ -1,21 +1,14 @@
 #pragma once
 #include "components.hpp"
-#include <cereal/access.hpp>
 
 class LayerNorm {
-public:
-    virtual ~LayerNorm() = default;
+private:
     Vector gamma;
     Vector beta;
     float eps;
-    
-    friend class cereal::access;
-    template<class Archive>
-    void serialize(Archive & ar) {
-        ar(gamma, beta, eps);
-    }
 
 public:
+    virtual ~LayerNorm() = default;
     LayerNorm() : eps(1e-5) {}
     LayerNorm(size_t hidden_size, float eps = 1e-5);
     Matrix forward(const Matrix& x) const;

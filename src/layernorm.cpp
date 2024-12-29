@@ -56,9 +56,10 @@ std::unique_ptr<LayerNorm> LayerNorm::load(std::istream& is) {
     float eps;
     is.read(reinterpret_cast<char*>(&eps), sizeof(eps));
     
-    auto ln = std::make_unique<LayerNorm>(gamma.size(), eps);
+    auto ln = std::make_unique<LayerNorm>();
     ln->gamma = std::move(gamma);
     ln->beta = std::move(beta);
+    ln->eps = eps;
     return ln;
 }
 

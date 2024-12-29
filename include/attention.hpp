@@ -22,40 +22,29 @@ public:
 };
 
 class MultiHeadAttention {
-public:
-    virtual ~MultiHeadAttention() = default;
 private:
     Matrix query_proj;
     Matrix key_proj;
     Matrix value_proj;
     Matrix output_proj;
-    
     size_t num_heads;
     size_t head_dim;
     bool use_rope;
     bool use_flash;
     bool use_sliding_window;
     size_t window_size;
-    
-    // RoPE buffers
     Matrix cos_cached;
     Matrix sin_cached;
-    
+
+    // Private helper methods
     Matrix apply_rope(const Matrix& x, size_t position) const;
     Matrix flash_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
                          const AttentionMask& mask) const;
     Matrix standard_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
                             const AttentionMask& mask) const;
 
-    friend class cereal::access;
-    template<class Archive>
-    void serialize(Archive & ar) {
-        ar(query_proj, key_proj, value_proj, output_proj,
-           num_heads, head_dim, use_rope, use_flash,
-           use_sliding_window, window_size, cos_cached, sin_cached);
-    }
-
 public:
+    virtual ~MultiHeadAttention() = default;
     MultiHeadAttention() = default;
     
     MultiHeadAttention(size_t hidden_size, 
