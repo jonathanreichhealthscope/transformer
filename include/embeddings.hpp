@@ -21,6 +21,7 @@ public:
     void save(std::ostream& os) const;
     static std::unique_ptr<TokenEmbedding> load(std::istream& is);
     friend class Transformer;
+    virtual ~TokenEmbedding() = default;
 };
 
 class PositionalEncoding {
@@ -39,4 +40,5 @@ public:
     Matrix forward(const Matrix& position_ids);
     void save(std::ostream& os) const;
     static std::unique_ptr<PositionalEncoding> load(std::istream& is);
+    virtual ~PositionalEncoding() = default;
 }; 

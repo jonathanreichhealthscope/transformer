@@ -71,6 +71,7 @@ public:
     Matrix backward(const Matrix& grad, const Matrix& input) const;
     Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
     friend class Transformer;
+    virtual ~TransformerLayer() = default;
 };
 
 class Transformer {

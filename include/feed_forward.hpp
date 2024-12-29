@@ -18,6 +18,7 @@ private:
     }
 
 public:
+    virtual ~FeedForward() = default;
     FeedForward() = default;
     FeedForward(size_t hidden_size, size_t intermediate_size, float dropout_prob);
     Matrix forward(const Matrix& x);

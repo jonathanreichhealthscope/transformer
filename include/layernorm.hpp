@@ -3,7 +3,8 @@
 #include <cereal/access.hpp>
 
 class LayerNorm {
-private:
+public:
+    virtual ~LayerNorm() = default;
     Vector gamma;
     Vector beta;
     float eps;

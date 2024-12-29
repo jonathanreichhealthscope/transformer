@@ -1,4 +1,5 @@
 #include "../include/serialization.hpp"
+#include "../include/serialization_registration.hpp"
 #include <cereal/archives/binary.hpp>
 #include <cereal/types/memory.hpp>
 #include <cereal/types/vector.hpp>

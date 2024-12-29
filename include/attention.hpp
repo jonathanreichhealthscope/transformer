@@ -22,6 +22,8 @@ public:
 };
 
 class MultiHeadAttention {
+public:
+    virtual ~MultiHeadAttention() = default;
 private:
     Matrix query_proj;
     Matrix key_proj;
