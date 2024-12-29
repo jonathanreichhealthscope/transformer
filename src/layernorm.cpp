@@ -4,93 +4,93 @@
 LayerNorm::LayerNorm(size_t hidden_size, float eps)
     : gamma(hidden_size, 1.0f), beta(hidden_size, 0.0f), eps(eps) {}
 
-Matrix LayerNorm::forward(const Matrix& x) const {
-    const size_t batch_size = x.rows();
-    const size_t hidden_size = x.cols();
-    Matrix result(batch_size, hidden_size);
-    
-    for (size_t i = 0; i < batch_size; ++i) {
-        // Compute mean
-        float mean = 0.0f;
-        for (size_t j = 0; j < hidden_size; ++j) {
-            mean += x(i, j);
-        }
-        mean /= hidden_size;
-        
-        // Compute variance
-        float var = 0.0f;
-        for (size_t j = 0; j < hidden_size; ++j) {
-            float diff = x(i, j) - mean;
-            var += diff * diff;
-        }
-        var /= hidden_size;
-        
-        // Normalize and apply scale/shift
-        float std = std::sqrt(var + eps);
-        for (size_t j = 0; j < hidden_size; ++j) {
-            result(i, j) = gamma[j] * ((x(i, j) - mean) / std) + beta[j];
-        }
+Matrix LayerNorm::forward(const Matrix &x) const {
+  const size_t batch_size = x.rows();
+  const size_t hidden_size = x.cols();
+  Matrix result(batch_size, hidden_size);
+
+  for (size_t i = 0; i < batch_size; ++i) {
+    // Compute mean
+    float mean = 0.0f;
+    for (size_t j = 0; j < hidden_size; ++j) {
+      mean += x(i, j);
     }
-    
-    return result;
+    mean /= hidden_size;
+
+    // Compute variance
+    float var = 0.0f;
+    for (size_t j = 0; j < hidden_size; ++j) {
+      float diff = x(i, j) - mean;
+      var += diff * diff;
+    }
+    var /= hidden_size;
+
+    // Normalize and apply scale/shift
+    float std = std::sqrt(var + eps);
+    for (size_t j = 0; j < hidden_size; ++j) {
+      result(i, j) = gamma[j] * ((x(i, j) - mean) / std) + beta[j];
+    }
+  }
+
+  return result;
 }
 
-Matrix LayerNorm::forward_cuda(const Matrix& x) const {
+Matrix LayerNorm::forward_cuda(const Matrix &x) const {
 #ifdef USE_CUDA
-    // Implementation in cuda/layernorm_kernels.cu
-    throw std::runtime_error("CUDA implementation not available");
+  // Implementation in cuda/layernorm_kernels.cu
+  throw std::runtime_error("CUDA implementation not available");
 #else
-    return forward(x);
+  return forward(x);
 #endif
 }
 
-void LayerNorm::save(std::ostream& os) const {
-    gamma.save(os);
-    beta.save(os);
-    os.write(reinterpret_cast<const char*>(&eps), sizeof(eps));
+void LayerNorm::save(std::ostream &os) const {
+  gamma.save(os);
+  beta.save(os);
+  os.write(reinterpret_cast<const char *>(&eps), sizeof(eps));
 }
 
-std::unique_ptr<LayerNorm> LayerNorm::load(std::istream& is) {
-    Vector gamma = Vector::load(is);
-    Vector beta = Vector::load(is);
-    float eps;
-    is.read(reinterpret_cast<char*>(&eps), sizeof(eps));
-    
-    auto ln = std::make_unique<LayerNorm>();
-    ln->gamma = std::move(gamma);
-    ln->beta = std::move(beta);
-    ln->eps = eps;
-    return ln;
+std::unique_ptr<LayerNorm> LayerNorm::load(std::istream &is) {
+  Vector gamma = Vector::load(is);
+  Vector beta = Vector::load(is);
+  float eps;
+  is.read(reinterpret_cast<char *>(&eps), sizeof(eps));
+
+  auto ln = std::make_unique<LayerNorm>();
+  ln->gamma = std::move(gamma);
+  ln->beta = std::move(beta);
+  ln->eps = eps;
+  return ln;
 }
 
-Matrix LayerNorm::backward(const Matrix& grad, const Matrix& input) const {
-    const size_t batch_size = input.rows();
-    const size_t hidden_size = input.cols();
-    Matrix dx(batch_size, hidden_size);
-    
-    for (size_t i = 0; i < batch_size; ++i) {
-        // Compute mean and variance
-        float mean = 0.0f;
-        float var = 0.0f;
-        for (size_t j = 0; j < hidden_size; ++j) {
-            mean += input(i, j);
-        }
-        mean /= hidden_size;
-        
-        for (size_t j = 0; j < hidden_size; ++j) {
-            float diff = input(i, j) - mean;
-            var += diff * diff;
-        }
-        var /= hidden_size;
-        
-        float std = std::sqrt(var + eps);
-        float inv_std = 1.0f / std;
-        
-        // Compute gradients
-        for (size_t j = 0; j < hidden_size; ++j) {
-            dx(i, j) = gamma[j] * grad(i, j) * inv_std;
-        }
+Matrix LayerNorm::backward(const Matrix &grad, const Matrix &input) const {
+  const size_t batch_size = input.rows();
+  const size_t hidden_size = input.cols();
+  Matrix dx(batch_size, hidden_size);
+
+  for (size_t i = 0; i < batch_size; ++i) {
+    // Compute mean and variance
+    float mean = 0.0f;
+    float var = 0.0f;
+    for (size_t j = 0; j < hidden_size; ++j) {
+      mean += input(i, j);
     }
-    
-    return dx;
-} 
+    mean /= hidden_size;
+
+    for (size_t j = 0; j < hidden_size; ++j) {
+      float diff = input(i, j) - mean;
+      var += diff * diff;
+    }
+    var /= hidden_size;
+
+    float std = std::sqrt(var + eps);
+    float inv_std = 1.0f / std;
+
+    // Compute gradients
+    for (size_t j = 0; j < hidden_size; ++j) {
+      dx(i, j) = gamma[j] * grad(i, j) * inv_std;
+    }
+  }
+
+  return dx;
+}

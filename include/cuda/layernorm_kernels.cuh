@@ -10,12 +10,7 @@
 #endif
 
 // Declare CUDA kernels
-KERNEL void layer_norm_backward_kernel(
-    const float* grad,
-    const float* input,
-    const float* gamma,
-    float* dx,
-    const int batch_size,
-    const int hidden_size,
-    const float eps
-);
+KERNEL void layer_norm_backward_kernel(const float *grad, const float *input,
+                                       const float *gamma, float *dx,
+                                       const int batch_size,
+                                       const int hidden_size, const float eps);
