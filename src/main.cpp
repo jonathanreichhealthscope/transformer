@@ -70,8 +70,8 @@ int main() {
     // Initialize components
     Transformer transformer(config);
     auto tokenizer = std::make_unique<Tokenizer>();
-    auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size,
-                                                       config.vocab_size);
+    auto lm_head = std::make_unique<LanguageModelHead>(config.vocab_size,
+                                                       config.hidden_size);
 
     // Setup advanced components
     TensorCache<Matrix> activation_cache(1024, CacheReplacementPolicy::ARC);

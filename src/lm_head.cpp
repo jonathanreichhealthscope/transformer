@@ -7,13 +7,14 @@ Matrix LanguageModelHead::forward(const Matrix &hidden_states) {
   // projection is [vocab_size x hidden_size]
   // We want output to be [seq_len x vocab_size]
 
-  // Transpose hidden_states first to match dimensions
-  Matrix logits = matmul(projection, hidden_states.transpose());
+  // Correct multiplication: [seq_len x hidden_size] * [hidden_size x
+  // vocab_size]
+  Matrix logits = matmul(hidden_states, projection.transpose());
 
   // Add bias
   for (size_t i = 0; i < logits.rows(); ++i) {
     for (size_t j = 0; j < logits.cols(); ++j) {
-      logits(i, j) += bias[i];
+      logits(i, j) += bias[j];
     }
   }
 
