@@ -47,6 +47,8 @@ include_directories(${cereal_SOURCE_DIR}/include)
 # Core source files
 set(CORE_SOURCES
     src/components.cpp
+    src/matrix_ops.cpp
+    src/vector_ops.cpp
 )
 
 # Neural network components
@@ -94,7 +96,6 @@ add_library(transformer_lib
 # Set CUDA specific properties for the library
 set_target_properties(transformer_lib PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES native
     POSITION_INDEPENDENT_CODE ON
 )
 
