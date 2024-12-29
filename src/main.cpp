@@ -1,35 +1,49 @@
-#include "../include/components.hpp"
 #include "../include/transformer.hpp"
 #include <iostream>
+#include <vector>
 
 int main() {
-    // Create a small transformer model
-    int vocab_size = 50000;
-    int max_seq_length = 1024;
-    int embed_dim = 768;
-    int num_layers = 12;
-    int num_heads = 12;
+    // Create transformer configuration
+    TransformerConfig config(
+        50000,    // vocab_size
+        2048,     // max_seq_length
+        768,      // hidden_size
+        12,       // num_layers
+        12        // num_heads
+    );
     
-    Transformer model(vocab_size, max_seq_length, embed_dim, num_layers, num_heads);
+    // Create transformer model
+    Transformer model(config);
     
-    // Example input sequence
-    std::vector<int> input_tokens = {1, 2, 3, 4, 5}; // Example token IDs
+    // Example input tokens
+    std::vector<int> input_tokens = {1, 2, 3, 4};  // Replace with actual token IDs
     
-    // Get next token probabilities
-    Vector probs = model.get_next_token_probabilities(input_tokens);
+    // Forward pass
+    Matrix output = model.forward(input_tokens);
     
-    // Print top 5 most likely next tokens
-    std::vector<std::pair<float, int>> top_tokens;
-    for (int i = 0; i < probs.size(); i++) {
-        top_tokens.push_back({probs[i], i});
+    // Get probabilities for next token
+    // Create a single-row matrix from the last row of output
+    Matrix logits(1, output.cols());
+    Vector last_row = output.row(output.rows() - 1);
+    for (size_t i = 0; i < output.cols(); ++i) {
+        logits(0, i) = last_row[i];
     }
     
-    std::sort(top_tokens.begin(), top_tokens.end(), std::greater<>());
+    logits.apply_softmax();  // Convert to probabilities
     
-    std::cout << "Top 5 most likely next tokens:\n";
-    for (int i = 0; i < 5; i++) {
-        std::cout << "Token " << top_tokens[i].second 
-                  << ": " << top_tokens[i].first << "\n";
+    // Print top-k probabilities
+    const int k = 5;
+    std::vector<std::pair<float, int>> probs;
+    for (size_t i = 0; i < logits.cols(); ++i) {
+        probs.push_back({logits(0, i), static_cast<int>(i)});
+    }
+    
+    std::partial_sort(probs.begin(), probs.begin() + k, probs.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    std::cout << "Top " << k << " next token probabilities:\n";
+    for (int i = 0; i < k; ++i) {
+        std::cout << "Token " << probs[i].second << ": " << probs[i].first << "\n";
     }
     
     return 0;

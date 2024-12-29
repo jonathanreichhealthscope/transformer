@@ -105,8 +105,7 @@ public:
     explicit Transformer(const TransformerConfig& config);
     
     // Forward pass
-    Matrix forward(const std::vector<int>& input_tokens, 
-                  bool use_cache = false);
+    Matrix forward(const std::vector<int>& input_tokens, bool use_cache = false);
     Matrix forward_cuda(const std::vector<int>& input_tokens, bool use_cache = false);
     
     // Training
@@ -114,7 +113,7 @@ public:
               const std::vector<std::vector<int>>& target_tokens,
               size_t num_epochs,
               float learning_rate);
-              
+    
     // Serialization
     void save_model(const std::string& path) const;
     static Transformer load_model(const std::string& path);
@@ -122,10 +121,14 @@ public:
     // Cache management
     void clear_kv_cache();
     
-    // Add these methods
+    // Backward pass
     Matrix backward(const Matrix& grad, const Matrix& activation, size_t layer_idx);
     Matrix backward_cuda(const Matrix& grad, const Matrix& activation, size_t layer_idx);
+    
+    // Parameter access
     std::vector<Matrix>& parameters();
+    
+    // Serialization helpers
     void save(std::ostream& os) const;
     void load(std::istream& is);
 }; 

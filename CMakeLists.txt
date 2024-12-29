@@ -1,10 +1,18 @@
 cmake_minimum_required(VERSION 3.15)
 project(transformer_cpp CUDA CXX)
 
+# Set CUDA architecture policy
+cmake_policy(SET CMP0104 NEW)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Set default CUDA architectures if not specified
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 60 70 75 80)
+endif()
 
 # Include FetchContent for downloading dependencies
 include(FetchContent)
@@ -17,7 +25,7 @@ find_package(CUDAToolkit REQUIRED)
 FetchContent_Declare(
     sentencepiece
     GIT_REPOSITORY https://github.com/google/sentencepiece.git
-    GIT_TAG v0.1.97  # Specify the version you want
+    GIT_TAG v0.1.97
 )
 FetchContent_MakeAvailable(sentencepiece)
 
@@ -36,25 +44,33 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${sentencepiece_SOURCE_DIR}/src)
 include_directories(${cereal_SOURCE_DIR}/include)
 
-# Source files
-set(SOURCES
+# Core source files
+set(CORE_SOURCES
     src/components.cpp
+)
+
+# Neural network components
+set(NN_SOURCES
     src/attention.cpp
     src/transformer.cpp
     src/layernorm.cpp
+    src/feed_forward.cpp
+    src/embeddings.cpp
+)
+
+# Training and utilities
+set(UTIL_SOURCES
     src/tokenizer.cpp
     src/cache.cpp
     src/trainer.cpp
     src/memory_pool.cpp
     src/quantization.cpp
     src/serialization.cpp
-    src/embeddings.cpp
-    src/feed_forward.cpp
     src/cuda_manager.cpp
     src/optimizer.cpp
 )
 
-# CUDA source files
+# CUDA kernels
 set(CUDA_SOURCES
     src/cuda/cuda_kernels.cu
     src/cuda/quantization_kernels.cu
@@ -69,7 +85,9 @@ set_source_files_properties(${CUDA_SOURCES} PROPERTIES LANGUAGE CUDA)
 
 # Create library
 add_library(transformer_lib
-    ${SOURCES}
+    ${CORE_SOURCES}
+    ${NN_SOURCES}
+    ${UTIL_SOURCES}
     ${CUDA_SOURCES}
 )
 
@@ -135,17 +153,7 @@ find_library(TCMALLOC_LIB tcmalloc)
 # Check if the library was found
 if(TCMALLOC_LIB)
     message(STATUS "tcmalloc found: ${TCMALLOC_LIB}")
+    target_link_libraries(transformer_lib PUBLIC ${TCMALLOC_LIB})
 else()
-    message(FATAL_ERROR "tcmalloc not found")
+    message(WARNING "tcmalloc not found, continuing without it")
 endif()
-
-# Link tcmalloc to your target
-target_link_libraries(transformer_lib
-    PUBLIC
-    sentencepiece
-    CUDA::cudart
-    CUDA::cublas
-    CUDA::curand
-    cereal
-    ${TCMALLOC_LIB}
-)
