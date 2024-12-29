@@ -1,8 +1,10 @@
 #include "../include/quantization.hpp"
 #include <algorithm>
 #include <cstring>
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#ifdef USE_CUDA
+#include "cuda/quantization_kernels.cuh"
+#include "cuda/cuda_utils.cuh"
+#endif
 
 namespace {
     // Helper functions for quantization
@@ -25,18 +27,18 @@ namespace {
     }
 }
 
-QuantizedMatrix::QuantizedMatrix(const Matrix& matrix, QuantizationType type) 
-    : rows_(matrix.rows()), cols_(matrix.cols()), type(type) {
+QuantizedMatrix::QuantizedMatrix(const Matrix& matrix, QuantizationType type_)
+    : rows_(matrix.rows()), cols_(matrix.cols()), type(type_) {
     
     const size_t num_elements = rows_ * cols_;
     
     switch (type) {
         case QuantizationType::INT8: {
-            // Compute per-column statistics and quantization parameters
+            new (&int8_data) std::vector<int8_t>(num_elements);
             scales.resize(cols_);
             zero_points.resize(cols_);
-            quantized_data.resize(num_elements);
             
+            // Compute per-column statistics and quantization parameters
             for (size_t col = 0; col < cols_; ++col) {
                 float min_val = std::numeric_limits<float>::max();
                 float max_val = std::numeric_limits<float>::lowest();
@@ -56,7 +58,7 @@ QuantizedMatrix::QuantizedMatrix(const Matrix& matrix, QuantizationType type)
                 // Quantize the column
                 for (size_t row = 0; row < rows_; ++row) {
                     size_t idx = row * cols_ + col;
-                    quantized_data[idx] = quantize_value<int8_t>(
+                    int8_data[idx] = quantize_value<int8_t>(
                         matrix(row, col), scale, zero_point
                     );
                 }
@@ -65,11 +67,11 @@ QuantizedMatrix::QuantizedMatrix(const Matrix& matrix, QuantizationType type)
         }
         
         case QuantizationType::INT4: {
-            // Similar to INT8 but pack two 4-bit values into one byte
+            new (&int4_data) std::vector<uint8_t>((num_elements + 1) / 2);
             scales.resize(cols_);
             zero_points.resize(cols_);
-            quantized_data.resize((num_elements + 1) / 2);
             
+            // Similar to INT8 but pack two 4-bit values into one byte
             for (size_t col = 0; col < cols_; ++col) {
                 float min_val = std::numeric_limits<float>::max();
                 float max_val = std::numeric_limits<float>::lowest();
@@ -97,37 +99,40 @@ QuantizedMatrix::QuantizedMatrix(const Matrix& matrix, QuantizationType type)
                             matrix(row + 1, col), scale, zero_point
                         ) & 0x0F : 0;
                     
-                    quantized_data[idx] = (high << 4) | low;
+                    int4_data[idx] = (high << 4) | low;
                 }
             }
             break;
         }
         
         case QuantizationType::FLOAT16: {
+#ifdef USE_CUDA
+            new (&fp16_data) std::vector<__half>(num_elements);
+            
             // Convert to float16 using CUDA
-            quantized_data.resize(num_elements * sizeof(__half));
             float* d_input;
             __half* d_output;
+            CUDA_CHECK(cudaMalloc(&d_input, num_elements * sizeof(float)));
+            CUDA_CHECK(cudaMalloc(&d_output, num_elements * sizeof(__half)));
             
-            cudaMalloc(&d_input, num_elements * sizeof(float));
-            cudaMalloc(&d_output, num_elements * sizeof(__half));
+            CUDA_CHECK(cudaMemcpy(d_input, matrix.data(), num_elements * sizeof(float), 
+                                cudaMemcpyHostToDevice));
             
-            cudaMemcpy(d_input, matrix.data(), num_elements * sizeof(float), 
-                      cudaMemcpyHostToDevice);
-            
-            // Launch kernel to convert float32 to float16
             const int block_size = 256;
             const int grid_size = (num_elements + block_size - 1) / block_size;
             
-            convert_f32_to_f16<<<grid_size, block_size>>>(
+            CUDA_LAUNCH(convert_f32_to_f16, grid_size, block_size, 0, 0,
                 d_input, d_output, num_elements
             );
             
-            cudaMemcpy(quantized_data.data(), d_output, 
-                      num_elements * sizeof(__half), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(fp16_data.data(), d_output, num_elements * sizeof(__half), 
+                                cudaMemcpyDeviceToHost));
             
-            cudaFree(d_input);
-            cudaFree(d_output);
+            CUDA_CHECK(cudaFree(d_input));
+            CUDA_CHECK(cudaFree(d_output));
+#else
+            throw std::runtime_error("CUDA support not enabled");
+#endif
             break;
         }
     }
@@ -145,7 +150,7 @@ Matrix QuantizedMatrix::dequantize() const {
                 for (size_t row = 0; row < rows_; ++row) {
                     size_t idx = row * cols_ + col;
                     result(row, col) = dequantize_value(
-                        quantized_data[idx], scale, zero_point
+                        int8_data[idx], scale, zero_point
                     );
                 }
             }
@@ -159,7 +164,7 @@ Matrix QuantizedMatrix::dequantize() const {
                 
                 for (size_t row = 0; row < rows_; row += 2) {
                     size_t idx = (row * cols_ + col) / 2;
-                    uint8_t packed = quantized_data[idx];
+                    uint8_t packed = int4_data[idx];
                     
                     result(row, col) = dequantize_value(
                         (packed >> 4) & 0x0F, scale, zero_point
@@ -176,29 +181,32 @@ Matrix QuantizedMatrix::dequantize() const {
         }
         
         case QuantizationType::FLOAT16: {
-            // Convert back to float32 using CUDA
+#ifdef USE_CUDA
             const size_t num_elements = rows_ * cols_;
             __half* d_input;
             float* d_output;
             
-            cudaMalloc(&d_input, num_elements * sizeof(__half));
-            cudaMalloc(&d_output, num_elements * sizeof(float));
+            CUDA_CHECK(cudaMalloc(&d_input, num_elements * sizeof(__half)));
+            CUDA_CHECK(cudaMalloc(&d_output, num_elements * sizeof(float)));
             
-            cudaMemcpy(d_input, quantized_data.data(), 
-                      num_elements * sizeof(__half), cudaMemcpyHostToDevice);
+            CUDA_CHECK(cudaMemcpy(d_input, fp16_data.data(), 
+                                num_elements * sizeof(__half), cudaMemcpyHostToDevice));
             
             const int block_size = 256;
             const int grid_size = (num_elements + block_size - 1) / block_size;
             
-            convert_f16_to_f32<<<grid_size, block_size>>>(
+            CUDA_LAUNCH(convert_f16_to_f32, grid_size, block_size, 0, 0,
                 d_input, d_output, num_elements
             );
             
-            cudaMemcpy(result.data(), d_output, 
-                      num_elements * sizeof(float), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(result.data(), d_output, 
+                                num_elements * sizeof(float), cudaMemcpyDeviceToHost));
             
-            cudaFree(d_input);
-            cudaFree(d_output);
+            CUDA_CHECK(cudaFree(d_input));
+            CUDA_CHECK(cudaFree(d_output));
+#else
+            throw std::runtime_error("CUDA support not enabled");
+#endif
             break;
         }
     }
@@ -219,9 +227,24 @@ void QuantizedMatrix::save(std::ostream& os) const {
     os.write(reinterpret_cast<const char*>(zero_points.data()), scales_size * sizeof(float));
     
     // Save quantized data
-    size_t data_size = quantized_data.size();
-    os.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
-    os.write(reinterpret_cast<const char*>(quantized_data.data()), data_size);
+    size_t data_size = 0;
+    switch (type) {
+        case QuantizationType::INT8:
+            data_size = int8_data.size();
+            os.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
+            os.write(reinterpret_cast<const char*>(int8_data.data()), data_size);
+            break;
+        case QuantizationType::INT4:
+            data_size = int4_data.size();
+            os.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
+            os.write(reinterpret_cast<const char*>(int4_data.data()), data_size);
+            break;
+        case QuantizationType::FLOAT16:
+            data_size = fp16_data.size();
+            os.write(reinterpret_cast<const char*>(&data_size), sizeof(data_size));
+            os.write(reinterpret_cast<const char*>(fp16_data.data()), data_size);
+            break;
+    }
 }
 
 QuantizedMatrix QuantizedMatrix::load(std::istream& is) {
@@ -243,8 +266,57 @@ QuantizedMatrix QuantizedMatrix::load(std::istream& is) {
     // Load quantized data
     size_t data_size;
     is.read(reinterpret_cast<char*>(&data_size), sizeof(data_size));
-    result.quantized_data.resize(data_size);
-    is.read(reinterpret_cast<char*>(result.quantized_data.data()), data_size);
+    switch (result.type) {
+        case QuantizationType::INT8:
+            result.int8_data.resize(data_size);
+            is.read(reinterpret_cast<char*>(result.int8_data.data()), data_size);
+            break;
+        case QuantizationType::INT4:
+            result.int4_data.resize(data_size);
+            is.read(reinterpret_cast<char*>(result.int4_data.data()), data_size);
+            break;
+        case QuantizationType::FLOAT16:
+            result.fp16_data.resize(data_size);
+            is.read(reinterpret_cast<char*>(result.fp16_data.data()), data_size);
+            break;
+    }
     
     return result;
+}
+
+QuantizedMatrix QuantizedMatrix::quantize(const Matrix& input) {
+#ifdef USE_CUDA
+    const size_t num_elements = input.rows() * input.cols();
+    
+    // Allocate device memory
+    float *d_input;
+    __half *d_output;
+    CUDA_CHECK(cudaMalloc(&d_input, num_elements * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_output, num_elements * sizeof(__half)));
+    
+    // Copy input to device
+    CUDA_CHECK(cudaMemcpy(d_input, input.data(), num_elements * sizeof(float), 
+                         cudaMemcpyHostToDevice));
+    
+    // Launch kernel
+    const int block_size = 256;
+    const int grid_size = (num_elements + block_size - 1) / block_size;
+    
+    CUDA_LAUNCH(convert_f32_to_f16, grid_size, block_size, 0, 0,
+        d_input, d_output, num_elements
+    );
+    
+    // Copy result back to host
+    std::vector<__half> quantized_data(num_elements);
+    CUDA_CHECK(cudaMemcpy(quantized_data.data(), d_output, num_elements * sizeof(__half), 
+                         cudaMemcpyDeviceToHost));
+    
+    // Free device memory
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_output));
+    
+    return QuantizedMatrix(input.rows(), input.cols(), std::move(quantized_data));
+#else
+    throw std::runtime_error("CUDA support not enabled");
+#endif
 } 

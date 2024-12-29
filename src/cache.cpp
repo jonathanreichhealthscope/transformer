@@ -1,54 +1,53 @@
 #include "../include/cache.hpp"
 
-KVCache::KVCache(size_t max_length) : max_seq_length(max_length) {
+KVCache::KVCache(size_t max_len) : max_length(max_len), current_length(0) {
     clear();
 }
 
 void KVCache::update(const Matrix& new_keys, const Matrix& new_values) {
-    // Add new keys and values to the cache
+    // Add new keys and values
     key_cache.push_back(new_keys);
     value_cache.push_back(new_values);
+    current_length += new_keys.rows();
     
-    // Ensure we don't exceed max sequence length
-    while (key_cache.size() > max_seq_length) {
-        key_cache.pop_front();
-        value_cache.pop_front();
+    // Remove old entries if we exceed max length
+    while (current_length > max_length) {
+        size_t rows_to_remove = key_cache.front().rows();
+        key_cache.erase(key_cache.begin());
+        value_cache.erase(value_cache.begin());
+        current_length -= rows_to_remove;
     }
 }
 
 std::pair<Matrix, Matrix> KVCache::get_cached_kv() const {
-    if (key_cache.empty() || value_cache.empty()) {
+    if (key_cache.empty()) {
         return {Matrix(), Matrix()};
     }
     
-    // Calculate total number of tokens in cache
-    size_t total_tokens = 0;
+    // Calculate total rows
+    size_t total_rows = 0;
     for (const auto& k : key_cache) {
-        total_tokens += k.rows();
+        total_rows += k.rows();
     }
     
-    // Get dimensions from first cached matrices
-    const size_t head_dim = key_cache.front().cols();
-    const size_t batch_size = 1;  // Assuming batch size of 1 for inference
+    // Create concatenated matrices
+    Matrix concatenated_keys(total_rows, key_cache[0].cols());
+    Matrix concatenated_values(total_rows, value_cache[0].cols());
     
-    // Allocate concatenated matrices
-    Matrix concatenated_keys(total_tokens, head_dim);
-    Matrix concatenated_values(total_tokens, head_dim);
-    
-    // Copy cached keys and values into concatenated matrices
+    // Copy data
     size_t current_row = 0;
     for (size_t i = 0; i < key_cache.size(); ++i) {
-        const auto& k = key_cache[i];
-        const auto& v = value_cache[i];
+        const Matrix& k = key_cache[i];
+        const Matrix& v = value_cache[i];
         
-        // Copy key rows
         for (size_t row = 0; row < k.rows(); ++row) {
-            for (size_t col = 0; col < head_dim; ++col) {
+            for (size_t col = 0; col < k.cols(); ++col) {
                 concatenated_keys(current_row + row, col) = k(row, col);
+            }
+            for (size_t col = 0; col < v.cols(); ++col) {
                 concatenated_values(current_row + row, col) = v(row, col);
             }
         }
-        
         current_row += k.rows();
     }
     
@@ -58,4 +57,5 @@ std::pair<Matrix, Matrix> KVCache::get_cached_kv() const {
 void KVCache::clear() {
     key_cache.clear();
     value_cache.clear();
+    current_length = 0;
 } 

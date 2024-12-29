@@ -493,4 +493,42 @@ Matrix TransformerLayer::backward(const Matrix& grad, const Matrix& input) const
     Matrix d_ln1 = attention_ln->backward(d_attn, input);
     
     return d_ln1;
+}
+
+Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_cache) {
+#ifdef USE_CUDA
+    if (!cuda_manager) {
+        throw std::runtime_error("CUDA manager not initialized");
+    }
+
+    // Get embeddings
+    Matrix embeddings = token_embedding->forward(input_tokens);
+    
+    // Add positional encodings
+    Matrix position_ids(1, input_tokens.size());
+    for (size_t i = 0; i < input_tokens.size(); ++i) {
+        position_ids(0, i) = static_cast<float>(i);
+    }
+    embeddings += pos_encoding->forward(position_ids);
+    
+    // Create attention mask if needed
+    AttentionMask mask;
+    if (!use_cache) {
+        mask = AttentionMask::create_causal_mask(input_tokens.size());
+    }
+    
+    // Forward pass through layers using CUDA
+    Matrix hidden_states = embeddings;
+    for (auto& layer : layers) {
+        hidden_states = layer->forward(hidden_states, mask);  // Layer should handle CUDA internally
+    }
+    
+    // Final layer normalization
+    hidden_states = final_ln->forward_cuda(hidden_states);
+    
+    // Project to vocabulary (reuse embedding weights)
+    return token_embedding->project_to_vocab(hidden_states);  // Should handle CUDA internally
+#else
+    throw std::runtime_error("CUDA support not enabled");
+#endif
 } 

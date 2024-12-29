@@ -6,11 +6,18 @@
 #include <cmath>
 #include <iostream>
 #include <iomanip>
+#include <cereal/access.hpp>
 
 class Vector {
 private:
     std::vector<float> data_;
     size_t size_;
+
+    friend class cereal::access;
+    template<class Archive>
+    void serialize(Archive & ar) {
+        ar(data_);
+    }
 
 public:
     // Constructors
@@ -67,106 +74,72 @@ Vector operator/(const Vector& v, float scalar);
 
 class Matrix {
 private:
-    std::vector<Vector> data_;
+    std::vector<float> data_;
     size_t rows_;
     size_t cols_;
+
+    friend class cereal::access;
+    template<class Archive>
+    void serialize(Archive & ar) {
+        ar(data_, rows_, cols_);
+    }
+
+    // Helper to get index in flat array
+    size_t index(size_t row, size_t col) const {
+        return row * cols_ + col;
+    }
 
 public:
     // Constructors
     Matrix() : rows_(0), cols_(0) {}
     Matrix(size_t rows, size_t cols, float default_value = 0.0f);
     Matrix(const std::initializer_list<std::initializer_list<float>>& list);
-    
+
     // Element access
-    Vector& operator[](size_t index) { return data_[index]; }
-    const Vector& operator[](size_t index) const { return data_[index]; }
+    float& operator()(size_t row, size_t col);
+    const float& operator()(size_t row, size_t col) const;
     float& at(size_t row, size_t col);
     const float& at(size_t row, size_t col) const;
     
+    // Row access
+    Vector row(size_t row) const;
+    void set_row(size_t row, const Vector& vec);
+
     // Capacity
     size_t rows() const { return rows_; }
     size_t cols() const { return cols_; }
     bool empty() const { return rows_ == 0 || cols_ == 0; }
     
-    // Operations
+    // Data access
+    float* data() { return data_.data(); }
+    const float* data() const { return data_.data(); }
+
+    // Mathematical operations
+    Matrix transpose() const;
+    void apply_relu();
+    void apply_gelu();
+    void apply_softmax();
+    void add_bias(const Vector& bias);
+    static Matrix concatenate(const Matrix& a, const Matrix& b);
+    static Matrix matmul(const Matrix& a, const Matrix& b);
+
+    // Operators
     Matrix& operator+=(const Matrix& other);
     Matrix& operator-=(const Matrix& other);
     Matrix& operator*=(float scalar);
     Matrix& operator/=(float scalar);
-    
-    // Mathematical operations
-    Matrix transpose() const;
-    static Matrix matmul(const Matrix& a, const Matrix& b);
-    void add_bias(const Vector& bias);
-    
-    // Neural network specific operations
-    void apply_relu();
-    void apply_gelu();
-    void apply_softmax();
-    
-    // Iterator support
-    auto begin() { return data_.begin(); }
-    auto end() { return data_.end(); }
-    auto begin() const { return data_.begin(); }
-    auto end() const { return data_.end(); }
-    
-    // Block operations
-    Matrix block(size_t start_row, size_t end_row) const {
-        if (start_row >= rows_ || end_row > rows_ || start_row >= end_row) {
-            throw std::out_of_range("Invalid block range");
-        }
-        
-        Matrix result(end_row - start_row, cols_);
-        for (size_t i = 0; i < end_row - start_row; ++i) {
-            result[i] = data_[start_row + i];
-        }
-        return result;
-    }
-    
-    // Matrix row operations
-    Matrix row(size_t index) const {
-        if (index >= rows_) {
-            throw std::out_of_range("Row index out of range");
-        }
-        Matrix result(1, cols_);
-        result[0] = data_[index];
-        return result;
-    }
-    
-    void set_row(size_t index, const Matrix& row) {
-        if (index >= rows_ || row.rows() != 1 || row.cols() != cols_) {
-            throw std::out_of_range("Invalid row dimensions");
-        }
-        data_[index] = row[0];
-    }
-    
-    static Matrix concatenate(const Matrix& a, const Matrix& b);
-    
-    // Add these operator() overloads
-    float& operator()(size_t row, size_t col) {
-        return data_[row][col];
-    }
-    
-    const float& operator()(size_t row, size_t col) const {
-        return data_[row][col];
-    }
-    
-    // Add these data accessors
-    float* data() { return &data_[0][0]; }
-    const float* data() const { return &data_[0][0]; }
-    
-    // Add operator*= for matrix multiplication
-    Matrix& operator*=(const Matrix& other);
-    
-    // Add serialization methods
+    Matrix& operator*=(const Matrix& other);  // Hadamard product
+
+    // Serialization
     void save(std::ostream& os) const;
     static Matrix load(std::istream& is);
 };
 
-// Matrix operations
+// Non-member operators
 Matrix operator+(const Matrix& a, const Matrix& b);
 Matrix operator-(const Matrix& a, const Matrix& b);
 Matrix operator*(const Matrix& m, float scalar);
 Matrix operator*(float scalar, const Matrix& m);
 Matrix operator/(const Matrix& m, float scalar);
 Matrix operator*(const Matrix& a, const Matrix& b);  // Hadamard product
+Matrix matmul(const Matrix& a, const Matrix& b);

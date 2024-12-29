@@ -2,81 +2,120 @@
 #include <cmath>
 
 Matrix MultiHeadAttention::apply_rope(const Matrix& x, size_t position) const {
-    Matrix rotated = x;
-    for (size_t h = 0; h < num_heads; ++h) {
-        for (size_t i = 0; i < x.rows(); ++i) {
-            for (size_t j = 0; j < head_dim; j += 2) {
-                float cos_theta = cos_cached[position][j/2];
-                float sin_theta = sin_cached[position][j/2];
-                
-                size_t idx = h * head_dim + j;
-                float x1 = x[i][idx];
-                float x2 = x[i][idx + 1];
-                
-                rotated[i][idx] = x1 * cos_theta - x2 * sin_theta;
-                rotated[i][idx + 1] = x1 * sin_theta + x2 * cos_theta;
+    Matrix rotated = x;  // Create a copy to store rotated values
+    const size_t dim = x.cols();
+    
+    // Apply rotary position embedding
+    for (size_t i = 0; i < x.rows(); ++i) {
+        for (size_t j = 0; j < dim; j += 2) {
+            float cos_theta = cos_cached(position, j/2);
+            float sin_theta = sin_cached(position, j/2);
+            
+            float x1 = x(i, j);
+            float x2 = j + 1 < dim ? x(i, j + 1) : 0.0f;
+            
+            rotated(i, j) = x1 * cos_theta - x2 * sin_theta;
+            if (j + 1 < dim) {
+                rotated(i, j + 1) = x1 * sin_theta + x2 * cos_theta;
             }
         }
     }
+    
     return rotated;
 }
 
-Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, 
-                                         const Matrix& V, const AttentionMask& mask) const {
-    // Implement Flash Attention algorithm
-    // This is a simplified version - real implementation would use block-sparse operations
-    const size_t block_size = 256;  // Typical block size for GPU
+Matrix MultiHeadAttention::flash_attention(
+    const Matrix& Q, const Matrix& K, const Matrix& V,
+    const AttentionMask& mask) const {
+    
+    const size_t seq_length = Q.rows();
+    const size_t block_size = window_size;
     Matrix output(Q.rows(), V.cols(), 0.0f);
     
-    for (size_t b_start = 0; b_start < K.rows(); b_start += block_size) {
-        size_t b_end = std::min(b_start + block_size, K.rows());
+    // Process in blocks for better memory efficiency
+    for (size_t b_start = 0; b_start < seq_length; b_start += block_size) {
+        size_t b_end = std::min(b_start + block_size, seq_length);
         
-        // Load K,V blocks
-        Matrix K_block = K.block(b_start, b_end);
-        Matrix V_block = V.block(b_start, b_end);
+        // Create block views
+        Matrix K_block(b_end - b_start, K.cols());
+        Matrix V_block(b_end - b_start, V.cols());
         
-        // Compute attention scores for block
-        Matrix scores = Matrix::matmul(Q, K_block.transpose());
-        scores *= 1.0f / std::sqrt(head_dim);
-        
-        if (mask.mask.rows() > 0) {
-            // Apply attention mask
-            scores *= mask.mask;
+        // Copy block data
+        for (size_t i = b_start; i < b_end; ++i) {
+            for (size_t j = 0; j < K.cols(); ++j) {
+                K_block(i - b_start, j) = K(i, j);
+            }
+            for (size_t j = 0; j < V.cols(); ++j) {
+                V_block(i - b_start, j) = V(i, j);
+            }
         }
         
+        // Compute attention scores for this block
+        Matrix scores = matmul(Q, K_block.transpose());
+        scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
+        
+        // Apply mask if provided
+        if (!mask.mask.empty()) {
+            for (size_t i = 0; i < scores.rows(); ++i) {
+                for (size_t j = 0; j < scores.cols(); ++j) {
+                    if (mask.mask(i, j) == 0.0f) {
+                        scores(i, j) = -std::numeric_limits<float>::infinity();
+                    }
+                }
+            }
+        }
+        
+        // Apply softmax
         scores.apply_softmax();
         
-        // Accumulate output
-        output += Matrix::matmul(scores, V_block);
+        // Compute weighted sum
+        Matrix block_output = matmul(scores, V_block);
+        
+        // Add to output
+        for (size_t i = 0; i < output.rows(); ++i) {
+            for (size_t j = 0; j < output.cols(); ++j) {
+                output(i, j) += block_output(i, j);
+            }
+        }
     }
     
     return output;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& x,
-                                 const AttentionMask& mask,
-                                 const std::optional<KVCache>& kv_cache) {
-    // Project inputs
-    Matrix Q = Matrix::matmul(x, query_proj);
-    Matrix K = Matrix::matmul(x, key_proj);
-    Matrix V = Matrix::matmul(x, value_proj);
+Matrix MultiHeadAttention::forward(
+    const Matrix& x,
+    const AttentionMask& mask,
+    const std::optional<KVCache>& kv_cache) {
+    
+    // Project input to Q, K, V
+    Matrix Q = matmul(x, query_proj);
+    Matrix K = matmul(x, key_proj);
+    Matrix V = matmul(x, value_proj);
     
     // Apply RoPE if enabled
     if (use_rope) {
         for (size_t pos = 0; pos < x.rows(); ++pos) {
-            Q.row(pos) = apply_rope(Q.row(pos), pos);
-            K.row(pos) = apply_rope(K.row(pos), pos);
+            // Create single-row matrices for RoPE
+            Matrix Q_row(1, Q.cols());
+            Matrix K_row(1, K.cols());
+            for (size_t j = 0; j < Q.cols(); ++j) {
+                Q_row(0, j) = Q(pos, j);
+                K_row(0, j) = K(pos, j);
+            }
+            
+            // Apply RoPE
+            Matrix Q_rotated = apply_rope(Q_row, pos);
+            Matrix K_rotated = apply_rope(K_row, pos);
+            
+            // Copy back
+            for (size_t j = 0; j < Q.cols(); ++j) {
+                Q(pos, j) = Q_rotated(0, j);
+                K(pos, j) = K_rotated(0, j);
+            }
         }
     }
     
-    // Use cached KV if provided
-    if (kv_cache) {
-        auto [cached_k, cached_v] = kv_cache->get_cached_kv();
-        K = Matrix::concatenate(cached_k, K);
-        V = Matrix::concatenate(cached_v, V);
-    }
-    
-    // Compute attention
+    // Use flash attention if enabled
     Matrix attention_output;
     if (use_flash) {
         attention_output = flash_attention(Q, K, V, mask);
@@ -85,7 +124,7 @@ Matrix MultiHeadAttention::forward(const Matrix& x,
     }
     
     // Project output
-    return Matrix::matmul(attention_output, output_proj);
+    return matmul(attention_output, output_proj);
 }
 
 void MultiHeadAttention::save(std::ostream& os) const {

@@ -128,3 +128,24 @@ install(DIRECTORY include/
     DESTINATION include
     FILES_MATCHING PATTERN "*.hpp"
 )
+
+# Find tcmalloc library
+find_library(TCMALLOC_LIB tcmalloc)
+
+# Check if the library was found
+if(TCMALLOC_LIB)
+    message(STATUS "tcmalloc found: ${TCMALLOC_LIB}")
+else()
+    message(FATAL_ERROR "tcmalloc not found")
+endif()
+
+# Link tcmalloc to your target
+target_link_libraries(transformer_lib
+    PUBLIC
+    sentencepiece
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::curand
+    cereal
+    ${TCMALLOC_LIB}
+)

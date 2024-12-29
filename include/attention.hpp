@@ -2,6 +2,8 @@
 #include "components.hpp"
 #include "cache.hpp"
 #include <optional>
+#include <cereal/access.hpp>
+#include <cereal/types/vector.hpp>
 
 class AttentionMask {
 public:
@@ -9,6 +11,14 @@ public:
     
     static AttentionMask create_causal_mask(size_t size);
     static AttentionMask create_padding_mask(const std::vector<int>& lengths, size_t max_len);
+
+    friend class cereal::access;
+    template<class Archive>
+    void serialize(Archive & ar) {
+        ar(mask);
+    }
+
+    AttentionMask() = default;
 };
 
 class MultiHeadAttention {
@@ -35,7 +45,17 @@ private:
     Matrix standard_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
                             const AttentionMask& mask) const;
 
+    friend class cereal::access;
+    template<class Archive>
+    void serialize(Archive & ar) {
+        ar(query_proj, key_proj, value_proj, output_proj,
+           num_heads, head_dim, use_rope, use_flash,
+           use_sliding_window, window_size, cos_cached, sin_cached);
+    }
+
 public:
+    MultiHeadAttention() = default;
+    
     MultiHeadAttention(size_t hidden_size, 
                       size_t num_heads,
                       size_t head_dim,

@@ -86,28 +86,27 @@ void TransformerTrainer::train_step(
     const std::vector<std::vector<int>>& input_batch,
     const std::vector<std::vector<int>>& target_batch
 ) {
+    // Forward pass
+    std::vector<Matrix> activations;
+    Matrix logits;
+    
+    if (use_cuda) {
+        logits = model.forward_cuda(input_batch[0], &activations);
+    } else {
+        logits = model.forward(input_batch[0], &activations);
+    }
+    
     const size_t batch_size = input_batch.size();
-    std::vector<Matrix> batch_activations;
     Matrix batch_loss_grads;
     
     // Process each sequence in the batch
     for (size_t i = 0; i < batch_size; ++i) {
-        // Forward pass
-        std::vector<Matrix> activations;
-        Matrix logits;
-        
-        if (use_cuda) {
-            logits = model.forward_cuda(input_batch[i], &activations);
-        } else {
-            logits = model.forward(input_batch[i], &activations);
-        }
-        
         // Compute loss gradients
         Matrix loss_grads = compute_loss_gradients(logits, target_batch[i]);
         
         // Store activations and gradients for backward pass
-        batch_activations.insert(batch_activations.end(), 
-                               activations.begin(), activations.end());
+        activations.insert(activations.end(), 
+                           activations.begin(), activations.end());
         
         if (i == 0) {
             batch_loss_grads = loss_grads;
@@ -121,7 +120,7 @@ void TransformerTrainer::train_step(
     batch_loss_grads *= (1.0f / batch_size);
     
     // Backward pass with accumulated gradients
-    backward_pass(batch_activations, batch_loss_grads);
+    backward_pass(activations, batch_loss_grads);
 }
 
 float TransformerTrainer::evaluate(
