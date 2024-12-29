@@ -4,10 +4,10 @@
 #include <random>
 #include <cuda_runtime.h>
 
-TransformerTrainer::TransformerTrainer(Transformer& model, float lr, size_t batch_size)
-    : model(model), 
+TransformerTrainer::TransformerTrainer(Transformer& model_, float lr, size_t batch_size)
+    : model(model_), 
       learning_rate(lr), 
-      batch_size(batch_size),
+      batch_size_(batch_size),
       use_cuda(true)  // Default to CUDA if available
 {
     // Create Adam optimizer
@@ -173,7 +173,7 @@ void TransformerTrainer::save_checkpoint(const std::string& path) const {
     
     // Save trainer parameters
     os.write(reinterpret_cast<const char*>(&learning_rate), sizeof(learning_rate));
-    os.write(reinterpret_cast<const char*>(&batch_size), sizeof(batch_size));
+    os.write(reinterpret_cast<const char*>(&batch_size_), sizeof(batch_size_));
     os.write(reinterpret_cast<const char*>(&use_cuda), sizeof(use_cuda));
 }
 
@@ -191,6 +191,6 @@ void TransformerTrainer::load_checkpoint(const std::string& path) {
     
     // Load trainer parameters
     is.read(reinterpret_cast<char*>(&learning_rate), sizeof(learning_rate));
-    is.read(reinterpret_cast<char*>(&batch_size), sizeof(batch_size));
+    is.read(reinterpret_cast<char*>(&batch_size_), sizeof(batch_size_));
     is.read(reinterpret_cast<char*>(&use_cuda), sizeof(use_cuda));
 } 

@@ -50,6 +50,9 @@ public:
     Matrix forward(const Matrix& x,
                   const AttentionMask& mask,
                   const std::optional<KVCache>& kv_cache = std::nullopt);
+    Matrix backward(const Matrix& grad, const Matrix& input) const;
+    Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
     void save(std::ostream& os) const;
     static std::unique_ptr<MultiHeadAttention> load(std::istream& is);
+    friend class Transformer;
 }; 

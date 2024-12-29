@@ -12,4 +12,7 @@ public:
     Matrix forward(const Matrix& x);
     void save(std::ostream& os) const;
     static std::unique_ptr<FeedForward> load(std::istream& is);
+    Matrix backward(const Matrix& grad, const Matrix& input) const;
+    Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
+    friend class Transformer;
 }; 

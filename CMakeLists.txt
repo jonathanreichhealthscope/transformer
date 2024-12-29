@@ -59,8 +59,13 @@ set(CUDA_SOURCES
     src/cuda/cuda_kernels.cu
     src/cuda/quantization_kernels.cu
     src/cuda/layernorm_kernels.cu
-    src/cuda/layernorm_cuda.cu
 )
+
+# Set CUDA flags
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_60")
+
+# Set CUDA specific properties
+set_source_files_properties(${CUDA_SOURCES} PROPERTIES LANGUAGE CUDA)
 
 # Create library
 add_library(transformer_lib

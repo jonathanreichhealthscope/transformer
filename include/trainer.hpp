@@ -2,10 +2,9 @@
 #include <memory>
 #include <vector>
 #include <random>
+#include <fstream>
+#include "transformer.hpp"
 #include "optimizer.hpp"
-
-// Forward declaration
-class Transformer;
 
 class TransformerTrainer {
 private:

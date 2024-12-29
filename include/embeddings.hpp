@@ -13,6 +13,7 @@ public:
     Matrix project_to_vocab(const Matrix& hidden_states);
     void save(std::ostream& os) const;
     static std::unique_ptr<TokenEmbedding> load(std::istream& is);
+    friend class Transformer;
 };
 
 class PositionalEncoding {

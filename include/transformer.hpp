@@ -7,7 +7,6 @@
 #include "embeddings.hpp"
 #include "feed_forward.hpp"
 #include "cuda_manager.hpp"
-#include "trainer.hpp"
 #include <memory>
 #include <vector>
 #include <optional>
@@ -52,6 +51,9 @@ public:
     void clear_cache();
     void save(std::ostream& os) const;
     static std::unique_ptr<TransformerLayer> load(std::istream& is);
+    Matrix backward(const Matrix& grad, const Matrix& input) const;
+    Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
+    friend class Transformer;
 };
 
 class Transformer {
@@ -65,6 +67,11 @@ private:
 #ifdef USE_CUDA
     std::unique_ptr<CudaManager> cuda_manager;
 #endif
+
+    // Add these private helper methods
+    Matrix compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets);
+    void backward_pass(const std::vector<Matrix>& activations, const Matrix& loss_grad);
+    void update_parameters(float learning_rate);
 
 public:
     explicit Transformer(const TransformerConfig& config);
@@ -85,4 +92,11 @@ public:
     
     // Cache management
     void clear_kv_cache();
+    
+    // Add these methods
+    Matrix backward(const Matrix& grad, const Matrix& activation, size_t layer_idx);
+    Matrix backward_cuda(const Matrix& grad, const Matrix& activation, size_t layer_idx);
+    std::vector<Matrix>& parameters();
+    void save(std::ostream& os) const;
+    void load(std::istream& is);
 }; 

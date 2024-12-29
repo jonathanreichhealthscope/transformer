@@ -57,3 +57,26 @@ __global__ void layer_norm_kernel(
         output[idx] = gamma[hidden_idx] * ((val - mean_val) / std_dev) + beta[hidden_idx];
     }
 }
+
+__global__ void layer_norm_backward_kernel(
+    const float* grad,
+    const float* input,
+    const float* gamma,
+    float* dx,
+    const int batch_size,
+    const int hidden_size,
+    const float eps
+) {
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int stride = blockDim.x * gridDim.x;
+    
+    extern __shared__ float shared_mem[];
+    float* mean = shared_mem;
+    float* var = shared_mem + blockDim.x;
+    float* sum_grad = shared_mem + 2 * blockDim.x;
+    float* sum_grad_diff = shared_mem + 3 * blockDim.x;
+    
+    for (int batch_idx = tid; batch_idx < batch_size; batch_idx += stride) {
+        // ... rest of the kernel implementation ...
+    }
+}

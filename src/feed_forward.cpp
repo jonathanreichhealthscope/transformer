@@ -102,4 +102,98 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream& is) {
     is.read(reinterpret_cast<char*>(ffn->b2.data()), ffn->b2.size() * sizeof(float));
     
     return ffn;
+}
+
+Matrix FeedForward::backward(const Matrix& grad, const Matrix& input) const {
+    const size_t batch_size = input.rows();
+    Matrix dx(batch_size, w1.rows());
+    
+    // Backward through second linear layer
+    Matrix d_intermediate(batch_size, w1.cols());
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < w1.cols(); ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < w2.cols(); ++k) {
+                sum += grad(i, k) * w2(j, k);
+            }
+            d_intermediate(i, j) = sum;
+        }
+    }
+    
+    // Backward through GELU
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < w1.cols(); ++j) {
+            float x = input(i, j);
+            float cdf = 0.5f * (1.0f + std::tanh(std::sqrt(2.0f/M_PI) * (x + 0.044715f * std::pow(x, 3))));
+            float pdf = std::exp(-0.5f * x * x) / std::sqrt(2.0f * M_PI);
+            d_intermediate(i, j) *= cdf + x * pdf;
+        }
+    }
+    
+    // Backward through first linear layer
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < w1.rows(); ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < w1.cols(); ++k) {
+                sum += d_intermediate(i, k) * w1(j, k);
+            }
+            dx(i, j) = sum;
+        }
+    }
+    
+    return dx;
+}
+
+Matrix FeedForward::backward_cuda(const Matrix& grad, const Matrix& input) const {
+    const size_t batch_size = input.rows();
+    const size_t hidden_size = w1.rows();
+    const size_t intermediate_size = w1.cols();
+    
+    // Allocate device memory
+    float *d_grad, *d_input, *d_w1, *d_w2, *d_intermediate, *d_dx;
+    cudaMalloc(&d_grad, batch_size * hidden_size * sizeof(float));
+    cudaMalloc(&d_input, batch_size * hidden_size * sizeof(float));
+    cudaMalloc(&d_w1, hidden_size * intermediate_size * sizeof(float));
+    cudaMalloc(&d_w2, intermediate_size * hidden_size * sizeof(float));
+    cudaMalloc(&d_intermediate, batch_size * intermediate_size * sizeof(float));
+    cudaMalloc(&d_dx, batch_size * hidden_size * sizeof(float));
+    
+    // Copy data to device
+    cudaMemcpy(d_grad, grad.data(), batch_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_input, input.data(), batch_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w1, w1.data(), hidden_size * intermediate_size * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w2, w2.data(), intermediate_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice);
+    
+    // Launch kernels
+    const int block_size = 256;
+    const int grid_size = (batch_size * std::max(hidden_size, intermediate_size) + block_size - 1) / block_size;
+    
+    feed_forward_backward_kernel_1<<<grid_size, block_size>>>(
+        d_grad, d_w2, d_intermediate,
+        batch_size, hidden_size, intermediate_size
+    );
+    
+    gelu_backward_kernel<<<grid_size, block_size>>>(
+        d_intermediate, d_input,
+        batch_size * intermediate_size
+    );
+    
+    feed_forward_backward_kernel_2<<<grid_size, block_size>>>(
+        d_intermediate, d_w1, d_dx,
+        batch_size, hidden_size, intermediate_size
+    );
+    
+    // Copy result back to host
+    Matrix dx(batch_size, hidden_size);
+    cudaMemcpy(dx.data(), d_dx, batch_size * hidden_size * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Free device memory
+    cudaFree(d_grad);
+    cudaFree(d_input);
+    cudaFree(d_w1);
+    cudaFree(d_w2);
+    cudaFree(d_intermediate);
+    cudaFree(d_dx);
+    
+    return dx;
 } 
