@@ -20,4 +20,10 @@ public:
   void save(std::ostream &os) const;
   static std::unique_ptr<FeedForward> load(std::istream &is);
   friend class Transformer;
+
+  std::vector<std::reference_wrapper<Matrix>> get_weights() {
+    return {std::ref(w1), std::ref(w2)};
+  }
+
+  friend class TransformerLayer;
 };

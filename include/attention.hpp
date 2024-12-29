@@ -51,4 +51,41 @@ public:
   void save(std::ostream &os) const;
   static std::unique_ptr<MultiHeadAttention> load(std::istream &is);
   friend class Transformer;
+
+  std::vector<std::reference_wrapper<Matrix>> get_weights() {
+    return {std::ref(query_proj), std::ref(key_proj), std::ref(value_proj),
+            std::ref(output_proj)};
+  }
+
+  friend class TransformerLayer;
+};
+
+// Add sliding window attention
+class SlidingWindowAttention : public MultiHeadAttention {
+private:
+  size_t window_size;
+  bool use_local_attention;
+
+  void process_attention_window(const Matrix &Q, const Matrix &K,
+                                const Matrix &V, Matrix &output, size_t start,
+                                size_t end);
+
+public:
+  explicit SlidingWindowAttention(size_t window_size_ = 512)
+      : window_size(window_size_) {}
+  Matrix compute_local_attention(const Matrix &Q, const Matrix &K,
+                                 const Matrix &V);
+};
+
+// Add sparse attention
+class SparseAttention : public MultiHeadAttention {
+private:
+  std::vector<std::pair<int, int>> attention_patterns;
+  float sparsity_threshold;
+
+  Matrix compute_sparse_attention(const Matrix &Q, const Matrix &K,
+                                  const Matrix &V) {
+    // Implement sparse attention using custom patterns
+    return Matrix();
+  }
 };

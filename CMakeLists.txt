@@ -17,9 +17,9 @@ endif()
 # Include FetchContent for downloading dependencies
 include(FetchContent)
 
-# Find required packages
-find_package(CUDA REQUIRED)
+# Find CUDA Toolkit
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenMP)
 
 # Download and build sentencepiece
 FetchContent_Declare(
@@ -30,7 +30,6 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(sentencepiece)
 
 # Include directories
-include_directories(${CUDA_INCLUDE_DIRS})
 include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${sentencepiece_SOURCE_DIR}/src)
@@ -148,4 +147,8 @@ if(TCMALLOC_LIB)
     target_link_libraries(transformer_lib PUBLIC ${TCMALLOC_LIB})
 else()
     message(WARNING "tcmalloc not found, continuing without it")
+endif()
+
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()

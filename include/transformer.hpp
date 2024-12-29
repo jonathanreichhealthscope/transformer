@@ -7,6 +7,7 @@
 #include "feed_forward.hpp"
 #include "layernorm.hpp"
 #include "tokenizer.hpp"
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -53,6 +54,17 @@ public:
   static std::unique_ptr<TransformerLayer> load(std::istream &is);
   Matrix backward(const Matrix &grad, const Matrix &input) const;
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
+  std::vector<std::reference_wrapper<Matrix>> get_weights() {
+    std::vector<std::reference_wrapper<Matrix>> weights;
+    auto attention_weights = self_attention->get_weights();
+    auto ff_weights = feed_forward->get_weights();
+
+    weights.insert(weights.end(), attention_weights.begin(),
+                   attention_weights.end());
+    weights.insert(weights.end(), ff_weights.begin(), ff_weights.end());
+
+    return weights;
+  }
   friend class Transformer;
 };
 
@@ -94,5 +106,15 @@ public:
   void save(std::ostream &os) const;
   void load(std::istream &is);
 
+  std::vector<std::vector<std::reference_wrapper<Matrix>>>
+  get_layer_weights() const {
+    std::vector<std::vector<std::reference_wrapper<Matrix>>> all_weights;
+    for (const auto &layer : layers) {
+      all_weights.push_back(layer->get_weights());
+    }
+    return all_weights;
+  }
+
   friend class TransformerTrainer;
+  friend class QuantizationAwareTraining;
 };

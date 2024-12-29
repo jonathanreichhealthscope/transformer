@@ -12,10 +12,9 @@ void KVCache::update(const Matrix &new_keys, const Matrix &new_values) {
 
   // Remove old entries if we exceed max length
   while (current_length > max_length) {
-    size_t rows_to_remove = key_cache.front().rows();
+    current_length -= key_cache.front().rows();
     key_cache.erase(key_cache.begin());
     value_cache.erase(value_cache.begin());
-    current_length -= rows_to_remove;
   }
 }
 
@@ -24,34 +23,24 @@ std::pair<Matrix, Matrix> KVCache::get_cached_kv() const {
     return {Matrix(), Matrix()};
   }
 
-  // Calculate total rows
-  size_t total_rows = 0;
-  for (const auto &k : key_cache) {
-    total_rows += k.rows();
-  }
+  size_t total_rows = current_length;
+  size_t cols = key_cache[0].cols();
 
-  // Create concatenated matrices
-  Matrix concatenated_keys(total_rows, key_cache[0].cols());
-  Matrix concatenated_values(total_rows, value_cache[0].cols());
+  Matrix keys(total_rows, cols);
+  Matrix values(total_rows, cols);
 
-  // Copy data
   size_t current_row = 0;
   for (size_t i = 0; i < key_cache.size(); ++i) {
-    const Matrix &k = key_cache[i];
-    const Matrix &v = value_cache[i];
-
-    for (size_t row = 0; row < k.rows(); ++row) {
-      for (size_t col = 0; col < k.cols(); ++col) {
-        concatenated_keys(current_row + row, col) = k(row, col);
-      }
-      for (size_t col = 0; col < v.cols(); ++col) {
-        concatenated_values(current_row + row, col) = v(row, col);
+    for (size_t row = 0; row < key_cache[i].rows(); ++row) {
+      for (size_t col = 0; col < cols; ++col) {
+        keys(current_row + row, col) = key_cache[i](row, col);
+        values(current_row + row, col) = value_cache[i](row, col);
       }
     }
-    current_row += k.rows();
+    current_row += key_cache[i].rows();
   }
 
-  return {concatenated_keys, concatenated_values};
+  return {keys, values};
 }
 
 void KVCache::clear() {
