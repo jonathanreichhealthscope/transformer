@@ -1,6 +1,8 @@
 #pragma once
 #include "components.hpp"
 #include <memory>
+#include <vector>
+#include <functional>
 
 class LanguageModelHead {
 private:
@@ -91,4 +93,13 @@ public:
             sizeof(lm_head->dropout_prob));
     return lm_head;
   }
+
+  std::vector<std::reference_wrapper<Matrix>> get_parameters() {
+    std::vector<std::reference_wrapper<Matrix>> params;
+    params.push_back(std::ref(projection));
+    // Note: We'll need to handle bias separately since it's a Vector
+    return params;
+  }
+
+  Vector& get_bias() { return bias; }
 };

@@ -208,10 +208,6 @@ void Vocabulary::print_vocabulary_mappings() const {
 
   std::cout << "\n=== Full Vocabulary ===\n";
   std::cout << "Total size: " << size() << " tokens\n\n";
-  for (const auto &[token, id] : token_to_id) {
-    std::cout << "ID " << std::setw(3) << id << ": '" << std::setw(15) << token
-              << "'\n";
-  }
 }
 
 bool Vocabulary::verify_mappings() const {
