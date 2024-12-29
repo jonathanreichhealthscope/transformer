@@ -135,9 +135,9 @@ Matrix Transformer::forward(
     Matrix embeddings = token_embedding->forward(input_tokens);
     
     // Add positional encodings
-    Matrix position_ids(1, input_tokens.size());
+    Matrix position_ids(input_tokens.size(), 1);
     for (size_t i = 0; i < input_tokens.size(); ++i) {
-        position_ids(0, i) = static_cast<float>(i);
+        position_ids(i, 0) = static_cast<float>(i);
     }
     embeddings += pos_encoding->forward(position_ids);
     
@@ -505,9 +505,9 @@ Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_
     Matrix embeddings = token_embedding->forward(input_tokens);
     
     // Add positional encodings
-    Matrix position_ids(1, input_tokens.size());
+    Matrix position_ids(input_tokens.size(), 1);
     for (size_t i = 0; i < input_tokens.size(); ++i) {
-        position_ids(0, i) = static_cast<float>(i);
+        position_ids(i, 0) = static_cast<float>(i);
     }
     embeddings += pos_encoding->forward(position_ids);
     
