@@ -72,4 +72,27 @@ Matrix matmul(const Matrix& a, const Matrix& b) {
         }
     }
     return result;
+}
+
+Matrix& Matrix::operator*=(float scalar) {
+    for (float& val : data_) {
+        val *= scalar;
+    }
+    return *this;
+}
+
+void Matrix::save(std::ostream& os) const {
+    os.write(reinterpret_cast<const char*>(&rows_), sizeof(rows_));
+    os.write(reinterpret_cast<const char*>(&cols_), sizeof(cols_));
+    os.write(reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(float));
+}
+
+Matrix Matrix::load(std::istream& is) {
+    size_t rows, cols;
+    is.read(reinterpret_cast<char*>(&rows), sizeof(rows));
+    is.read(reinterpret_cast<char*>(&cols), sizeof(cols));
+    
+    Matrix result(rows, cols);
+    is.read(reinterpret_cast<char*>(result.data_.data()), result.data_.size() * sizeof(float));
+    return result;
 } 

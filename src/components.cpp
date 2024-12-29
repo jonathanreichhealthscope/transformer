@@ -38,5 +38,3 @@ const float& Matrix::at(size_t row, size_t col) const {
     }
     return (*this)(row, col);
 }
-
-// ... rest of the implementations from your previous code ... 

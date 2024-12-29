@@ -63,6 +63,19 @@ public:
     // Add data accessors
     float* data() { return data_.data(); }
     const float* data() const { return data_.data(); }
+
+    void save(std::ostream& os) const {
+        os.write(reinterpret_cast<const char*>(&size_), sizeof(size_));
+        os.write(reinterpret_cast<const char*>(data_.data()), data_.size() * sizeof(float));
+    }
+
+    static Vector load(std::istream& is) {
+        size_t size;
+        is.read(reinterpret_cast<char*>(&size), sizeof(size));
+        Vector result(size);
+        is.read(reinterpret_cast<char*>(result.data_.data()), size * sizeof(float));
+        return result;
+    }
 };
 
 // Vector operations

@@ -157,4 +157,64 @@ std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is) {
     attention->output_proj = Matrix::load(is);
     
     return attention;
+}
+
+MultiHeadAttention::MultiHeadAttention(
+    size_t hidden_size,
+    size_t num_heads,
+    size_t head_dim,
+    float dropout_prob,
+    bool use_flash,
+    bool use_rope,
+    bool use_sliding_window,
+    size_t window_size,
+    bool use_gqa,
+    size_t num_kv_heads
+) : num_heads(num_heads),
+    head_dim(head_dim),
+    use_rope(use_rope),
+    use_flash(use_flash),
+    use_sliding_window(use_sliding_window),
+    window_size(window_size)
+{
+    // Initialize projection matrices
+    query_proj = Matrix(hidden_size, num_heads * head_dim);
+    key_proj = Matrix(hidden_size, num_heads * head_dim);
+    value_proj = Matrix(hidden_size, num_heads * head_dim);
+    output_proj = Matrix(num_heads * head_dim, hidden_size);
+    
+    // Initialize RoPE buffers if needed
+    if (use_rope) {
+        cos_cached = Matrix(window_size, head_dim / 2);
+        sin_cached = Matrix(window_size, head_dim / 2);
+        // Initialize RoPE angle cache
+        for (size_t pos = 0; pos < window_size; ++pos) {
+            for (size_t i = 0; i < head_dim / 2; ++i) {
+                float theta = pos / std::pow(10000.0f, (2.0f * i) / head_dim);
+                cos_cached(pos, i) = std::cos(theta);
+                sin_cached(pos, i) = std::sin(theta);
+            }
+        }
+    }
+}
+
+Matrix MultiHeadAttention::standard_attention(
+    const Matrix& Q, const Matrix& K, const Matrix& V,
+    const AttentionMask& mask) const 
+{
+    Matrix scores = matmul(Q, K.transpose());
+    scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
+    
+    if (!mask.mask.empty()) {
+        for (size_t i = 0; i < scores.rows(); ++i) {
+            for (size_t j = 0; j < scores.cols(); ++j) {
+                if (mask.mask(i, j) == 0.0f) {
+                    scores(i, j) = -std::numeric_limits<float>::infinity();
+                }
+            }
+        }
+    }
+    
+    scores.apply_softmax();
+    return matmul(scores, V);
 } 
