@@ -59,6 +59,16 @@ public:
 
   void save(std::ostream &os) const;
   static Vector load(std::istream &is);
+
+  void randomize(float min_val, float max_val) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dis(min_val, max_val);
+
+    for (auto &val : data_) {
+      val = dis(gen);
+    }
+  }
 };
 
 // Vector operations
@@ -121,6 +131,28 @@ public:
   // Serialization
   void save(std::ostream &os) const;
   static Matrix load(std::istream &is);
+
+  void randomize(float min_val, float max_val) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dis(min_val, max_val);
+
+    for (auto &val : data_) {
+      val = dis(gen);
+    }
+  }
+
+  Vector row_sum() const {
+    Vector result(rows_);
+    for (size_t i = 0; i < rows_; ++i) {
+      float sum = 0.0f;
+      for (size_t j = 0; j < cols_; ++j) {
+        sum += (*this)(i, j);
+      }
+      result[i] = sum;
+    }
+    return result;
+  }
 };
 
 // Non-member operators

@@ -17,7 +17,7 @@ endif()
 # Include FetchContent for downloading dependencies
 include(FetchContent)
 
-# Find CUDA Toolkit
+# Find required packages
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP)
 
@@ -59,8 +59,24 @@ set(UTIL_SOURCES
     src/memory_pool.cpp
     src/quantization.cpp
     src/serialization.cpp
-    src/cuda_manager.cpp
     src/optimizer.cpp
+)
+
+# Advanced attention mechanisms
+set(ATTENTION_SOURCES
+    src/attention/block_sparse.cpp
+    src/attention/advanced_attention.cpp
+)
+
+# Language model components
+set(LM_SOURCES
+    src/lm_head.cpp
+    src/vocabulary.cpp
+)
+
+# Optimization components
+set(OPTIMIZER_SOURCES
+    src/optimizer/sam.cpp
 )
 
 # CUDA kernels
@@ -68,19 +84,17 @@ set(CUDA_SOURCES
     src/cuda/cuda_kernels.cu
     src/cuda/quantization_kernels.cu
     src/cuda/layernorm_kernels.cu
+    src/cuda/attention_kernels.cu
 )
-
-# Set CUDA flags
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_60")
-
-# Set CUDA specific properties
-set_source_files_properties(${CUDA_SOURCES} PROPERTIES LANGUAGE CUDA)
 
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}
     ${NN_SOURCES}
     ${UTIL_SOURCES}
+    ${ATTENTION_SOURCES}
+    ${LM_SOURCES}
+    ${OPTIMIZER_SOURCES}
     ${CUDA_SOURCES}
 )
 
@@ -135,13 +149,11 @@ install(TARGETS transformer transformer_lib
 
 install(DIRECTORY include/
     DESTINATION include
-    FILES_MATCHING PATTERN "*.hpp"
+    FILES_MATCHING PATTERN "*.hpp" PATTERN "*.cuh"
 )
 
-# Find tcmalloc library
+# Optional dependencies
 find_library(TCMALLOC_LIB tcmalloc)
-
-# Check if the library was found
 if(TCMALLOC_LIB)
     message(STATUS "tcmalloc found: ${TCMALLOC_LIB}")
     target_link_libraries(transformer_lib PUBLIC ${TCMALLOC_LIB})

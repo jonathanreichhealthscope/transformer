@@ -50,26 +50,46 @@ Matrix Matrix::transpose() const {
   return result;
 }
 
-Matrix operator+(const Matrix &a, const Matrix &b) {
-  Matrix result = a;
-  result += b;
+Matrix operator*(const Matrix &m, float scalar) {
+  Matrix result(m.rows(), m.cols());
+  for (size_t i = 0; i < m.rows(); ++i) {
+    for (size_t j = 0; j < m.cols(); ++j) {
+      result(i, j) = m(i, j) * scalar;
+    }
+  }
   return result;
 }
 
+Matrix operator*(float scalar, const Matrix &m) { return m * scalar; }
+
+Matrix operator+(const Matrix &a, const Matrix &b) {
+  if (a.rows() != b.rows() || a.cols() != b.cols()) {
+    throw std::runtime_error("Matrix dimensions don't match for addition");
+  }
+  Matrix result(a.rows(), a.cols());
+  for (size_t i = 0; i < a.rows(); ++i) {
+    for (size_t j = 0; j < a.cols(); ++j) {
+      result(i, j) = a(i, j) + b(i, j);
+    }
+  }
+  return result;
+}
+
+Matrix operator-(const Matrix &a, const Matrix &b) { return a + (b * -1.0f); }
+
+Matrix operator/(const Matrix &m, float scalar) { return m * (1.0f / scalar); }
+
 Matrix matmul(const Matrix &a, const Matrix &b) {
   if (a.cols() != b.rows()) {
-    throw std::invalid_argument(
+    throw std::runtime_error(
         "Matrix dimensions don't match for multiplication");
   }
-
   Matrix result(a.rows(), b.cols(), 0.0f);
   for (size_t i = 0; i < a.rows(); ++i) {
     for (size_t j = 0; j < b.cols(); ++j) {
-      float sum = 0.0f;
       for (size_t k = 0; k < a.cols(); ++k) {
-        sum += a(i, k) * b(k, j);
+        result(i, j) += a(i, k) * b(k, j);
       }
-      result(i, j) = sum;
     }
   }
   return result;

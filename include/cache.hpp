@@ -1,12 +1,11 @@
 #pragma once
 #include "components.hpp"
+#include "utils/cache_types.hpp"
 #include <algorithm>
 #include <chrono>
 #include <optional>
 #include <unordered_map>
 #include <vector>
-
-enum class CacheReplacementPolicy { LRU, LFU, ARC };
 
 template <typename T> class AdvancedCache {
 private:

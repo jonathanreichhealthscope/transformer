@@ -1,15 +1,10 @@
 #pragma once
+#include "cache_types.hpp"
 #include <algorithm>
 #include <chrono>
 #include <list>
 #include <memory>
 #include <unordered_map>
-
-enum class CacheReplacementPolicy {
-  LRU,
-  LFU,
-  ARC // Adaptive Replacement Cache
-};
 
 template <typename T> class TensorCache {
 private:

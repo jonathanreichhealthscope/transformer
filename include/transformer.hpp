@@ -6,6 +6,7 @@
 #include "embeddings.hpp"
 #include "feed_forward.hpp"
 #include "layernorm.hpp"
+#include "lm_head.hpp"
 #include "tokenizer.hpp"
 #include <functional>
 #include <memory>
@@ -74,6 +75,7 @@ private:
   std::unique_ptr<TokenEmbedding> token_embedding;
   std::unique_ptr<PositionalEncoding> pos_encoding;
   std::unique_ptr<LayerNorm> final_ln;
+  std::unique_ptr<LanguageModelHead> lm_head;
   TransformerConfig config;
 
 #ifdef USE_CUDA
