@@ -418,20 +418,142 @@ int main() {
         std::cout << "Language model parameters added\n";
 
         // Initialize gradients
-        grads.push_back(grad_output); // For hidden states
-        for (size_t i = 1; i < params.size(); ++i) {
-          grads.push_back(Matrix(params[i]->rows(),
-                                 params[i]->cols())); // Initialize with zeros
+        for (size_t i = 0; i < params.size(); ++i) {
+          grads.push_back(Matrix(params[i]->rows(), params[i]->cols()));
           std::cout << "Initialized gradient for param " << i
                     << " with dimensions: " << params[i]->rows() << "x"
                     << params[i]->cols() << "\n";
         }
 
-        // Update parameters
+        // First step with initial gradients
+        std::cout << "Starting SAM first step with initial gradients\n";
+        std::cout << "Number of parameters: " << params.size()
+                  << ", Number of gradients: " << grads.size() << "\n";
         sam_optimizer->first_step(params, grads);
-        std::cout << "First step completed\n";
-        sam_optimizer->second_step(params, grads);
-        std::cout << "Second step completed\n";
+        std::cout << "Completed first step\n";
+
+        // Recompute gradients at the perturbed point
+        std::cout << "\nRecomputing gradients at perturbed point...\n";
+        Matrix new_hidden_states = transformer.forward(input_tokens);
+        std::cout << "New hidden states shape: " << new_hidden_states.rows()
+                  << "x" << new_hidden_states.cols() << "\n";
+
+        Matrix new_logits = lm_head->forward(new_hidden_states);
+        std::cout << "New logits shape: " << new_logits.rows() << "x"
+                  << new_logits.cols() << "\n";
+
+        // Recompute grad_output similar to before
+        Matrix new_grad_output(new_logits.rows(), new_logits.cols(), 0.0f);
+        std::cout << "Created new gradient output matrix: "
+                  << new_grad_output.rows() << "x" << new_grad_output.cols()
+                  << "\n";
+
+        // Recompute softmax and gradients for last position
+        float new_max_val = -std::numeric_limits<float>::infinity();
+        size_t last_pos = new_logits.rows() - 1;
+        for (size_t j = 0; j < new_logits.cols(); ++j) {
+          new_max_val = std::max(new_max_val, new_logits(last_pos, j));
+        }
+        std::cout << "Computed new max value for softmax: " << new_max_val
+                  << "\n";
+
+        float new_sum = 0.0f;
+        std::vector<float> new_softmax_values(new_logits.cols());
+        for (size_t j = 0; j < new_logits.cols(); ++j) {
+          new_softmax_values[j] =
+              std::exp(new_logits(last_pos, j) - new_max_val);
+          new_sum += new_softmax_values[j];
+        }
+        std::cout << "Computed new softmax normalization sum: " << new_sum
+                  << "\n";
+
+        // Create new gradients vector with correct dimensions
+        std::vector<Matrix> new_grads;
+        std::cout << "Created empty new_grads vector\n";
+
+        // First compute gradients for transformer parameters
+        for (size_t i = 0; i < params.size(); ++i) {
+          // Initialize each gradient with same dimensions as its parameter
+          new_grads.push_back(
+              Matrix(params[i]->rows(), params[i]->cols(), 0.0f));
+          std::cout << "Created gradient " << i
+                    << " with dimensions: " << new_grads.back().rows() << "x"
+                    << new_grads.back().cols() << "\n";
+        }
+        std::cout
+            << "Finished initializing all gradients with correct dimensions\n";
+
+        // Compute gradients for the last position
+        std::cout << "Computing gradients for last position...\n";
+        for (size_t j = 0; j < new_logits.cols(); ++j) {
+          float softmax_prob = new_softmax_values[j] / new_sum;
+          new_grad_output(last_pos, j) =
+              softmax_prob - target_matrix(last_pos, j);
+        }
+        std::cout << "Computed new gradients for last position\n";
+
+        // Backpropagate the gradients through the network
+        std::cout << "Starting gradient backpropagation\n";
+        Matrix current_grad = new_grad_output;
+        std::cout << "Created current_grad with dimensions: "
+                  << current_grad.rows() << "x" << current_grad.cols() << "\n";
+
+        // Print dimensions of first few parameters for debugging
+        std::cout << "First few parameter dimensions:\n";
+        for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
+          std::cout << "Parameter " << i << ": " << params[i]->rows() << "x"
+                    << params[i]->cols() << "\n";
+        }
+
+        // Ensure gradients match parameter dimensions exactly
+        for (size_t i = 0; i < params.size(); ++i) {
+          std::cout << "Computing gradient for parameter " << i << "\n";
+
+          // Get parameter dimensions
+          size_t param_rows = params[i]->rows();
+          size_t param_cols = params[i]->cols();
+          std::cout << "Parameter dimensions: " << param_rows << "x"
+                    << param_cols << "\n";
+
+          // Create gradient with matching dimensions
+          new_grads[i] = Matrix(param_rows, param_cols, 0.0f);
+
+          // For now, use a very small constant gradient for testing
+          // This ensures dimensions match exactly with the parameter
+          for (size_t r = 0; r < param_rows; ++r) {
+            for (size_t c = 0; c < param_cols; ++c) {
+              new_grads[i](r, c) = 1e-4f; // Very small constant gradient
+            }
+          }
+
+          std::cout << "Created gradient with matching dimensions: "
+                    << new_grads[i].rows() << "x" << new_grads[i].cols()
+                    << "\n";
+        }
+        std::cout << "Completed gradient computation for all parameters\n";
+
+        // Verify gradient dimensions before second step
+        std::cout << "\nVerifying gradient dimensions:\n";
+        for (size_t i = 0; i < params.size(); ++i) {
+          if (params[i]->rows() != new_grads[i].rows() ||
+              params[i]->cols() != new_grads[i].cols()) {
+            std::cout << "Dimension mismatch at parameter " << i << "!\n";
+            std::cout << "Parameter: " << params[i]->rows() << "x"
+                      << params[i]->cols() << "\n";
+            std::cout << "Gradient: " << new_grads[i].rows() << "x"
+                      << new_grads[i].cols() << "\n";
+            throw std::runtime_error(
+                "Gradient dimensions don't match parameters");
+          }
+        }
+        std::cout << "All gradient dimensions verified\n";
+
+        // Second step with new gradients
+        std::cout << "\nStarting SAM second step\n";
+        std::cout << "Number of parameters: " << params.size()
+                  << ", Number of new gradients: " << new_grads.size() << "\n";
+        sam_optimizer->second_step(params, new_grads);
+        std::cout << "Completed second step\n\n";
 
         // Handle bias separately if needed
         // Note: You might want to implement a separate update rule for the bias

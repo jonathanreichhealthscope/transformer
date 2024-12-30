@@ -1,6 +1,6 @@
 #pragma once
 #include "optimizer.hpp"
-#include <cmath>
+#include <memory>
 
 class SAM {
 private:
@@ -14,9 +14,11 @@ private:
 
 public:
   SAM(float rho_ = 0.05f, std::unique_ptr<Optimizer> optimizer = nullptr)
-      : rho(rho_), base_optimizer(std::move(optimizer)) {
-    if (!base_optimizer) {
-      base_optimizer = std::make_unique<AdaFactor>();
+      : rho(rho_) {
+    if (!optimizer) {
+      base_optimizer = std::make_unique<SGD>();
+    } else {
+      base_optimizer = std::move(optimizer);
     }
   }
 

@@ -31,13 +31,7 @@ void Optimizer::step() {
 }
 
 void Optimizer::zero_grad() {
-  for (auto &grad : gradients) {
-    for (size_t i = 0; i < grad.rows(); ++i) {
-      for (size_t j = 0; j < grad.cols(); ++j) {
-        grad(i, j) = 0.0f;
-      }
-    }
-  }
+  t = 0; // Reset timestep
 }
 
 void Optimizer::save(std::ostream &os) const {
