@@ -6,6 +6,7 @@
 #include "../include/transformer.hpp"
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
+#include "../include/logger.hpp"
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -262,7 +263,11 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
           {"Experts work in the", "lab"}};
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+  // Initialize logger
+  Logger& logger = Logger::getInstance();
+  logger.startLogging();
+
   try {
     // Configure the transformer
     TransformerConfig config;
@@ -599,5 +604,6 @@ int main() {
     return 1;
   }
 
+  logger.stopLogging();
   return 0;
 }

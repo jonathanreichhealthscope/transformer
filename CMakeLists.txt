@@ -39,6 +39,7 @@ set(CORE_SOURCES
     src/components.cpp
     src/matrix_ops.cpp
     src/vector_ops.cpp
+    src/logger.cpp
 )
 
 # Neural network components
