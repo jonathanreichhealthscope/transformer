@@ -24,8 +24,8 @@ find_package(OpenMP)
 # Download and build sentencepiece
 FetchContent_Declare(
     sentencepiece
-    GIT_REPOSITORY https://github.com/google/sentencepiece.git
-    GIT_TAG v0.1.97
+    URL https://github.com/google/sentencepiece/archive/refs/tags/v0.1.97.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(sentencepiece)
 
@@ -33,6 +33,7 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(
     json
     URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(json)
 
