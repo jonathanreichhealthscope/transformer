@@ -34,6 +34,18 @@ public:
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
                     size_t num_heads = 12);
+
+  friend bool operator!=(const TransformerConfig& lhs, const TransformerConfig& rhs) {
+    return lhs.vocab_size != rhs.vocab_size ||
+           lhs.max_seq_length != rhs.max_seq_length ||
+           lhs.hidden_size != rhs.hidden_size ||
+           lhs.num_layers != rhs.num_layers ||
+           lhs.num_heads != rhs.num_heads ||
+           lhs.use_flash_attention != rhs.use_flash_attention ||
+           lhs.use_rope != rhs.use_rope ||
+           lhs.use_sliding_window != rhs.use_sliding_window ||
+           lhs.window_size != rhs.window_size;
+  }
 };
 
 class TransformerLayer {
@@ -51,8 +63,21 @@ public:
   explicit TransformerLayer(const TransformerConfig &config);
   Matrix forward(const Matrix &x, const AttentionMask &mask = {});
   void clear_cache();
-  void save(std::ostream &os) const;
-  static std::unique_ptr<TransformerLayer> load(std::istream &is);
+  void save(std::ostream &os) const {
+    self_attention->save(os);
+    attention_ln->save(os);
+    feed_forward->save(os);
+    ffn_ln->save(os);
+  }
+  static std::unique_ptr<TransformerLayer> create(const TransformerConfig& config) {
+    return std::make_unique<TransformerLayer>(config);
+  }
+  void load(std::istream& is) {
+    self_attention->load(is);
+    attention_ln->load(is);
+    feed_forward->load(is);
+    ffn_ln->load(is);
+  }
   Matrix backward(const Matrix &grad, const Matrix &input) const;
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   std::vector<std::reference_wrapper<Matrix>> get_weights() {
@@ -119,4 +144,8 @@ public:
 
   friend class TransformerTrainer;
   friend class QuantizationAwareTraining;
+
+  const TransformerConfig& getConfig() const { return config; }
+  const std::vector<std::unique_ptr<TransformerLayer>>& getLayers() const { return layers; }
+  std::vector<std::unique_ptr<TransformerLayer>>& getLayers() { return layers; }
 };

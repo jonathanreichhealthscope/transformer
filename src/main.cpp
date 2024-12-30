@@ -7,6 +7,7 @@
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
 #include "../include/logger.hpp"
+#include "../include/model_saver.hpp"
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -318,6 +319,12 @@ int main(int argc, char* argv[]) {
     // Training parameters
     const size_t num_epochs = 10;
     const float learning_rate = 0.001f;
+    const size_t checkpoint_frequency = 2;  // Save checkpoint every 2 epochs
+
+    // Initialize model saver
+    ModelSaver model_saver;
+    std::string save_directory = "models";
+    std::string model_name = "transformer_model";
 
     // Training loop
     Matrix last_hidden_states; // Add this to store the last hidden states
@@ -569,6 +576,14 @@ int main(int argc, char* argv[]) {
       std::cout << "Epoch " << epoch + 1 << "/" << num_epochs
                 << ", Loss: " << epoch_loss << "\n";
 
+      // Save checkpoint
+      if ((epoch + 1) % checkpoint_frequency == 0) {
+        if (!model_saver.saveCheckpoint(transformer, save_directory, model_name, epoch + 1, epoch_loss)) {
+          logger.log("Failed to save checkpoint", true);
+          return 1;
+        }
+      }
+
       // Test prediction on a sample input
       if ((epoch + 1) % 2 == 0) {
         std::string test_input = "I go to";
@@ -598,6 +613,12 @@ int main(int argc, char* argv[]) {
     qat.calibrate(transformer, calibration_data);
     Matrix quantized = qat.quantize_weights(last_hidden_states, "layer_0");
     print_matrix(quantized, "Quantized hidden states");
+
+    // Save the final model after training
+    if (!model_saver.saveModel(transformer, save_directory, model_name)) {
+        logger.log("Failed to save model", true);
+        return 1;
+    }
 
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;

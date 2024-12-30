@@ -29,6 +29,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sentencepiece)
 
+# Download and build nlohmann/json
+FetchContent_Declare(
+    json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+)
+FetchContent_MakeAvailable(json)
+
 # Include directories
 include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -40,6 +47,7 @@ set(CORE_SOURCES
     src/matrix_ops.cpp
     src/vector_ops.cpp
     src/logger.cpp
+    src/model_saver.cpp
 )
 
 # Neural network components
@@ -115,6 +123,7 @@ target_link_libraries(transformer_lib
     CUDA::cudart
     CUDA::cublas
     CUDA::curand
+    nlohmann_json::nlohmann_json
 )
 
 target_link_libraries(transformer

@@ -55,23 +55,6 @@ Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
 
 void TransformerLayer::clear_cache() { kv_cache.clear(); }
 
-void TransformerLayer::save(std::ostream &os) const {
-  self_attention->save(os);
-  attention_ln->save(os);
-  feed_forward->save(os);
-  ffn_ln->save(os);
-}
-
-std::unique_ptr<TransformerLayer> TransformerLayer::load(std::istream &is) {
-  auto config = TransformerConfig(); // You'll need to load this or pass it
-  auto layer = std::make_unique<TransformerLayer>(config);
-  layer->self_attention = MultiHeadAttention::load(is);
-  layer->attention_ln = LayerNorm::load(is);
-  layer->feed_forward = FeedForward::load(is);
-  layer->ffn_ln = LayerNorm::load(is);
-  return layer;
-}
-
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
   // Initialize token embedding
@@ -276,17 +259,19 @@ Transformer Transformer::load_model(const std::string &path) {
   Transformer transformer(config);
 
   // Load embeddings
-  transformer.token_embedding = std::move(TokenEmbedding::load(is));
-  transformer.pos_encoding = std::move(PositionalEncoding::load(is));
+  transformer.token_embedding = TokenEmbedding::load(is);
+  transformer.pos_encoding = PositionalEncoding::load(is);
 
   // Load layers
   transformer.layers.clear();
   for (size_t i = 0; i < config.num_layers; ++i) {
-    transformer.layers.push_back(TransformerLayer::load(is));
+    auto layer = TransformerLayer::create(config);
+    layer->load(is);
+    transformer.layers.push_back(std::move(layer));
   }
 
   // Load final layer norm
-  transformer.final_ln = std::move(LayerNorm::load(is));
+  transformer.final_ln = LayerNorm::load(is);
 
   return transformer;
 }
@@ -437,7 +422,9 @@ void Transformer::load(std::istream &is) {
   // Load layers
   layers.clear();
   for (size_t i = 0; i < config.num_layers; ++i) {
-    layers.push_back(TransformerLayer::load(is));
+    auto layer = TransformerLayer::create(config);
+    layer->load(is);
+    layers.push_back(std::move(layer));
   }
 
   // Load final layer norm
