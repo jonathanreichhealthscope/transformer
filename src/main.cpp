@@ -1,14 +1,15 @@
 #include "../include/attention/advanced_attention.hpp"
 #include "../include/lm_head.hpp"
+#include "../include/logger.hpp"
+#include "../include/model_saver.hpp"
 #include "../include/optimizer/sam.hpp"
 #include "../include/quantization.hpp"
 #include "../include/tokenizer.hpp"
 #include "../include/transformer.hpp"
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
-#include "../include/logger.hpp"
-#include "../include/model_saver.hpp"
 #include <chrono>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -264,9 +265,9 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
           {"Experts work in the", "lab"}};
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   // Initialize logger
-  Logger& logger = Logger::getInstance();
+  Logger &logger = Logger::getInstance();
   logger.startLogging();
 
   try {
@@ -319,7 +320,7 @@ int main(int argc, char* argv[]) {
     // Training parameters
     const size_t num_epochs = 10;
     const float learning_rate = 0.001f;
-    const size_t checkpoint_frequency = 2;  // Save checkpoint every 2 epochs
+    const size_t checkpoint_frequency = 2; // Save checkpoint every 2 epochs
 
     // Initialize model saver
     ModelSaver model_saver;
@@ -567,8 +568,46 @@ int main(int argc, char* argv[]) {
         sam_optimizer->second_step(params, new_grads);
         std::cout << "Completed second step\n\n";
 
-        // Handle bias separately if needed
-        // Note: You might want to implement a separate update rule for the bias
+        // Handle bias updates separately
+        std::vector<std::reference_wrapper<FloatVector>> biases;
+        std::vector<FloatVector> bias_grads;
+
+        // Collect biases from transformer layers
+        for (const auto &layer : transformer.getLayers()) {
+          // Collect attention biases
+          auto *attn = layer->getAttention();
+          biases.push_back(std::ref(attn->getQueryBias()));
+          biases.push_back(std::ref(attn->getKeyBias()));
+          biases.push_back(std::ref(attn->getValueBias()));
+          biases.push_back(std::ref(attn->getOutputBias()));
+
+          // Collect feed forward biases
+          auto *ff = layer->getFeedForward();
+          biases.push_back(std::ref(ff->getBias1()));
+          biases.push_back(std::ref(ff->getBias2()));
+        }
+
+        // Compute bias gradients
+        bias_grads.resize(biases.size());
+        for (size_t i = 0; i < biases.size(); ++i) {
+          const FloatVector &bias = biases[i].get();
+          FloatVector &grad = bias_grads[i];
+          grad.resize(bias.size());
+
+          // Compute gradients for biases (simplified)
+          for (size_t j = 0; j < bias.size(); ++j) {
+            grad[j] = 0.0001f; // Small constant gradient for testing
+          }
+        }
+
+        // Update biases
+        try {
+          sam_optimizer->update_bias(biases, bias_grads);
+          std::cout << "Completed bias updates\n";
+        } catch (const std::exception &e) {
+          std::cerr << "Error updating biases: " << e.what() << std::endl;
+          throw;
+        }
       }
 
       // Print epoch statistics
@@ -578,7 +617,8 @@ int main(int argc, char* argv[]) {
 
       // Save checkpoint
       if ((epoch + 1) % checkpoint_frequency == 0) {
-        if (!model_saver.saveCheckpoint(transformer, save_directory, model_name, epoch + 1, epoch_loss)) {
+        if (!model_saver.saveCheckpoint(transformer, save_directory, model_name,
+                                        epoch + 1, epoch_loss)) {
           logger.log("Failed to save checkpoint", true);
           return 1;
         }
@@ -597,6 +637,24 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\nTraining completed!\n";
 
+    // Create directories if they don't exist
+    std::filesystem::create_directories(save_directory);
+
+    // Save the trained model
+    std::cout << "\nSaving final model to " << save_directory << "/"
+              << model_name << "...\n";
+    bool save_success =
+        model_saver.saveModel(transformer, save_directory, model_name);
+    if (save_success) {
+      logger.log("Successfully saved model to " + save_directory + "/" +
+                 model_name);
+      std::cout << "Model saved successfully!\n";
+    } else {
+      logger.log("Failed to save model to " + save_directory + "/" + model_name,
+                 true);
+      return 1;
+    }
+
     // Demonstrate multi-GPU capability
     std::cout << "\nTesting multi-GPU processing...\n";
     MultiGPUManager gpu_manager;
@@ -613,12 +671,6 @@ int main(int argc, char* argv[]) {
     qat.calibrate(transformer, calibration_data);
     Matrix quantized = qat.quantize_weights(last_hidden_states, "layer_0");
     print_matrix(quantized, "Quantized hidden states");
-
-    // Save the final model after training
-    if (!model_saver.saveModel(transformer, save_directory, model_name)) {
-        logger.log("Failed to save model", true);
-        return 1;
-    }
 
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;

@@ -35,12 +35,12 @@ public:
                     size_t hidden_size = 768, size_t num_layers = 12,
                     size_t num_heads = 12);
 
-  friend bool operator!=(const TransformerConfig& lhs, const TransformerConfig& rhs) {
+  friend bool operator!=(const TransformerConfig &lhs,
+                         const TransformerConfig &rhs) {
     return lhs.vocab_size != rhs.vocab_size ||
            lhs.max_seq_length != rhs.max_seq_length ||
            lhs.hidden_size != rhs.hidden_size ||
-           lhs.num_layers != rhs.num_layers ||
-           lhs.num_heads != rhs.num_heads ||
+           lhs.num_layers != rhs.num_layers || lhs.num_heads != rhs.num_heads ||
            lhs.use_flash_attention != rhs.use_flash_attention ||
            lhs.use_rope != rhs.use_rope ||
            lhs.use_sliding_window != rhs.use_sliding_window ||
@@ -69,10 +69,11 @@ public:
     feed_forward->save(os);
     ffn_ln->save(os);
   }
-  static std::unique_ptr<TransformerLayer> create(const TransformerConfig& config) {
+  static std::unique_ptr<TransformerLayer>
+  create(const TransformerConfig &config) {
     return std::make_unique<TransformerLayer>(config);
   }
-  void load(std::istream& is) {
+  void load(std::istream &is) {
     self_attention->load(is);
     attention_ln->load(is);
     feed_forward->load(is);
@@ -92,6 +93,9 @@ public:
     return weights;
   }
   friend class Transformer;
+
+  MultiHeadAttention *getAttention() { return self_attention.get(); }
+  FeedForward *getFeedForward() { return feed_forward.get(); }
 };
 
 class Transformer {
@@ -145,7 +149,9 @@ public:
   friend class TransformerTrainer;
   friend class QuantizationAwareTraining;
 
-  const TransformerConfig& getConfig() const { return config; }
-  const std::vector<std::unique_ptr<TransformerLayer>>& getLayers() const { return layers; }
-  std::vector<std::unique_ptr<TransformerLayer>>& getLayers() { return layers; }
+  const TransformerConfig &getConfig() const { return config; }
+  const std::vector<std::unique_ptr<TransformerLayer>> &getLayers() const {
+    return layers;
+  }
+  std::vector<std::unique_ptr<TransformerLayer>> &getLayers() { return layers; }
 };

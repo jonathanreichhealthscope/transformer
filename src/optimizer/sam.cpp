@@ -114,3 +114,34 @@ void SAM::second_step(std::vector<Matrix *> &params,
     std::cout << "SAM second step: Parameters successfully updated\n";
   }
 }
+
+void SAM::update_bias(std::vector<std::reference_wrapper<FloatVector>> &biases,
+                      const std::vector<FloatVector> &bias_grads,
+                      float learning_rate) {
+  if (biases.size() != bias_grads.size()) {
+    throw std::runtime_error(
+        "Number of biases doesn't match number of gradients");
+  }
+
+  // Store previous biases
+  previous_biases.clear();
+  previous_biases.reserve(biases.size());
+  for (const auto &bias : biases) {
+    previous_biases.push_back(bias.get());
+  }
+
+  // Update biases using gradient descent
+  for (size_t i = 0; i < biases.size(); ++i) {
+    FloatVector &bias = biases[i].get();
+    const FloatVector &grad = bias_grads[i];
+
+    if (bias.size() != grad.size()) {
+      throw std::runtime_error("Bias and gradient dimensions don't match");
+    }
+
+    // Simple gradient descent update for biases
+    for (size_t j = 0; j < bias.size(); ++j) {
+      bias[j] -= learning_rate * grad[j];
+    }
+  }
+}

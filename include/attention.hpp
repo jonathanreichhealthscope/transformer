@@ -18,6 +18,10 @@ private:
   Matrix key_proj;
   Matrix value_proj;
   Matrix output_proj;
+  FloatVector query_bias;
+  FloatVector key_bias;
+  FloatVector value_bias;
+  FloatVector output_bias;
   size_t num_heads;
   size_t head_dim;
   bool use_rope;
@@ -58,6 +62,11 @@ public:
   }
 
   friend class TransformerLayer;
+
+  FloatVector &getQueryBias() { return query_bias; }
+  FloatVector &getKeyBias() { return key_bias; }
+  FloatVector &getValueBias() { return value_bias; }
+  FloatVector &getOutputBias() { return output_bias; }
 };
 
 // Add sliding window attention

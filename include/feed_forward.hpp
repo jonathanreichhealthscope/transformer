@@ -7,7 +7,7 @@
 class FeedForward {
 private:
   Matrix w1, w2;
-  Vector b1, b2;
+  FloatVector b1, b2;
   float dropout_prob;
 
 public:
@@ -26,4 +26,7 @@ public:
   }
 
   friend class TransformerLayer;
+
+  FloatVector &getBias1() { return b1; }
+  FloatVector &getBias2() { return b2; }
 };

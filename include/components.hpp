@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
+using FloatVector = std::vector<float>;
+
 class Vector {
 private:
   std::vector<float> data_;
