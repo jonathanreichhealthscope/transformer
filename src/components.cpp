@@ -8,6 +8,11 @@ Matrix::Matrix() : rows_(0), cols_(0) {}
 Matrix::Matrix(size_t rows, size_t cols, float init_val)
     : data_(rows * cols, init_val), rows_(rows), cols_(cols) {}
 
+Matrix::Matrix(size_t rows, size_t cols, float* external_data)
+    : rows_(rows), cols_(cols) {
+    data_.assign(external_data, external_data + (rows * cols));
+}
+
 // Basic operations
 void Matrix::resize(size_t new_rows, size_t new_cols) {
     if (new_rows == rows_ && new_cols == cols_) {

@@ -20,7 +20,7 @@ public:
           vocab_size_(vocab_size),
           embedding_dim_(embedding_dim) {}
 
-    // CUDA implementations
+    // Core functionality
     void forward_cuda(const std::vector<int>& tokens, Matrix& output);
     Matrix project_to_vocab_cuda(const Matrix& input);
 
@@ -29,6 +29,10 @@ public:
     Matrix& get_embedding_table() { return embedding_table_; }
     size_t get_vocab_size() const { return vocab_size_; }
     size_t get_embedding_dim() const { return embedding_dim_; }
+
+    // Serialization
+    void save(std::ostream& os) const;
+    static std::unique_ptr<TokenEmbedding> load(std::istream& is);
 };
 
 class PositionalEncoding {

@@ -1,4 +1,4 @@
-#include "embeddings.hpp"
+#include "../include/embeddings.hpp"
 #include <cmath>
 #include <random>
 
@@ -107,4 +107,27 @@ std::unique_ptr<PositionalEncoding> PositionalEncoding::load(std::istream &is) {
   is.read(reinterpret_cast<char *>(pos_encoding->encoding_matrix.data()),
           max_seq_length * hidden_size * sizeof(float));
   return pos_encoding;
+}
+
+void TokenEmbedding::forward_cuda(const std::vector<int>& tokens, Matrix& output) {
+    output.resize(tokens.size(), hidden_size_);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        for (size_t j = 0; j < hidden_size_; ++j) {
+            output(i, j) = weights(tokens[i], j);
+        }
+    }
+}
+
+Matrix TokenEmbedding::project_to_vocab_cuda(const Matrix& input) {
+    Matrix output(input.rows(), vocab_size_);
+    for (size_t i = 0; i < input.rows(); ++i) {
+        for (size_t j = 0; j < vocab_size_; ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < hidden_size_; ++k) {
+                sum += input(i, k) * weights(j, k);
+            }
+            output(i, j) = sum;
+        }
+    }
+    return output;
 }

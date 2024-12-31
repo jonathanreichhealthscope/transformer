@@ -19,6 +19,7 @@ public:
     // Constructors
     Matrix();
     Matrix(size_t rows, size_t cols, float init_val = 0.0f);
+    Matrix(size_t rows, size_t cols, float* external_data);
 
     // Size-related methods
     size_t rows() const { return rows_; }
