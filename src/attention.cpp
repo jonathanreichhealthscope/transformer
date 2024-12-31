@@ -11,8 +11,6 @@ Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
     for (size_t j = 0; j < dim; j += 2) {
       // Add bounds check
       if (j / 2 >= cos_cached.cols()) {
-        std::cout << "Would exceed cos_cached bounds! Skipping rest of row."
-                  << std::endl;
         break;
       }
 
