@@ -37,13 +37,10 @@ public:
   const float &operator()(size_t row, size_t col) const;
   float &at(size_t row, size_t col);
   const float &at(size_t row, size_t col) const;
-  // const std::tuple<size_t, size_t> &operator(&Matrix) { return this->shape_;
-  // }
 
   // Data access
   float *data() { return data_.data(); }
   const float *data() const { return data_.data(); }
-  // const std::tuple<size_t, size_t> &operator() { return this->shape_; }
 
   // Additional operations from components.cpp
   Vector row(size_t row) const;
