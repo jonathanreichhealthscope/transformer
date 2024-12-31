@@ -46,7 +46,6 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config)
 }
 
 Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
-  std::cout << "Forwarding through TransformerLayer" << std::endl;
   // Pre-layer normalization
   Matrix normalized = attention_ln->forward(x);
   // Self-attention with residual connection
@@ -140,7 +139,7 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
   }
 
   // Forward pass through layers with gradient checkpointing
-  Matrix hidden_states = embeddings;
+  hidden_states = embeddings;
   for (size_t i = 0; i < layers.size(); ++i) {
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);
@@ -574,7 +573,7 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
   }
 
   // Forward pass through layers with gradient checkpointing
-  Matrix hidden_states = embeddings;
+  hidden_states = embeddings;
   for (size_t i = 0; i < layers.size(); ++i) {
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);
@@ -687,3 +686,30 @@ Transformer &Transformer::operator=(const Transformer &other) {
   }
   return *this;
 }
+
+void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens) {
+  // Backpropagate through final layer norm
+  Matrix grad = final_ln->backward(grad_output, hidden_states);
+  
+  // Backpropagate through transformer layers in reverse order
+  for (int i = layers.size() - 1; i >= 0; --i) {
+      // Get cached activation from gradient checkpoint
+      Matrix cached_activation = GradientCheckpoint::get_activation(i);
+      
+      // Backpropagate through layer
+      grad = layers[i]->backward(grad, cached_activation);
+  }
+  
+  // Backpropagate through position embeddings and token embeddings
+  Matrix position_ids(input_tokens.size(), 1);
+  for (size_t i = 0; i < input_tokens.size(); ++i) {
+      position_ids(i, 0) = static_cast<float>(i);
+  }
+  
+  // No need to backprop through positional encodings as they're fixed
+  // Just backprop through token embeddings
+  token_embedding->backward(grad, input_tokens);
+}
+
+// Add member to store last hidden states for backward pass
+Matrix hidden_states;

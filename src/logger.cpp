@@ -25,7 +25,7 @@ Logger &Logger::getInstance() {
 
 void Logger::startLogging() {
   // Open the file in truncation mode to clear previous contents
-  log_file.open("transformer_log.log", std::ios::out | std::ios::trunc);
+  log_file.open("transformer.log", std::ios::out | std::ios::trunc);
   if (!log_file.is_open()) {
     std::cerr << "Failed to open log file" << std::endl;
     return;

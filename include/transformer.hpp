@@ -155,6 +155,7 @@ private:
   std::unique_ptr<LanguageModelHead> lm_head;
   TransformerConfig config;
   bool cuda_initialized = false;
+  Matrix hidden_states;
 
   Matrix compute_loss_gradients(const Matrix &logits,
                                 const std::vector<int> &targets);
@@ -208,4 +209,6 @@ public:
   // Move constructor and assignment operator
   Transformer(Transformer &&other) noexcept = default;
   Transformer &operator=(Transformer &&other) noexcept = default;
+
+  void backward(const Matrix& grad_output, const std::vector<int>& input_tokens);
 };

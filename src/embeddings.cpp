@@ -50,6 +50,19 @@ std::unique_ptr<TokenEmbedding> TokenEmbedding::load(std::istream &is) {
   return embedding;
 }
 
+void TokenEmbedding::backward(const Matrix& grad_output, const std::vector<int>& input_tokens) {
+  // For each token in the input sequence
+  for (size_t i = 0; i < input_tokens.size(); i++) {
+    int token_id = input_tokens[i];
+    
+    // Update the embedding weights for this token
+    for (size_t j = 0; j < embedding_dim_; j++) {
+      // Accumulate gradients for the embedding weights
+      weights_(token_id, j) -= 0.01f * grad_output(i, j); // Simple SGD update
+    }
+  }
+}
+
 PositionalEncoding::PositionalEncoding(size_t max_seq_length,
                                        size_t hidden_size)
     : encoding_matrix_(max_seq_length, hidden_size),

@@ -86,11 +86,24 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
   return training_pairs;
 }
 
+Matrix create_target_distribution(const std::vector<int>& targets, size_t vocab_size) {
+    Matrix distribution(1, vocab_size, 0.0f);
+    for (int target : targets) {
+        distribution(0, target) = 1.0f;
+    }
+    return distribution;
+}
+
+Matrix compute_cross_entropy_gradient(const Matrix& logits, const Matrix& targets) {
+    Matrix softmax_output = logits;
+    softmax_output.apply_softmax();
+    return softmax_output - targets;
+}
+
 int main(int argc, char *argv[]) {
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
-  // logger.disableLogging();
 
   try {
     initialize_cuda(); // Initialize CUDA at program start
@@ -190,6 +203,14 @@ int main(int argc, char *argv[]) {
         Matrix logits = lm_head->forward(hidden_states);
         std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols()
                   << "\n";
+
+        // Compute proper loss and gradients
+        Matrix target_distribution = create_target_distribution(target_tokens, config.vocab_size);
+        Matrix loss_grad = compute_cross_entropy_gradient(logits, target_distribution);
+
+        // Backpropagate through the network
+        Matrix hidden_grad = lm_head->backward(loss_grad, hidden_states);
+        transformer.backward(hidden_grad, input_tokens);
 
         // Compute loss and gradients
         Matrix target_matrix(logits.rows(), logits.cols(), 0.0f);
