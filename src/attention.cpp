@@ -7,10 +7,21 @@ Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
   const size_t dim = x.cols();
   std::cout << "dim: " << dim << std::endl;
   std::cout << "x rows: " << x.rows() << std::endl;
+  std::cout << "cos_cached dimensions - rows: " << cos_cached.rows() << " cols: " << cos_cached.cols() << std::endl;
+  std::cout << "sin_cached dimensions - rows: " << sin_cached.rows() << " cols: " << sin_cached.cols() << std::endl;
+  
   // Apply rotary position embedding
   for (size_t i = 0; i < x.rows(); ++i) {
     for (size_t j = 0; j < dim; j += 2) {
       std::cout << "in inner loop for i: " << i << " j: " << j << " at position: " << position << std::endl;
+      std::cout << "attempting to access cos_cached at position: " << position << ", column: " << j/2 << std::endl;
+      
+      // Add bounds check
+      if (j/2 >= cos_cached.cols()) {
+          std::cout << "Would exceed cos_cached bounds! Skipping rest of row." << std::endl;
+          break;
+      }
+      
       float cos_theta = cos_cached(position, j / 2);
       std::cout << "passed cos_cached" << std::endl;
       float sin_theta = sin_cached(position, j / 2);
@@ -203,11 +214,16 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
 
   // Initialize RoPE buffers if needed
   if (use_rope) {
-    cos_cached = Matrix(window_size, head_dim / 2);
-    sin_cached = Matrix(window_size, head_dim / 2);
+    // Fix: Use ceiling division to ensure we have enough columns
+    size_t required_cols = (head_dim + 1) / 2;  // Ceiling division
+    cos_cached = Matrix(window_size, required_cols);
+    sin_cached = Matrix(window_size, required_cols);
+    
+    std::cout << "Initializing RoPE buffers with dimensions: " << window_size << "x" << required_cols << std::endl;
+    
     // Initialize RoPE angle cache
     for (size_t pos = 0; pos < window_size; ++pos) {
-      for (size_t i = 0; i < head_dim / 2; ++i) {
+      for (size_t i = 0; i < required_cols; ++i) {
         float theta = pos / std::pow(10000.0f, (2.0f * i) / head_dim);
         cos_cached(pos, i) = std::cos(theta);
         sin_cached(pos, i) = std::sin(theta);
