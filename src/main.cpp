@@ -8,6 +8,7 @@
 #include "../include/transformer.hpp"
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
+#include "../include/cuda/cuda_init.cuh"
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
