@@ -270,6 +270,7 @@ int main(int argc, char *argv[]) {
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
+  logger.disableLogging();
 
   try {
     initialize_cuda();  // Initialize CUDA at program start

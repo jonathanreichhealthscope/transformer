@@ -152,6 +152,7 @@ private:
   std::unique_ptr<LayerNorm> final_ln;
   std::unique_ptr<LanguageModelHead> lm_head;
   TransformerConfig config;
+  bool cuda_initialized = false;
 
   Matrix compute_loss_gradients(const Matrix &logits,
                                 const std::vector<int> &targets);

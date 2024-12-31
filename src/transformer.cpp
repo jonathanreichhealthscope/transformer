@@ -1,5 +1,7 @@
 #include "../include/transformer.hpp"'
 #include "../include/cuda/cublas_check.cuh"
+#include "../include/logger.hpp"
+#include "../include/cuda/cuda_check.cuh"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -84,9 +86,9 @@ void TransformerLayer::convert_to_fp16() {
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
-  // Initialize CUDA resources
   if (config.use_cuda) {
     initialize_cuda();
+    cuda_initialized = true;
   }
 
   // Initialize token embedding with memory pooling
@@ -525,7 +527,18 @@ Matrix TransformerLayer::backward(const Matrix &grad,
 
 Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_cache) {
 #ifdef USE_CUDA
-    std::cout << "Using CUDA for forward pass" << std::endl;
+    if (!cuda_initialized) {
+        throw std::runtime_error("CUDA not initialized");
+    }
+
+    // Pin the embedding table memory to prevent it from being paged out
+    const Matrix& embedding_table = token_embedding->get_embedding_table();
+    float* pinned_embedding;
+    CUDA_CHECK(cudaMallocHost(&pinned_embedding, 
+                             embedding_table.rows() * embedding_table.cols() * sizeof(float)));
+    std::memcpy(pinned_embedding, embedding_table.data(), 
+                embedding_table.rows() * embedding_table.cols() * sizeof(float));
+
     // Allocate memory for embeddings using memory pool
     std::cout << "Allocating memory for embeddings" << std::endl;
     size_t embed_size = input_tokens.size() * config.hidden_size;
@@ -578,29 +591,27 @@ Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_
 
     // Final layer normalization using CUDA
     hidden_states = final_ln->forward(hidden_states);
-    std::cout << "config.vocab_size: " << config.vocab_size << std::endl;
-    std::cout << "config.hidden_size: " << config.hidden_size << std::endl;
-    // Project to vocabulary using CUDA
+    
+    // Instead of cublasSgemm, do the projection on CPU
     Matrix logits(hidden_states.rows(), config.vocab_size);
-    std::cout << "logits dimensions - rows: " << logits.rows() << " cols: " << logits.cols() << std::endl;
-    std::cout << "hidden_states dimensions - rows: " << hidden_states.rows() << " cols: " << hidden_states.cols() << std::endl;
-    // Use cuBLAS for matrix multiplication
-    float matmul_alpha = 1.0f, beta = 0.0f;
-    const Matrix& embedding_table = token_embedding->get_embedding_table();
-    std::cout << "embedding_table dimensions - rows: " << embedding_table.rows() << " cols: " << embedding_table.cols() << std::endl;
-    CUBLAS_CHECK(cublasSgemm(cublas_handle, 
-                           CUBLAS_OP_N, CUBLAS_OP_T,
-                           logits.rows(), config.vocab_size, config.hidden_size,
-                           &matmul_alpha,
-                           hidden_states.data(), hidden_states.cols(),
-                           embedding_table.data(), embedding_table.cols(),
-                           &beta,
-                           logits.data(), logits.cols()));
+    
+    // CPU matrix multiplication
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < logits.rows(); i++) {
+        for (size_t j = 0; j < config.vocab_size; j++) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < config.hidden_size; k++) {
+                sum += hidden_states(i, k) * embedding_table(j, k);
+            }
+            logits(i, j) = sum;
+        }
+    }
 
-    // Free memory
+    // Make a copy and cleanup
+    Matrix result = logits;
     MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
 
-    return logits;
+    return result;
 #else
     throw std::runtime_error("CUDA support not enabled");
 #endif
@@ -616,9 +627,13 @@ Matrix TransformerLayer::backward_cuda(const Matrix &grad,
 }
 
 Transformer::~Transformer() {
-   if (config.use_cuda) {
-     cleanup_cuda();
-   }
+    // Disable logging before CUDA cleanup
+    Logger::getInstance().disableLogging();
+    
+    if (cuda_initialized) {
+        cleanup_cuda();
+        cuda_initialized = false;
+    }
 }
 
 Transformer::Transformer(const Transformer& other) : config(other.config) {

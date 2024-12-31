@@ -57,9 +57,11 @@ void Logger::stopLogging() {
 }
 
 void Logger::log(const std::string &message, bool is_error) {
+  if (!logging_enabled) return;
+  
   time_t now = time(nullptr);
   std::string timestamp(ctime(&now));
-  timestamp = timestamp.substr(0, timestamp.length() - 1); // Remove newline
+  timestamp = timestamp.substr(0, timestamp.length() - 1);
 
   log_file << "[" << timestamp << "] " << (is_error ? "ERROR: " : "INFO: ")
            << message << std::endl;

@@ -97,21 +97,12 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   std::cout << "Forwarding through MultiHeadAttention" << std::endl;
   // Project input to Q, K, V
   Matrix Q = matmul(x, query_proj);
-  std::cout << "Got Q" << std::endl;
   Matrix K = matmul(x, key_proj);
-  std::cout << "Got K" << std::endl;
   Matrix V = matmul(x, value_proj);
-  std::cout << "Got V" << std::endl;
 
   // Apply RoPE if enabled
   if (use_rope) {
-    std::cout << "Applying RoPE" << std::endl;
-    std::cout << "Q rows: " << Q.rows() << std::endl;
-    std::cout << "Q cols: " << Q.cols() << std::endl;
-    std::cout << "K rows: " << K.rows() << std::endl;
-    std::cout << "K cols: " << K.cols() << std::endl;
     for (size_t pos = 0; pos < x.rows(); ++pos) {
-      std::cout << "Applying RoPE to position: " << pos << std::endl;
       // Create single-row matrices for RoPE
       Matrix Q_row(1, Q.cols());
       Matrix K_row(1, K.cols());
@@ -121,10 +112,8 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
         //std::cout <<  pos << " " << j << " " << K(pos, j) << std::endl;
         K_row(0, j) = K(pos, j);
       }
-      std::cout << "calling apply_rope at position: " << pos << " " << Q_row(0, 0)  << std::endl;
       // Apply RoPE
       Matrix Q_rotated = apply_rope(Q_row, pos);
-      std::cout << "calling apply_rope at position: " << pos << " " << K_row(0, 0) << std::endl;
       Matrix K_rotated = apply_rope(K_row, pos);
 
       // Copy back
@@ -143,17 +132,6 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     std::cout << "Using standard attention" << std::endl;
     attention_output = standard_attention(Q, K, V, mask);
   }
-  std::cout << "Attention output: rows: " << attention_output.rows() << "Attention output: cols: " << attention_output.cols() << std::endl;
-  std::cout << "Q rows: " << Q.rows() << std::endl;
-  std::cout << "Q cols: " << Q.cols() << std::endl;
-  std::cout << "K rows: " << K.rows() << std::endl;
-  std::cout << "K cols: " << K.cols() << std::endl;
-  std::cout << "V rows: " << V.rows() << std::endl;
-  std::cout << "V cols: " << V.cols() << std::endl;
-  // Project output
-  std::cout << "Projecting output" << std::endl;
-  std::cout << "Output proj rows: " << output_proj.rows() << std::endl;
-  std::cout << "Output proj cols: " << output_proj.cols() << std::endl;
   return matmul(attention_output, output_proj);
 }
 
