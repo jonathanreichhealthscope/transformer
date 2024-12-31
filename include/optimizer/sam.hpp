@@ -1,4 +1,5 @@
 #pragma once
+#include "../types.hpp"
 #include "optimizer.hpp"
 #include <memory>
 
