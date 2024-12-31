@@ -20,8 +20,8 @@ public:
     // Core functionality
     Matrix forward(const std::vector<int>& tokens);
     Matrix project_to_vocab(const Matrix& hidden_states);
-    void forward_cuda(const std::vector<int>& tokens, Matrix& output);
-    Matrix project_to_vocab_cuda(const Matrix& input);
+    virtual void forward_cuda(const std::vector<int>& tokens, Matrix& output);
+    virtual Matrix project_to_vocab_cuda(const Matrix& input);
 
     // Accessors
     const Matrix& get_embedding_table() const { return weights_; }

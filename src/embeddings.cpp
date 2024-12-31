@@ -50,29 +50,6 @@ std::unique_ptr<TokenEmbedding> TokenEmbedding::load(std::istream& is) {
     return embedding;
 }
 
-void TokenEmbedding::forward_cuda(const std::vector<int>& tokens, Matrix& output) {
-    output.resize(tokens.size(), embedding_dim_);
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        for (size_t j = 0; j < embedding_dim_; ++j) {
-            output(i, j) = weights_(tokens[i], j);
-        }
-    }
-}
-
-Matrix TokenEmbedding::project_to_vocab_cuda(const Matrix& input) {
-    Matrix output(input.rows(), vocab_size_);
-    for (size_t i = 0; i < input.rows(); ++i) {
-        for (size_t j = 0; j < vocab_size_; ++j) {
-            float sum = 0.0f;
-            for (size_t k = 0; k < embedding_dim_; ++k) {
-                sum += input(i, k) * weights_(j, k);
-            }
-            output(i, j) = sum;
-        }
-    }
-    return output;
-}
-
 PositionalEncoding::PositionalEncoding(size_t max_seq_length, size_t hidden_size)
     : encoding_matrix_(max_seq_length, hidden_size),
       max_seq_length_(max_seq_length),

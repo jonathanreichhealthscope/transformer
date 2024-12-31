@@ -1,7 +1,9 @@
 #include "../../include/embeddings.hpp"
-#include "../../include/cuda/cuda_utils.cuh"
+#include "../../include/cuda/cuda_launch.cuh"
 #include "../../include/cuda/cuda_check.cuh"
 
+#ifdef __CUDACC__
+// CUDA kernel for forward embedding lookup
 __global__ void embedding_forward_kernel(
     const int* tokens,
     const float* embedding_table,
@@ -21,6 +23,7 @@ __global__ void embedding_forward_kernel(
     }
 }
 
+// CUDA kernel for projection back to vocabulary space
 __global__ void embedding_project_kernel(
     const float* input,
     const float* embedding_table,
@@ -43,8 +46,10 @@ __global__ void embedding_project_kernel(
         output[i] = sum;
     }
 }
+#endif
 
 void TokenEmbedding::forward_cuda(const std::vector<int>& tokens, Matrix& output) {
+#ifdef __CUDACC__
     int seq_length = tokens.size();
     int hidden_size = get_embedding_dim();
     const Matrix& embedding_table = get_embedding_table();
@@ -67,11 +72,12 @@ void TokenEmbedding::forward_cuda(const std::vector<int>& tokens, Matrix& output
     // Launch kernel
     int block_size = 256;
     int grid_size = (seq_length * hidden_size + block_size - 1) / block_size;
+    dim3 grid(grid_size);
+    dim3 block(block_size);
     
-    embedding_forward_kernel<<<grid_size, block_size>>>(
-        d_tokens, d_embedding_table, d_output,
-        seq_length, hidden_size, get_vocab_size()
-    );
+    CUDA_LAUNCH(embedding_forward_kernel, grid, block, 0, nullptr,
+                d_tokens, d_embedding_table, d_output,
+                seq_length, hidden_size, get_vocab_size());
     
     // Copy result back to host
     output.resize(seq_length, hidden_size);
@@ -83,9 +89,13 @@ void TokenEmbedding::forward_cuda(const std::vector<int>& tokens, Matrix& output
     CUDA_CHECK(cudaFree(d_tokens));
     CUDA_CHECK(cudaFree(d_embedding_table));
     CUDA_CHECK(cudaFree(d_output));
+#else
+    throw std::runtime_error("CUDA support not enabled");
+#endif
 }
 
 Matrix TokenEmbedding::project_to_vocab_cuda(const Matrix& input) {
+#ifdef __CUDACC__
     int seq_length = input.rows();
     int hidden_size = input.cols();
     int vocab_size = get_vocab_size();
@@ -109,11 +119,12 @@ Matrix TokenEmbedding::project_to_vocab_cuda(const Matrix& input) {
     // Launch kernel
     int block_size = 256;
     int grid_size = (seq_length * vocab_size + block_size - 1) / block_size;
+    dim3 grid(grid_size);
+    dim3 block(block_size);
     
-    embedding_project_kernel<<<grid_size, block_size>>>(
-        d_input, d_embedding_table, d_output,
-        seq_length, hidden_size, vocab_size
-    );
+    CUDA_LAUNCH(embedding_project_kernel, grid, block, 0, nullptr,
+                d_input, d_embedding_table, d_output,
+                seq_length, hidden_size, vocab_size);
     
     // Create result matrix and copy data back
     Matrix result(seq_length, vocab_size);
@@ -127,4 +138,7 @@ Matrix TokenEmbedding::project_to_vocab_cuda(const Matrix& input) {
     CUDA_CHECK(cudaFree(d_output));
 
     return result;
+#else
+    throw std::runtime_error("CUDA support not enabled");
+#endif
 } 
