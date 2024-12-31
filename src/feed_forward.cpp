@@ -1,7 +1,8 @@
 #include "../include/feed_forward.hpp"
 #ifdef USE_CUDA
-#include "cuda/feed_forward_kernels.cuh"
+#include "../include/cuda/feed_forward_kernels.cuh"
 #include "../include/cuda/cuda_check.cuh"
+#include "../include/cuda/cuda_launch.cuh"
 #endif
 #include <cmath>
 #include <random>
@@ -197,18 +198,18 @@ Matrix FeedForward::backward_cuda(const Matrix &grad,
   dim3 block(block_size);
 
   // First backward pass through second linear layer
-  CUDA_LAUNCH(feed_forward_backward_kernel_1, 
+  launchCudaKernel(feed_forward_backward_kernel_1, 
                grid, block, 0, nullptr,
                d_grad, d_w2, d_intermediate, batch_size, hidden_size,
                intermediate_size);
 
   // Backward through GELU
-  CUDA_LAUNCH(gelu_backward_kernel, 
+  launchCudaKernel(gelu_backward_kernel, 
                grid, block, 0, nullptr,
                d_intermediate, d_input, batch_size * intermediate_size);
 
   // Second backward pass
-  CUDA_LAUNCH(feed_forward_backward_kernel_2, 
+  launchCudaKernel(feed_forward_backward_kernel_2, 
                grid, block, 0, nullptr,
                d_intermediate, d_w1, d_dx, batch_size, hidden_size,
                intermediate_size);

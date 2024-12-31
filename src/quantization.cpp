@@ -1,7 +1,8 @@
 #include "../include/quantization.hpp"
-#include <cmath>
 #ifdef USE_CUDA
-#include "cuda/quantization_kernels.cuh"
+#include "../include/cuda/quantization_kernels.cuh"
+#include "../include/cuda/cuda_check.cuh"
+#include "../include/cuda/cuda_launch.cuh"
 #endif
 
 Quantizer::Quantizer(size_t num_bits)

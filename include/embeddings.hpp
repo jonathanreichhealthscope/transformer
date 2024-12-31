@@ -10,23 +10,22 @@ class PositionalEncoding;
 
 class TokenEmbedding {
 private:
-    Matrix embedding_table_;
+    Matrix weights_;
     size_t vocab_size_;
     size_t embedding_dim_;
 
 public:
-    TokenEmbedding(size_t vocab_size, size_t embedding_dim)
-        : embedding_table_(vocab_size, embedding_dim),
-          vocab_size_(vocab_size),
-          embedding_dim_(embedding_dim) {}
+    TokenEmbedding(size_t vocab_size, size_t embedding_dim);
 
     // Core functionality
+    Matrix forward(const std::vector<int>& tokens);
+    Matrix project_to_vocab(const Matrix& hidden_states);
     void forward_cuda(const std::vector<int>& tokens, Matrix& output);
     Matrix project_to_vocab_cuda(const Matrix& input);
 
     // Accessors
-    const Matrix& get_embedding_table() const { return embedding_table_; }
-    Matrix& get_embedding_table() { return embedding_table_; }
+    const Matrix& get_embedding_table() const { return weights_; }
+    Matrix& get_embedding_table() { return weights_; }
     size_t get_vocab_size() const { return vocab_size_; }
     size_t get_embedding_dim() const { return embedding_dim_; }
 
@@ -43,12 +42,7 @@ private:
 
 public:
     PositionalEncoding() = default;
-    
-    PositionalEncoding(size_t max_seq_length, size_t hidden_size)
-        : encoding_matrix_(max_seq_length, hidden_size),
-          max_seq_length_(max_seq_length),
-          hidden_size_(hidden_size) {}
-
+    PositionalEncoding(size_t max_seq_length, size_t hidden_size);
     virtual ~PositionalEncoding() = default;
 
     // Core functionality
@@ -57,21 +51,6 @@ public:
     // Serialization
     void save(std::ostream& os) const;
     static std::unique_ptr<PositionalEncoding> load(std::istream& is);
-
-    // Copy operations
-    PositionalEncoding(const PositionalEncoding& other)
-        : encoding_matrix_(other.encoding_matrix_),
-          max_seq_length_(other.max_seq_length_),
-          hidden_size_(other.hidden_size_) {}
-    
-    PositionalEncoding& operator=(const PositionalEncoding& other) {
-        if (this != &other) {
-            encoding_matrix_ = other.encoding_matrix_;
-            max_seq_length_ = other.max_seq_length_;
-            hidden_size_ = other.hidden_size_;
-        }
-        return *this;
-    }
 
     // Accessors
     const Matrix& get_encoding_matrix() const { return encoding_matrix_; }
