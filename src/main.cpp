@@ -87,17 +87,51 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
 }
 
 Matrix create_target_distribution(const std::vector<int>& targets, size_t vocab_size) {
-    Matrix distribution(1, vocab_size, 0.0f);
+    // Create distribution matrix with same number of rows as sequence length
+    Matrix distribution(targets.size(), vocab_size, 0.0f);
+    std::cout << "Creating target distribution with shape: " << distribution.rows() 
+              << "x" << distribution.cols() << std::endl;
     for (int target : targets) {
-        distribution(0, target) = 1.0f;
+        if (target >= static_cast<int>(vocab_size)) {
+            throw std::runtime_error("Target ID exceeds vocabulary size");
+        }
+        // Set target positions to 1.0 in the last row (for next token prediction)
+        distribution(distribution.rows() - 1, target) = 1.0f;
     }
     return distribution;
 }
 
-Matrix compute_cross_entropy_gradient(const Matrix& logits, const Matrix& targets) {
-    Matrix softmax_output = logits;
+Matrix compute_cross_entropy_gradient(const Matrix& logits, const Matrix& targets, 
+                                     const LanguageModelHead* lm_head) {
+    std::cout << "within compute_cross_entropy_gradient" << std::endl;
+    std::cout << "logits dimensions: " << logits.rows() << "x" << logits.cols() << std::endl;
+    std::cout << "targets dimensions: " << targets.rows() << "x" << targets.cols() << std::endl;
+
+    // logits are already in vocab space, no need to project
+    Matrix vocab_logits = logits;
+    std::cout << "vocab_logits dimensions: " << vocab_logits.rows() << "x" << vocab_logits.cols() << std::endl;
+
+    Matrix softmax_output = vocab_logits;
+    std::cout << "applying softmax" << std::endl;
     softmax_output.apply_softmax();
-    return softmax_output - targets;
+    std::cout << "softmax_output dimensions: " << softmax_output.shape() << std::endl;
+
+    // Ensure target matrix has same dimensions as softmax output
+    Matrix expanded_targets;
+    if (targets.rows() != softmax_output.rows()) {
+        expanded_targets = Matrix(softmax_output.rows(), softmax_output.cols(), 0.0f);
+        // Copy target values to appropriate positions
+        for (size_t i = 0; i < targets.rows() && i < expanded_targets.rows(); i++) {
+            for (size_t j = 0; j < targets.cols() && j < expanded_targets.cols(); j++) {
+                expanded_targets(i, j) = targets(i, j);
+            }
+        }
+    } else {
+        expanded_targets = targets;
+    }
+
+    std::cout << "subtracting targets" << std::endl;
+    return softmax_output - expanded_targets;
 }
 
 int main(int argc, char *argv[]) {
@@ -200,17 +234,21 @@ int main(int argc, char *argv[]) {
         Matrix hidden_states = transformer.forward(input_tokens);
         last_hidden_states = hidden_states;
         std::cout << "Forward pass for hidden states '" << target_text << "'\n";
-        Matrix logits = lm_head->forward(hidden_states);
-        std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols()
-                  << "\n";
-
+        // Project to vocabulary space
+        Matrix logits = lm_head->project_to_vocab(hidden_states);
+        std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
+        std::cout << "Creating target distribution\n";
         // Compute proper loss and gradients
         Matrix target_distribution = create_target_distribution(target_tokens, config.vocab_size);
-        Matrix loss_grad = compute_cross_entropy_gradient(logits, target_distribution);
+        std::cout << "Computing cross entropy gradient\n";
+        Matrix loss_grad = compute_cross_entropy_gradient(logits, target_distribution, lm_head.get());
 
         // Backpropagate through the network
+        std::cout << "Backward pass for loss gradient\n";
         Matrix hidden_grad = lm_head->backward(loss_grad, hidden_states);
+        std::cout << "Backward pass for hidden states\n";
         transformer.backward(hidden_grad, input_tokens);
+        std::cout << "Target Matrix calculation" << target_text << "'\n";
 
         // Compute loss and gradients
         Matrix target_matrix(logits.rows(), logits.cols(), 0.0f);

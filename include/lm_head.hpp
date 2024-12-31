@@ -115,4 +115,6 @@ public:
   }
 
   Vector &get_bias() { return bias; }
+
+  Matrix project_to_vocab(const Matrix& hidden_states) const;
 };

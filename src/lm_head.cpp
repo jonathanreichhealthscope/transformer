@@ -38,3 +38,21 @@ Matrix LanguageModelHead::forward(const Matrix &hidden_states) {
 
   return logits;
 }
+
+Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) const {
+    // Project from hidden size to vocabulary size
+    Matrix logits(hidden_states.rows(), projection.rows());
+    
+    // Perform matrix multiplication: hidden_states * weights_^T
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < projection.rows(); j++) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < projection.cols(); k++) {
+                sum += hidden_states(i, k) * projection(j, k);
+            }
+            logits(i, j) = sum;
+        }
+    }
+    
+    return logits;
+}

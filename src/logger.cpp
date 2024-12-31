@@ -4,7 +4,7 @@
 std::unique_ptr<Logger> Logger::instance = nullptr;
 
 Logger::Logger() {
-  log_file.open("transformer_log.log", std::ios::out | std::ios::app);
+  log_file.open("transformer.log", std::ios::out | std::ios::app);
   cout_buffer = nullptr;
   cerr_buffer = nullptr;
 }
