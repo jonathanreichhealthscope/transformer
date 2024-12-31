@@ -9,15 +9,22 @@ Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
   // Apply rotary position embedding
   for (size_t i = 0; i < x.rows(); ++i) {
     for (size_t j = 0; j < dim; j += 2) {
+      std::cout << "in inner loop for apply_rope" << std::endl;
       float cos_theta = cos_cached(position, j / 2);
+      std::cout << "passed cos_cached" << std::endl;
       float sin_theta = sin_cached(position, j / 2);
+      std::cout << "passed sin_cached" << std::endl;
 
       float x1 = x(i, j);
+      std::cout << "passed x1" << std::endl;
       float x2 = j + 1 < dim ? x(i, j + 1) : 0.0f;
+      std::cout << "passed x2" << std::endl;
 
       rotated(i, j) = x1 * cos_theta - x2 * sin_theta;
+      std::cout << "passed rotated(i, j)" << std::endl;
       if (j + 1 < dim) {
         rotated(i, j + 1) = x1 * sin_theta + x2 * cos_theta;
+        std::cout << "passed rotated(i, j + 1)" << std::endl;
       }
     }
   }
@@ -107,14 +114,15 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
       Matrix Q_row(1, Q.cols());
       Matrix K_row(1, K.cols());
       for (size_t j = 0; j < Q.cols(); ++j) {
-        std::cout << "Q(pos, j): " << Q(pos, j) << std::endl;
+        //std::cout <<  pos << " " << j << " " << Q(pos, j) << std::endl;
         Q_row(0, j) = Q(pos, j);
-        std::cout << "K(pos, j): " << K(pos, j) << std::endl;
+        //std::cout <<  pos << " " << j << " " << K(pos, j) << std::endl;
         K_row(0, j) = K(pos, j);
       }
-      std::cout << "calling apply_rope" << std::endl;
+      std::cout << "calling apply_rope at position: " << pos << " " << Q_row(0, 0)  << std::endl;
       // Apply RoPE
       Matrix Q_rotated = apply_rope(Q_row, pos);
+      std::cout << "calling apply_rope at position: " << pos << " " << K_row(0, 0) << std::endl;
       Matrix K_rotated = apply_rope(K_row, pos);
 
       // Copy back
