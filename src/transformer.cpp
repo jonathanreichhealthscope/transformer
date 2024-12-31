@@ -688,26 +688,35 @@ Transformer &Transformer::operator=(const Transformer &other) {
 }
 
 void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens) {
+  // Verify dimensions
+  if (grad_output.cols() != config.hidden_size) {
+    throw std::runtime_error("Gradient output dimension (" + 
+                             std::to_string(grad_output.cols()) + 
+                             ") must match hidden size (" + 
+                             std::to_string(config.hidden_size) + ")");
+  }
+
   // Backpropagate through final layer norm
   Matrix grad = final_ln->backward(grad_output, hidden_states);
   
   // Backpropagate through transformer layers in reverse order
   for (int i = layers.size() - 1; i >= 0; --i) {
-      // Get cached activation from gradient checkpoint
       Matrix cached_activation = GradientCheckpoint::get_activation(i);
-      
-      // Backpropagate through layer
+      // Verify cached activation dimensions
+      if (cached_activation.cols() != config.hidden_size) {
+          throw std::runtime_error("Cached activation dimension mismatch");
+      }
       grad = layers[i]->backward(grad, cached_activation);
   }
   
-  // Backpropagate through position embeddings and token embeddings
-  Matrix position_ids(input_tokens.size(), 1);
-  for (size_t i = 0; i < input_tokens.size(); ++i) {
-      position_ids(i, 0) = static_cast<float>(i);
+  // Backpropagate through embeddings
+  if (grad.rows() != input_tokens.size()) {
+      throw std::runtime_error("Gradient rows (" + std::to_string(grad.rows()) + 
+                              ") must match sequence length (" + 
+                              std::to_string(input_tokens.size()) + ")");
   }
   
-  // No need to backprop through positional encodings as they're fixed
-  // Just backprop through token embeddings
+  // Update token embeddings
   token_embedding->backward(grad, input_tokens);
 }
 

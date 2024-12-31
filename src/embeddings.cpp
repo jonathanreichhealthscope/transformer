@@ -2,6 +2,7 @@
 #include <cmath>
 #include <random>
 #include <iostream>
+#include <string>
 
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),

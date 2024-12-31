@@ -1,6 +1,7 @@
 #pragma once
 #include "components.hpp"
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <vector>
 
@@ -36,8 +37,11 @@ public:
 
   Matrix backward(const Matrix &grad_output, const Matrix &hidden_states) {
     // Compute gradients for projection and bias
-    Matrix grad_proj = matmul(grad_output, hidden_states);
+    std::cout << "Computing gradients for projection and bias" << std::endl;
+    Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
+    std::cout << "Grad proj shape: " << grad_proj.shape() << std::endl;
     Vector grad_bias = grad_output.row_sum();
+    std::cout << "Grad bias size: " << grad_bias.size() << std::endl;
 
     // Apply weight updates with adaptive learning rate
     float lr = 0.001f;    // Base learning rate
@@ -57,16 +61,18 @@ public:
     // Update projection matrix using Adam optimizer
     for (size_t i = 0; i < projection.rows(); ++i) {
       for (size_t j = 0; j < projection.cols(); ++j) {
+        std::cout << "Updating projection matrix" << std::endl;
         // Update momentum
         m_proj(i, j) = beta1 * m_proj(i, j) + (1 - beta1) * grad_proj(i, j);
         // Update RMSprop
+        std::cout << "Updating RMSprop" << std::endl;
         v_proj(i, j) = beta2 * v_proj(i, j) +
                        (1 - beta2) * grad_proj(i, j) * grad_proj(i, j);
-
+        std::cout << "Bias correction" << std::endl;
         // Bias correction
         float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
         float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
-
+        std::cout << "Updating weights" << std::endl;
         // Update weights
         projection(i, j) -= lr * m_hat / (std::sqrt(v_hat) + eps);
       }
@@ -75,18 +81,20 @@ public:
     // Update bias vector using Adam optimizer
     for (size_t i = 0; i < bias.size(); ++i) {
       // Update momentum
+      std::cout << "Updating momentum bias" << std::endl;
       m_bias[i] = beta1 * m_bias[i] + (1 - beta1) * grad_bias[i];
       // Update RMSprop
+      std::cout << "Updating RMSprop bias" << std::endl;
       v_bias[i] = beta2 * v_bias[i] + (1 - beta2) * grad_bias[i] * grad_bias[i];
 
       // Bias correction
       float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
       float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
-
+      std::cout << "bias update rule" << std::endl;
       // Update bias
       bias[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
     }
-
+    std::cout << "Gradient with respect to input" << std::endl;
     // Compute gradient with respect to input
     return matmul(projection.transpose(), grad_output);
   }
