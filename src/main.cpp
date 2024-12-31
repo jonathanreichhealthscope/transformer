@@ -11,6 +11,7 @@
 #include "../include/vocabulary.hpp"
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -49,221 +50,40 @@ void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
 
 // Add this helper function to create a simple dataset
 std::vector<std::pair<std::string, std::string>> create_training_data() {
-  return {// Basic locations
-          {"I go to", "school"},
-          {"I walk to", "work"},
-          {"We drive to the", "store"},
-          {"They went to the", "park"},
-          {"She runs to the", "gym"},
-          {"He walks to the", "office"},
-          {"Students go to the", "library"},
-          {"We went to the", "beach"},
-          {"I drive to the", "airport"},
-          {"They walk to the", "station"},
+  std::vector<std::pair<std::string, std::string>> training_pairs;
+  // Get the executable directory
+  std::filesystem::path exe_path =
+      std::filesystem::current_path().parent_path();
+  std::filesystem::path data_dir = exe_path / "data";
+  std::filesystem::path file_path = data_dir / "training_pairs.txt";
 
-          // Animal patterns
-          {"The cat sits on the", "mat"},
-          {"The dog sleeps on the", "bed"},
-          {"Birds fly in the", "sky"},
-          {"Fish swim in the", "ocean"},
-          {"The lion rests in the", "shade"},
-          {"Ducks swim in the", "pond"},
-          {"The bear lives in the", "forest"},
-          {"Wolves hunt in the", "night"},
-          {"Eagles soar in the", "air"},
-          {"Rabbits hop in the", "grass"},
+  // Create data directory if it doesn't exist
+  if (!std::filesystem::exists(data_dir)) {
+    std::filesystem::create_directories(data_dir);
+  }
 
-          // Work and study
-          {"She works at the", "hospital"},
-          {"He teaches at the", "university"},
-          {"They study in the", "classroom"},
-          {"He works in the", "factory"},
-          {"She teaches at the", "school"},
-          {"They work in the", "office"},
-          {"He studies at the", "college"},
-          {"She practices in the", "studio"},
-          {"They train at the", "center"},
-          {"He performs in the", "theater"},
+  std::ifstream file(file_path);
 
-          // Children activities
-          {"Children play in the", "park"},
-          {"Kids swim in the", "pool"},
-          {"Students learn in the", "classroom"},
-          {"Children read in the", "library"},
-          {"Kids practice in the", "gym"},
-          {"Students eat in the", "cafeteria"},
-          {"Children draw in the", "room"},
-          {"Kids play on the", "playground"},
-          {"Students work in the", "laboratory"},
-          {"Children sing in the", "hall"},
+  if (!file.is_open()) {
+    throw std::runtime_error("Could not open training data file: " +
+                             file_path.string());
+  }
 
-          // Nature scenes
-          {"Trees grow in the", "forest"},
-          {"Flowers bloom in the", "garden"},
-          {"Rivers flow through the", "valley"},
-          {"Stars shine in the", "sky"},
-          {"Waves crash on the", "shore"},
-          {"Snow falls on the", "ground"},
-          {"Wind blows through the", "trees"},
-          {"Rain falls on the", "earth"},
-          {"Clouds float in the", "sky"},
-          {"Grass grows in the", "field"},
+  std::string line;
+  while (std::getline(file, line)) {
+    size_t delimiter_pos = line.find('|');
+    if (delimiter_pos != std::string::npos) {
+      std::string input = line.substr(0, delimiter_pos);
+      std::string output = line.substr(delimiter_pos + 1);
+      training_pairs.emplace_back(input, output);
+    }
+  }
 
-          // Urban scenes
-          {"Cars drive on the", "road"},
-          {"People walk on the", "sidewalk"},
-          {"Trains stop at the", "station"},
-          {"Planes land at the", "airport"},
-          {"Ships dock at the", "port"},
-          {"Buses stop at the", "terminal"},
-          {"Cyclists ride on the", "path"},
-          {"Shoppers browse in the", "mall"},
-          {"Workers build the", "building"},
-          {"Artists paint in the", "studio"},
+  if (training_pairs.empty()) {
+    throw std::runtime_error("No training pairs loaded from file");
+  }
 
-          // Home activities
-          {"Mother cooks in the", "kitchen"},
-          {"Father reads in the", "study"},
-          {"Sister plays in the", "room"},
-          {"Brother sleeps in the", "bedroom"},
-          {"Family eats in the", "dining room"},
-          {"Grandmother sits in the", "garden"},
-          {"Baby crawls on the", "floor"},
-          {"Parents relax in the", "living room"},
-          {"Dog sleeps by the", "fireplace"},
-          {"Cat watches from the", "window"},
-
-          // Time of day
-          {"Sun rises in the", "morning"},
-          {"Moon shines in the", "night"},
-          {"People wake at", "dawn"},
-          {"Stars appear at", "dusk"},
-          {"Workers leave at", "sunset"},
-          {"Children wake in the", "morning"},
-          {"Owls hunt in the", "night"},
-          {"Farmers work at", "sunrise"},
-          {"People sleep at", "midnight"},
-          {"Students arrive at", "noon"},
-
-          // Weather patterns
-          {"Snow falls from the", "sky"},
-          {"Rain pours on the", "ground"},
-          {"Wind blows through the", "trees"},
-          {"Lightning flashes in the", "sky"},
-          {"Thunder rolls across the", "sky"},
-          {"Fog covers the", "ground"},
-          {"Sun shines in the", "sky"},
-          {"Clouds gather in the", "sky"},
-          {"Rainbow appears in the", "sky"},
-          {"Frost covers the", "ground"},
-
-          // Professional settings
-          {"Doctor works in the", "hospital"},
-          {"Lawyer speaks in the", "court"},
-          {"Chef cooks in the", "kitchen"},
-          {"Teacher instructs in the", "classroom"},
-          {"Artist paints in the", "studio"},
-          {"Scientist works in the", "laboratory"},
-          {"Musician plays in the", "hall"},
-          {"Dancer performs on the", "stage"},
-          {"Writer works in the", "office"},
-          {"Engineer builds in the", "workshop"},
-
-          // Sports and recreation
-          {"Athletes train in the", "gym"},
-          {"Players compete in the", "stadium"},
-          {"Swimmers practice in the", "pool"},
-          {"Runners race on the", "track"},
-          {"Teams play in the", "field"},
-          {"Climbers scale the", "mountain"},
-          {"Skaters glide on the", "ice"},
-          {"Surfers ride the", "waves"},
-          {"Hikers walk on the", "trail"},
-          {"Cyclists ride on the", "path"},
-
-          // Entertainment venues
-          {"Audience sits in the", "theater"},
-          {"Bands play at the", "concert"},
-          {"People dance in the", "club"},
-          {"Visitors explore the", "museum"},
-          {"Fans cheer in the", "stadium"},
-          {"Readers browse in the", "bookstore"},
-          {"Gamers play in the", "arcade"},
-          {"Diners eat in the", "restaurant"},
-          {"Viewers watch in the", "cinema"},
-          {"Guests relax at the", "resort"},
-
-          // Shopping and commerce
-          {"People shop in the", "mall"},
-          {"Vendors sell at the", "market"},
-          {"Customers wait in the", "store"},
-          {"Cashiers work at the", "register"},
-          {"Shoppers browse in the", "boutique"},
-          {"Merchants trade in the", "bazaar"},
-          {"Buyers gather at the", "auction"},
-          {"Sellers display in the", "shop"},
-          {"People bargain at the", "market"},
-          {"Customers line up at the", "checkout"},
-
-          // Transportation hubs
-          {"Passengers wait at the", "station"},
-          {"Travelers rush through the", "airport"},
-          {"People board at the", "terminal"},
-          {"Commuters gather at the", "platform"},
-          {"Drivers stop at the", "garage"},
-          {"Pilots land at the", "runway"},
-          {"Sailors dock at the", "port"},
-          {"Tourists arrive at the", "terminal"},
-          {"Crews work at the", "hangar"},
-          {"Controllers work in the", "tower"},
-
-          // Religious and cultural
-          {"People pray in the", "temple"},
-          {"Worshippers gather in the", "church"},
-          {"Muslims pray in the", "mosque"},
-          {"Monks meditate in the", "monastery"},
-          {"Believers meet in the", "sanctuary"},
-          {"Priests teach in the", "seminary"},
-          {"Devotees worship at the", "shrine"},
-          {"Pilgrims visit the", "temple"},
-          {"Congregations meet in the", "chapel"},
-          {"Students study in the", "seminary"},
-
-          // Educational settings
-          {"Professors teach in the", "university"},
-          {"Students research in the", "library"},
-          {"Children learn in the", "classroom"},
-          {"Teachers work in the", "school"},
-          {"Scholars study in the", "academy"},
-          {"Pupils gather in the", "auditorium"},
-          {"Researchers work in the", "laboratory"},
-          {"Tutors teach in the", "center"},
-          {"Instructors train in the", "facility"},
-          {"Learners practice in the", "workshop"},
-
-          // Emergency services
-          {"Firefighters work at the", "station"},
-          {"Police patrol on the", "street"},
-          {"Paramedics rush to the", "hospital"},
-          {"Guards work at the", "facility"},
-          {"Rangers patrol in the", "park"},
-          {"Officers work at the", "precinct"},
-          {"Medics train at the", "center"},
-          {"Rescuers gather at the", "base"},
-          {"Crews respond from the", "station"},
-          {"Teams deploy from the", "headquarters"},
-
-          // Technology spaces
-          {"Programmers work in the", "office"},
-          {"Engineers build in the", "laboratory"},
-          {"Developers code in the", "workspace"},
-          {"Technicians repair in the", "shop"},
-          {"Designers create in the", "studio"},
-          {"Analysts work in the", "center"},
-          {"Researchers test in the", "facility"},
-          {"Inventors build in the", "workshop"},
-          {"Teams collaborate in the", "space"},
-          {"Experts work in the", "lab"}};
+  return training_pairs;
 }
 
 int main(int argc, char *argv[]) {
@@ -455,9 +275,6 @@ int main(int argc, char *argv[]) {
         // Initialize gradients
         for (size_t i = 0; i < params.size(); ++i) {
           grads.push_back(Matrix(params[i]->rows(), params[i]->cols()));
-          std::cout << "Initialized gradient for param " << i
-                    << " with dimensions: " << params[i]->rows() << "x"
-                    << params[i]->cols() << "\n";
         }
 
         // First step with initial gradients
@@ -499,6 +316,7 @@ int main(int argc, char *argv[]) {
               std::exp(new_logits(last_pos, j) - new_max_val);
           new_sum += new_softmax_values[j];
         }
+
         std::cout << "Computed new softmax normalization sum: " << new_sum
                   << "\n";
 
@@ -531,22 +349,21 @@ int main(int argc, char *argv[]) {
         std::cout << "Starting gradient backpropagation\n";
         Matrix current_grad = new_grad_output;
         std::cout << "Created current_grad with dimensions: "
-                  << current_grad.rows() << "x" << current_grad.cols() << "\n";
+                  << current_grad.shape() << "\n";
 
         // Print dimensions of first few parameters for debugging
         std::cout << "First few parameter dimensions:\n";
         for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
-          std::cout << "Parameter " << i << ": " << params[i]->rows() << "x"
-                    << params[i]->cols() << "\n";
+          std::cout << "Parameter shape: " << params[i]->shape() << "\n";
         }
 
         // Ensure gradients match parameter dimensions exactly
         for (size_t i = 0; i < params.size(); ++i) {
-          std::cout << "Computing gradient for parameter " << i << "\n";
 
           // Get parameter dimensions
           size_t param_rows = params[i]->rows();
           size_t param_cols = params[i]->cols();
+
           std::cout << "Parameter dimensions: " << param_rows << "x"
                     << param_cols << "\n";
 
@@ -560,10 +377,6 @@ int main(int argc, char *argv[]) {
               new_grads[i](r, c) = 1e-4f; // Very small constant gradient
             }
           }
-
-          std::cout << "Created gradient with matching dimensions: "
-                    << new_grads[i].rows() << "x" << new_grads[i].cols()
-                    << "\n";
         }
         std::cout << "Completed gradient computation for all parameters\n";
 
@@ -573,10 +386,9 @@ int main(int argc, char *argv[]) {
           if (params[i]->rows() != new_grads[i].rows() ||
               params[i]->cols() != new_grads[i].cols()) {
             std::cout << "Dimension mismatch at parameter " << i << "!\n";
-            std::cout << "Parameter: " << params[i]->rows() << "x"
-                      << params[i]->cols() << "\n";
-            std::cout << "Gradient: " << new_grads[i].rows() << "x"
-                      << new_grads[i].cols() << "\n";
+            std::cout << "Parameter: " << params[i]->shape() << "\n";
+            std::cout << "Gradient: " << new_grads[i].shape() << "\n";
+
             throw std::runtime_error(
                 "Gradient dimensions don't match parameters");
           }
@@ -648,12 +460,32 @@ int main(int argc, char *argv[]) {
 
       // Test prediction on a sample input
       if ((epoch + 1) % 2 == 0) {
-        std::string test_input = "I go to";
-        std::cout << "\nTesting: '" << test_input << "'\n";
-        std::vector<int> test_tokens = tokenizer->encode(test_input);
-        Matrix test_hidden = transformer.forward(test_tokens);
-        Matrix test_logits = lm_head->forward(test_hidden);
-        print_top_predictions(test_logits, *tokenizer, 3);
+        // Test multiple different contexts
+        std::vector<std::string> test_inputs = {
+            "I go to",                  // Basic location
+            "Surgeons operate in the",  // Medical context
+            "Athletes train in the",    // Sports context
+            "Musicians perform in the", // Entertainment context
+            "Students research in the", // Educational context
+            "Chefs cook in the",        // Culinary context
+            "Artists create in the",    // Creative context
+            "Engineers work in the",    // Technical context
+            "Lawyers practice in the",  // Legal context
+            "Teachers instruct in the", // Educational context 
+            "Scientists experiment in", // Research context
+            "Pilots fly through the",   // Aviation context
+            "Dancers rehearse in the",  // Performance context
+            "Writers compose in the",   // Literary context
+            "Mechanics repair in the"   // Automotive context
+        };
+
+        for (const auto &test_input : test_inputs) {
+          std::cout << "\nTesting: '" << test_input << "'\n";
+          std::vector<int> test_tokens = tokenizer->encode(test_input);
+          Matrix test_hidden = transformer.forward(test_tokens);
+          Matrix test_logits = lm_head->forward(test_hidden);
+          print_top_predictions(test_logits, *tokenizer, 3);
+        }
       }
     }
 
