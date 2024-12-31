@@ -12,10 +12,7 @@ Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
   
   // Apply rotary position embedding
   for (size_t i = 0; i < x.rows(); ++i) {
-    for (size_t j = 0; j < dim; j += 2) {
-      std::cout << "in inner loop for i: " << i << " j: " << j << " at position: " << position << std::endl;
-      std::cout << "attempting to access cos_cached at position: " << position << ", column: " << j/2 << std::endl;
-      
+    for (size_t j = 0; j < dim; j += 2) {      
       // Add bounds check
       if (j/2 >= cos_cached.cols()) {
           std::cout << "Would exceed cos_cached bounds! Skipping rest of row." << std::endl;
@@ -23,20 +20,13 @@ Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
       }
       
       float cos_theta = cos_cached(position, j / 2);
-      std::cout << "passed cos_cached" << std::endl;
       float sin_theta = sin_cached(position, j / 2);
-      std::cout << "passed sin_cached" << std::endl;
-      std::cout << "position: " << position << " cos_theta: " << cos_theta << " sin_theta: " << sin_theta << std::endl;
       float x1 = x(i, j);
-      std::cout << "passed x1" << std::endl;
       float x2 = j + 1 < dim ? x(i, j + 1) : 0.0f;
-      std::cout << "passed x2" << std::endl;
 
       rotated(i, j) = x1 * cos_theta - x2 * sin_theta;
-      std::cout << "passed rotated(i, j)" << std::endl;
       if (j + 1 < dim) {
         rotated(i, j + 1) = x1 * sin_theta + x2 * cos_theta;
-        std::cout << "passed rotated(i, j + 1)" << std::endl;
       }
     }
   }

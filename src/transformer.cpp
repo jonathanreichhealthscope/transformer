@@ -578,21 +578,24 @@ Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_
 
     // Final layer normalization using CUDA
     hidden_states = final_ln->forward(hidden_states);
-
+    std::cout << "config.vocab_size: " << config.vocab_size << std::endl;
+    std::cout << "config.hidden_size: " << config.hidden_size << std::endl;
     // Project to vocabulary using CUDA
     Matrix logits(hidden_states.rows(), config.vocab_size);
-    
+    std::cout << "logits dimensions - rows: " << logits.rows() << " cols: " << logits.cols() << std::endl;
+    std::cout << "hidden_states dimensions - rows: " << hidden_states.rows() << " cols: " << hidden_states.cols() << std::endl;
     // Use cuBLAS for matrix multiplication
     float matmul_alpha = 1.0f, beta = 0.0f;
     const Matrix& embedding_table = token_embedding->get_embedding_table();
+    std::cout << "embedding_table dimensions - rows: " << embedding_table.rows() << " cols: " << embedding_table.cols() << std::endl;
     CUBLAS_CHECK(cublasSgemm(cublas_handle, 
                            CUBLAS_OP_N, CUBLAS_OP_T,
                            logits.rows(), config.vocab_size, config.hidden_size,
                            &matmul_alpha,
-                           hidden_states.data(), hidden_states.rows(),
-                           embedding_table.data(), embedding_table.rows(),
+                           hidden_states.data(), hidden_states.cols(),
+                           embedding_table.data(), embedding_table.cols(),
                            &beta,
-                           logits.data(), logits.rows()));
+                           logits.data(), logits.cols()));
 
     // Free memory
     MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));

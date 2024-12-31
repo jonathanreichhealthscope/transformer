@@ -1,4 +1,5 @@
 #include "../include/logger.hpp"
+#include <chrono>
 
 std::unique_ptr<Logger> Logger::instance = nullptr;
 
@@ -23,17 +24,21 @@ Logger &Logger::getInstance() {
 }
 
 void Logger::startLogging() {
-  // Store the current buffers
-  cout_buffer = std::cout.rdbuf();
-  cerr_buffer = std::cerr.rdbuf();
-
-  // Redirect stdout and stderr to the log file
+  // Open the file in truncation mode to clear previous contents
+  log_file.open("transformer_log.log", std::ios::out | std::ios::trunc);
+  if (!log_file.is_open()) {
+    std::cerr << "Failed to open log file" << std::endl;
+    return;
+  }
+  
+  // Start capturing cout
+  auto old_cout_buf = std::cout.rdbuf();
   std::cout.rdbuf(log_file.rdbuf());
-  std::cerr.rdbuf(log_file.rdbuf());
-
-  // Write initial log entry with timestamp
-  time_t now = time(nullptr);
-  log_file << "\n=== Logging started at " << ctime(&now) << "===\n";
+  
+  // Log start time
+  auto now = std::chrono::system_clock::now();
+  auto time = std::chrono::system_clock::to_time_t(now);
+  log_file << "=== Logging started at " << std::ctime(&time) << "===" << std::endl;
 }
 
 void Logger::stopLogging() {
