@@ -1,6 +1,7 @@
 #include "../include/feed_forward.hpp"
 #ifdef USE_CUDA
 #include "cuda/feed_forward_kernels.cuh"
+#include "../include/cuda/cuda_check.cuh"
 #endif
 #include <cmath>
 #include <random>
