@@ -1,8 +1,8 @@
 #include "../include/feed_forward.hpp"
 #ifdef USE_CUDA
-#include "../include/cuda/feed_forward_kernels.cuh"
 #include "../include/cuda/cuda_check.cuh"
 #include "../include/cuda/cuda_launch.cuh"
+#include "../include/cuda/feed_forward_kernels.cuh"
 #endif
 #include <cmath>
 #include <random>
@@ -162,10 +162,11 @@ Matrix FeedForward::backward(const Matrix &grad, const Matrix &input) const {
   return dx;
 }
 
-Matrix FeedForward::backward_cuda(const Matrix& grad, const Matrix& input) const {
+Matrix FeedForward::backward_cuda(const Matrix &grad,
+                                  const Matrix &input) const {
 #ifdef USE_CUDA
-    return backward_cuda(grad, input);
+  return backward_cuda(grad, input);
 #else
-    throw std::runtime_error("CUDA support not enabled");
+  throw std::runtime_error("CUDA support not enabled");
 #endif
 }

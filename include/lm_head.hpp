@@ -19,12 +19,11 @@ public:
     bias.randomize(-scale, scale);
   }
 
-  LanguageModelHead(const LanguageModelHead& other)
-      : projection(other.projection),
-        bias(other.bias),
+  LanguageModelHead(const LanguageModelHead &other)
+      : projection(other.projection), bias(other.bias),
         dropout_prob(other.dropout_prob) {}
 
-  LanguageModelHead& operator=(const LanguageModelHead& other) {
+  LanguageModelHead &operator=(const LanguageModelHead &other) {
     if (this != &other) {
       projection = other.projection;
       bias = other.bias;

@@ -4,11 +4,11 @@
 #include "components.hpp"
 #include "embeddings.hpp"
 #include "feed_forward.hpp"
+#include "gradient_checkpoint.hpp"
+#include "half_precision.hpp"
 #include "layernorm.hpp"
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
-#include "gradient_checkpoint.hpp"
-#include "half_precision.hpp"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -106,41 +106,43 @@ public:
   FeedForward *getFeedForward() { return feed_forward.get(); }
   void convert_to_fp16();
 
-  TransformerLayer(const TransformerLayer& other) 
+  TransformerLayer(const TransformerLayer &other)
       : config(other.config), kv_cache(other.kv_cache) {
+    if (other.self_attention) {
+      self_attention =
+          std::make_unique<MultiHeadAttention>(*other.self_attention);
+    }
+    if (other.attention_ln) {
+      attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
+    }
+    if (other.feed_forward) {
+      feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
+    }
+    if (other.ffn_ln) {
+      ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
+    }
+  }
+
+  TransformerLayer &operator=(const TransformerLayer &other) {
+    if (this != &other) {
+      config = other.config;
+      kv_cache = other.kv_cache;
+
       if (other.self_attention) {
-          self_attention = std::make_unique<MultiHeadAttention>(*other.self_attention);
+        self_attention =
+            std::make_unique<MultiHeadAttention>(*other.self_attention);
       }
       if (other.attention_ln) {
-          attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
+        attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
       }
       if (other.feed_forward) {
-          feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
+        feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
       }
       if (other.ffn_ln) {
-          ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
+        ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
       }
-  }
-  
-  TransformerLayer& operator=(const TransformerLayer& other) {
-      if (this != &other) {
-          config = other.config;
-          kv_cache = other.kv_cache;
-          
-          if (other.self_attention) {
-              self_attention = std::make_unique<MultiHeadAttention>(*other.self_attention);
-          }
-          if (other.attention_ln) {
-              attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
-          }
-          if (other.feed_forward) {
-              feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
-          }
-          if (other.ffn_ln) {
-              ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
-          }
-      }
-      return *this;
+    }
+    return *this;
   }
 };
 
@@ -200,10 +202,10 @@ public:
   virtual ~Transformer();
 
   // Add copy constructor and assignment operator
-  Transformer(const Transformer& other);
-  Transformer& operator=(const Transformer& other);
-  
+  Transformer(const Transformer &other);
+  Transformer &operator=(const Transformer &other);
+
   // Move constructor and assignment operator
-  Transformer(Transformer&& other) noexcept = default;
-  Transformer& operator=(Transformer&& other) noexcept = default;
+  Transformer(Transformer &&other) noexcept = default;
+  Transformer &operator=(Transformer &&other) noexcept = default;
 };

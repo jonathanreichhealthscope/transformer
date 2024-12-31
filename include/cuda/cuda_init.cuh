@@ -6,4 +6,4 @@ extern cublasHandle_t cublas_handle;
 
 // CUDA initialization functions
 void initialize_cuda();
-void cleanup_cuda(); 
+void cleanup_cuda();

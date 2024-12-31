@@ -1,12 +1,12 @@
 #include "../include/transformer.hpp"'
 #include "../include/cuda/cublas_check.cuh"
-#include "../include/logger.hpp"
 #include "../include/cuda/cuda_check.cuh"
+#include "../include/logger.hpp"
+#include <cublas_v2.h>
 #include <fstream>
 #include <iostream>
-#include <stdexcept>
-#include <cublas_v2.h>
 #include <omp.h>
+#include <stdexcept>
 
 extern cublasHandle_t cublas_handle;
 
@@ -49,18 +49,14 @@ Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
   std::cout << "Forwarding through TransformerLayer" << std::endl;
   // Pre-layer normalization
   Matrix normalized = attention_ln->forward(x);
-  std::cout << "Normalized: " << std::endl;
   // Self-attention with residual connection
   Matrix attention_output = self_attention->forward(
       normalized, mask, std::make_optional(std::ref(kv_cache)));
-  std::cout << "Attention output: " << std::endl;
   Matrix residual = x + attention_output;
-
+  std::cout << "Residual:" << residual.data() << std::endl;
   // Feed-forward with residual connection
   normalized = ffn_ln->forward(residual);
-  std::cout << "Normalized: " << std::endl;
   Matrix ffn_output = feed_forward->forward(normalized);
-  std::cout << "FFN output: " << std::endl;
 
   return residual + ffn_output;
 }
@@ -68,20 +64,20 @@ Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
 void TransformerLayer::clear_cache() { kv_cache.clear(); }
 
 void TransformerLayer::convert_to_fp16() {
-    #ifdef USE_CUDA
-    if (self_attention) {
-        auto weights = self_attention->get_weights();
-        for (auto& weight : weights) {
-            HalfPrecisionTraining::convert_to_fp16(weight);
-        }
+#ifdef USE_CUDA
+  if (self_attention) {
+    auto weights = self_attention->get_weights();
+    for (auto &weight : weights) {
+      HalfPrecisionTraining::convert_to_fp16(weight);
     }
-    if (feed_forward) {
-        auto weights = feed_forward->get_weights();
-        for (auto& weight : weights) {
-            HalfPrecisionTraining::convert_to_fp16(weight);
-        }
+  }
+  if (feed_forward) {
+    auto weights = feed_forward->get_weights();
+    for (auto &weight : weights) {
+      HalfPrecisionTraining::convert_to_fp16(weight);
     }
-    #endif
+  }
+#endif
 }
 
 // Transformer implementation
@@ -110,20 +106,21 @@ Transformer::Transformer(const TransformerConfig &config) : config(config) {
 
   // Enable half-precision training if configured
   if (config.use_fp16) {
-    for (auto& layer : layers) {
+    for (auto &layer : layers) {
       layer->convert_to_fp16();
     }
   }
 }
 
-Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache) {
+Matrix Transformer::forward(const std::vector<int> &input_tokens,
+                            bool use_cache) {
   if (config.use_cuda) {
     std::cout << "Using CUDA for forward pass" << std::endl;
     return forward_cuda(input_tokens);
   }
   // Use memory pool for embeddings
   size_t embed_size = input_tokens.size() * config.hidden_size;
-  float* embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
+  float *embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
   Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
 
   // Get embeddings using cuBLAS for matrix operations
@@ -147,7 +144,7 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache
   for (size_t i = 0; i < layers.size(); ++i) {
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);
-    
+
     hidden_states = layers[i]->forward(hidden_states, mask);
 
     // Convert to FP16 if enabled
@@ -174,8 +171,8 @@ void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
   const size_t batch_size = 32; // Fixed batch size
 
   for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
-    // Process batches
-    #pragma omp parallel for
+// Process batches
+#pragma omp parallel for
     for (size_t i = 0; i < input_tokens.size(); i += batch_size) {
       size_t batch_end = std::min(i + batch_size, input_tokens.size());
 
@@ -253,7 +250,7 @@ void Transformer::backward_pass(const std::vector<Matrix> &activations,
   for (int i = layers.size() - 1; i >= 0; --i) {
     // Retrieve checkpointed activation
     Matrix activation = GradientCheckpoint::get_activation(i);
-    
+
     if (config.use_cuda) {
       current_grad = layers[i]->backward_cuda(current_grad, activation);
     } else {
@@ -369,107 +366,109 @@ Matrix Transformer::backward(const Matrix &grad, const Matrix &activation,
   return layer_grad;
 }
 
-Matrix Transformer::backward_cuda(const Matrix& grad, const Matrix& activation, size_t layer_idx) {
+Matrix Transformer::backward_cuda(const Matrix &grad, const Matrix &activation,
+                                  size_t layer_idx) {
 #ifdef USE_CUDA
-    if (layer_idx >= layers.size()) {
-        throw std::out_of_range("Layer index out of range");
-    }
+  if (layer_idx >= layers.size()) {
+    throw std::out_of_range("Layer index out of range");
+  }
 
-    Matrix current_grad = grad;
+  Matrix current_grad = grad;
 
-    // Convert gradients to FP16 if enabled
-    if (config.use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(current_grad);
-    }
+  // Convert gradients to FP16 if enabled
+  if (config.use_fp16) {
+    HalfPrecisionTraining::convert_to_fp16(current_grad);
+  }
 
-    // Backward through final layer norm using CUDA
-    if (layer_idx == layers.size() - 1) {
-        current_grad = final_ln->backward_cuda(current_grad, activation);
-    }
+  // Backward through final layer norm using CUDA
+  if (layer_idx == layers.size() - 1) {
+    current_grad = final_ln->backward_cuda(current_grad, activation);
+  }
 
-    // Backward through layer using CUDA
-    Matrix layer_grad = layers[layer_idx]->backward_cuda(current_grad, activation);
+  // Backward through layer using CUDA
+  Matrix layer_grad =
+      layers[layer_idx]->backward_cuda(current_grad, activation);
 
-    // Convert gradients back to FP32 if needed
-    if (config.use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(layer_grad);
-    }
+  // Convert gradients back to FP32 if needed
+  if (config.use_fp16) {
+    HalfPrecisionTraining::convert_to_fp32(layer_grad);
+  }
 
-    return layer_grad;
+  return layer_grad;
 #else
-    return backward(grad, activation, layer_idx);
+  return backward(grad, activation, layer_idx);
 #endif
 }
 
 std::vector<Matrix> &Transformer::parameters() {
-    static std::vector<Matrix> all_params;
-    all_params.clear();
+  static std::vector<Matrix> all_params;
+  all_params.clear();
 
-    // Add embedding parameters
-    all_params.push_back(token_embedding->get_embedding_table());
+  // Add embedding parameters
+  all_params.push_back(token_embedding->get_embedding_table());
 
-    // Add layer parameters
-    for (auto &layer : layers) {
-        // Add attention parameters
-        all_params.push_back(layer->self_attention->query_proj);
-        all_params.push_back(layer->self_attention->key_proj);
-        all_params.push_back(layer->self_attention->value_proj);
-        all_params.push_back(layer->self_attention->output_proj);
+  // Add layer parameters
+  for (auto &layer : layers) {
+    // Add attention parameters
+    all_params.push_back(layer->self_attention->query_proj);
+    all_params.push_back(layer->self_attention->key_proj);
+    all_params.push_back(layer->self_attention->value_proj);
+    all_params.push_back(layer->self_attention->output_proj);
 
-        // Add layer norm parameters - convert Vector to Matrix
-        const Vector& gamma = layer->attention_ln->get_gamma();
-        const Vector& beta = layer->attention_ln->get_beta();
-        Matrix gamma_matrix(1, gamma.size());
-        Matrix beta_matrix(1, beta.size());
-        for (size_t i = 0; i < gamma.size(); ++i) {
-            gamma_matrix(0, i) = gamma[i];
-            beta_matrix(0, i) = beta[i];
-        }
-        all_params.push_back(gamma_matrix);
-        all_params.push_back(beta_matrix);
-
-        // Add feed forward parameters
-        all_params.push_back(layer->feed_forward->w1);
-        all_params.push_back(layer->feed_forward->w2);
-
-        // Convert feed forward biases to matrices
-        Matrix b1_matrix(1, layer->feed_forward->b1.size());
-        Matrix b2_matrix(1, layer->feed_forward->b2.size());
-        for (size_t i = 0; i < layer->feed_forward->b1.size(); ++i) {
-            b1_matrix(0, i) = layer->feed_forward->b1[i];
-        }
-        for (size_t i = 0; i < layer->feed_forward->b2.size(); ++i) {
-            b2_matrix(0, i) = layer->feed_forward->b2[i];
-        }
-        all_params.push_back(b1_matrix);
-        all_params.push_back(b2_matrix);
-
-        // Add final layer norm parameters
-        const Vector& ffn_gamma = layer->ffn_ln->get_gamma();
-        const Vector& ffn_beta = layer->ffn_ln->get_beta();
-        Matrix ffn_gamma_matrix(1, ffn_gamma.size());
-        Matrix ffn_beta_matrix(1, ffn_beta.size());
-        for (size_t i = 0; i < ffn_gamma.size(); ++i) {
-            ffn_gamma_matrix(0, i) = ffn_gamma[i];
-            ffn_beta_matrix(0, i) = ffn_beta[i];
-        }
-        all_params.push_back(ffn_gamma_matrix);
-        all_params.push_back(ffn_beta_matrix);
+    // Add layer norm parameters - convert Vector to Matrix
+    const Vector &gamma = layer->attention_ln->get_gamma();
+    const Vector &beta = layer->attention_ln->get_beta();
+    Matrix gamma_matrix(1, gamma.size());
+    Matrix beta_matrix(1, beta.size());
+    for (size_t i = 0; i < gamma.size(); ++i) {
+      gamma_matrix(0, i) = gamma[i];
+      beta_matrix(0, i) = beta[i];
     }
+    all_params.push_back(gamma_matrix);
+    all_params.push_back(beta_matrix);
+
+    // Add feed forward parameters
+    all_params.push_back(layer->feed_forward->w1);
+    all_params.push_back(layer->feed_forward->w2);
+
+    // Convert feed forward biases to matrices
+    Matrix b1_matrix(1, layer->feed_forward->b1.size());
+    Matrix b2_matrix(1, layer->feed_forward->b2.size());
+    for (size_t i = 0; i < layer->feed_forward->b1.size(); ++i) {
+      b1_matrix(0, i) = layer->feed_forward->b1[i];
+    }
+    for (size_t i = 0; i < layer->feed_forward->b2.size(); ++i) {
+      b2_matrix(0, i) = layer->feed_forward->b2[i];
+    }
+    all_params.push_back(b1_matrix);
+    all_params.push_back(b2_matrix);
 
     // Add final layer norm parameters
-    const Vector& final_gamma = final_ln->get_gamma();
-    const Vector& final_beta = final_ln->get_beta();
-    Matrix final_gamma_matrix(1, final_gamma.size());
-    Matrix final_beta_matrix(1, final_beta.size());
-    for (size_t i = 0; i < final_gamma.size(); ++i) {
-        final_gamma_matrix(0, i) = final_gamma[i];
-        final_beta_matrix(0, i) = final_beta[i];
+    const Vector &ffn_gamma = layer->ffn_ln->get_gamma();
+    const Vector &ffn_beta = layer->ffn_ln->get_beta();
+    Matrix ffn_gamma_matrix(1, ffn_gamma.size());
+    Matrix ffn_beta_matrix(1, ffn_beta.size());
+    for (size_t i = 0; i < ffn_gamma.size(); ++i) {
+      ffn_gamma_matrix(0, i) = ffn_gamma[i];
+      ffn_beta_matrix(0, i) = ffn_beta[i];
     }
-    all_params.push_back(final_gamma_matrix);
-    all_params.push_back(final_beta_matrix);
+    all_params.push_back(ffn_gamma_matrix);
+    all_params.push_back(ffn_beta_matrix);
+  }
 
-    return all_params;
+  // Add final layer norm parameters
+  const Vector &final_gamma = final_ln->get_gamma();
+  const Vector &final_beta = final_ln->get_beta();
+  Matrix final_gamma_matrix(1, final_gamma.size());
+  Matrix final_beta_matrix(1, final_beta.size());
+  for (size_t i = 0; i < final_gamma.size(); ++i) {
+    final_gamma_matrix(0, i) = final_gamma[i];
+    final_beta_matrix(0, i) = final_beta[i];
+  }
+  all_params.push_back(final_gamma_matrix);
+  all_params.push_back(final_beta_matrix);
+
+  return all_params;
 }
 
 void Transformer::save(std::ostream &os) const {
@@ -525,95 +524,95 @@ Matrix TransformerLayer::backward(const Matrix &grad,
   return d_ln1;
 }
 
-Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_cache) {
+Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
+                                 bool use_cache) {
 #ifdef USE_CUDA
-    if (!cuda_initialized) {
-        throw std::runtime_error("CUDA not initialized");
+  if (!cuda_initialized) {
+    throw std::runtime_error("CUDA not initialized");
+  }
+
+  // Pin the embedding table memory to prevent it from being paged out
+  const Matrix &embedding_table = token_embedding->get_embedding_table();
+  float *pinned_embedding;
+  CUDA_CHECK(cudaMallocHost(&pinned_embedding, embedding_table.rows() *
+                                                   embedding_table.cols() *
+                                                   sizeof(float)));
+  std::memcpy(pinned_embedding, embedding_table.data(),
+              embedding_table.rows() * embedding_table.cols() * sizeof(float));
+
+  // Allocate memory for embeddings using memory pool
+  std::cout << "Allocating memory for embeddings" << std::endl;
+  size_t embed_size = input_tokens.size() * config.hidden_size;
+  float *embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
+  Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
+
+  // Get embeddings using CUDA
+  std::cout << "Getting embeddings using CUDA" << std::endl;
+  token_embedding->forward_cuda(input_tokens, embeddings);
+  std::cout << "Got embeddings" << std::endl;
+  // Add positional encodings
+  Matrix position_ids(input_tokens.size(), 1);
+  for (size_t i = 0; i < input_tokens.size(); ++i) {
+    position_ids(i, 0) = static_cast<float>(i);
+  }
+  // Compute positional encodings on GPU
+  std::cout << "Computing positional encodings on GPU" << std::endl;
+  Matrix pos_encodings = pos_encoding->forward(position_ids);
+
+  // Add position encodings using CUDA
+  {
+    float alpha = 1.0f;
+    CUBLAS_CHECK(cublasSaxpy(cublas_handle,
+                             embeddings.rows() * embeddings.cols(), &alpha,
+                             pos_encodings.data(), 1, embeddings.data(), 1));
+  }
+
+  // Create attention mask if needed
+  AttentionMask mask;
+  if (!use_cache) {
+    mask = AttentionMask::create_causal_mask(input_tokens.size());
+  }
+
+  // Forward pass through layers with gradient checkpointing
+  Matrix hidden_states = embeddings;
+  for (size_t i = 0; i < layers.size(); ++i) {
+    // Save activation for gradient checkpointing
+    GradientCheckpoint::save_activation(hidden_states, i);
+
+    // Forward through layer using CUDA
+    hidden_states = layers[i]->forward(hidden_states, mask);
+
+    // Convert to FP16 if enabled
+    if (config.use_fp16) {
+      HalfPrecisionTraining::convert_to_fp16(hidden_states);
     }
+  }
 
-    // Pin the embedding table memory to prevent it from being paged out
-    const Matrix& embedding_table = token_embedding->get_embedding_table();
-    float* pinned_embedding;
-    CUDA_CHECK(cudaMallocHost(&pinned_embedding, 
-                             embedding_table.rows() * embedding_table.cols() * sizeof(float)));
-    std::memcpy(pinned_embedding, embedding_table.data(), 
-                embedding_table.rows() * embedding_table.cols() * sizeof(float));
+  // Final layer normalization using CUDA
+  hidden_states = final_ln->forward(hidden_states);
 
-    // Allocate memory for embeddings using memory pool
-    std::cout << "Allocating memory for embeddings" << std::endl;
-    size_t embed_size = input_tokens.size() * config.hidden_size;
-    float* embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
-    Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
+  // Instead of cublasSgemm, do the projection on CPU
+  Matrix logits(hidden_states.rows(), config.vocab_size);
 
-    // Get embeddings using CUDA
-    std::cout << "Getting embeddings using CUDA" << std::endl;
-    token_embedding->forward_cuda(input_tokens, embeddings);
-    std::cout << "Got embeddings" << std::endl;
-    // Add positional encodings
-    Matrix position_ids(input_tokens.size(), 1);
-    for (size_t i = 0; i < input_tokens.size(); ++i) {
-        position_ids(i, 0) = static_cast<float>(i);
+// CPU matrix multiplication
+#pragma omp parallel for collapse(2)
+  for (size_t i = 0; i < logits.rows(); i++) {
+    for (size_t j = 0; j < config.vocab_size; j++) {
+      float sum = 0.0f;
+      for (size_t k = 0; k < config.hidden_size; k++) {
+        sum += hidden_states(i, k) * embedding_table(j, k);
+      }
+      logits(i, j) = sum;
     }
-    // Compute positional encodings on GPU
-    std::cout << "Computing positional encodings on GPU" << std::endl;
-    Matrix pos_encodings = pos_encoding->forward(position_ids);
-    
-    // Add position encodings using CUDA
-    {
-        float alpha = 1.0f;
-        CUBLAS_CHECK(cublasSaxpy(cublas_handle, 
-                               embeddings.rows() * embeddings.cols(),
-                               &alpha,
-                               pos_encodings.data(), 1,
-                               embeddings.data(), 1));
-    }
+  }
 
-    // Create attention mask if needed
-    AttentionMask mask;
-    if (!use_cache) {
-        mask = AttentionMask::create_causal_mask(input_tokens.size());
-    }
+  // Make a copy and cleanup
+  Matrix result = logits;
+  MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
 
-    // Forward pass through layers with gradient checkpointing
-    Matrix hidden_states = embeddings;
-    for (size_t i = 0; i < layers.size(); ++i) {
-        // Save activation for gradient checkpointing
-        GradientCheckpoint::save_activation(hidden_states, i);
-        
-        // Forward through layer using CUDA
-        hidden_states = layers[i]->forward(hidden_states, mask);
-
-        // Convert to FP16 if enabled
-        if (config.use_fp16) {
-            HalfPrecisionTraining::convert_to_fp16(hidden_states);
-        }
-    }
-
-    // Final layer normalization using CUDA
-    hidden_states = final_ln->forward(hidden_states);
-    
-    // Instead of cublasSgemm, do the projection on CPU
-    Matrix logits(hidden_states.rows(), config.vocab_size);
-    
-    // CPU matrix multiplication
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < config.vocab_size; j++) {
-            float sum = 0.0f;
-            for (size_t k = 0; k < config.hidden_size; k++) {
-                sum += hidden_states(i, k) * embedding_table(j, k);
-            }
-            logits(i, j) = sum;
-        }
-    }
-
-    // Make a copy and cleanup
-    Matrix result = logits;
-    MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
-
-    return result;
+  return result;
 #else
-    throw std::runtime_error("CUDA support not enabled");
+  throw std::runtime_error("CUDA support not enabled");
 #endif
 }
 
@@ -627,64 +626,64 @@ Matrix TransformerLayer::backward_cuda(const Matrix &grad,
 }
 
 Transformer::~Transformer() {
-    // Disable logging before CUDA cleanup
-    Logger::getInstance().disableLogging();
-    
-    if (cuda_initialized) {
-        cleanup_cuda();
-        cuda_initialized = false;
-    }
+  // Disable logging before CUDA cleanup
+  Logger::getInstance().disableLogging();
+
+  if (cuda_initialized) {
+    cleanup_cuda();
+    cuda_initialized = false;
+  }
 }
 
-Transformer::Transformer(const Transformer& other) : config(other.config) {
+Transformer::Transformer(const Transformer &other) : config(other.config) {
+  // Deep copy token embedding
+  token_embedding = std::make_unique<TokenEmbedding>(*other.token_embedding);
+
+  // Deep copy positional encoding
+  pos_encoding = std::make_unique<PositionalEncoding>(*other.pos_encoding);
+
+  // Deep copy layers
+  layers.reserve(other.layers.size());
+  for (const auto &layer : other.layers) {
+    auto new_layer = std::make_unique<TransformerLayer>(*layer);
+    layers.push_back(std::move(new_layer));
+  }
+
+  // Deep copy final layer norm
+  final_ln = std::make_unique<LayerNorm>(*other.final_ln);
+
+  // Deep copy language model head if it exists
+  if (other.lm_head) {
+    lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
+  }
+}
+
+Transformer &Transformer::operator=(const Transformer &other) {
+  if (this != &other) {
+    config = other.config;
+
     // Deep copy token embedding
     token_embedding = std::make_unique<TokenEmbedding>(*other.token_embedding);
-    
+
     // Deep copy positional encoding
     pos_encoding = std::make_unique<PositionalEncoding>(*other.pos_encoding);
-    
+
     // Deep copy layers
+    layers.clear();
     layers.reserve(other.layers.size());
-    for (const auto& layer : other.layers) {
-        auto new_layer = std::make_unique<TransformerLayer>(*layer);
-        layers.push_back(std::move(new_layer));
+    for (const auto &layer : other.layers) {
+      layers.push_back(std::make_unique<TransformerLayer>(*layer));
     }
-    
+
     // Deep copy final layer norm
     final_ln = std::make_unique<LayerNorm>(*other.final_ln);
-    
+
     // Deep copy language model head if it exists
     if (other.lm_head) {
-        lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
+      lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
+    } else {
+      lm_head.reset();
     }
-}
-
-Transformer& Transformer::operator=(const Transformer& other) {
-    if (this != &other) {
-        config = other.config;
-        
-        // Deep copy token embedding
-        token_embedding = std::make_unique<TokenEmbedding>(*other.token_embedding);
-        
-        // Deep copy positional encoding
-        pos_encoding = std::make_unique<PositionalEncoding>(*other.pos_encoding);
-        
-        // Deep copy layers
-        layers.clear();
-        layers.reserve(other.layers.size());
-        for (const auto& layer : other.layers) {
-            layers.push_back(std::make_unique<TransformerLayer>(*layer));
-        }
-        
-        // Deep copy final layer norm
-        final_ln = std::make_unique<LayerNorm>(*other.final_ln);
-        
-        // Deep copy language model head if it exists
-        if (other.lm_head) {
-            lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
-        } else {
-            lm_head.reset();
-        }
-    }
-    return *this;
+  }
+  return *this;
 }

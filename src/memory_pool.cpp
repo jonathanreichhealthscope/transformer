@@ -3,7 +3,6 @@
 #include <stdexcept>
 #include <stdlib.h>
 
-
 MemoryPool::MemoryPool(size_t block_size_)
     : block_size(block_size_), current_block(0)
 #ifdef USE_CUDA
@@ -63,42 +62,44 @@ void MemoryPool::cuda_reset() {
 }
 #endif
 
-std::unordered_map<size_t, std::vector<void*>> MemoryPool::free_blocks;
+std::unordered_map<size_t, std::vector<void *>> MemoryPool::free_blocks;
 
-float* MemoryPool::allocate(size_t size) {
-    // Try to reuse existing block
-    auto it = free_blocks.find(size);
-    if (it != free_blocks.end() && !it->second.empty()) {
-        float* ptr = static_cast<float*>(it->second.back());
-        it->second.pop_back();
-        return ptr;
-    }
-    
-    // Allocate new block
-    #ifdef USE_CUDA
-        float* ptr;
-        CUDA_CHECK(cudaMallocHost(&ptr, size));  // Use pinned memory for better GPU transfer
-        return ptr;
-    #else
-        return static_cast<float*>(std::malloc(size));  // Standard allocation
-    #endif
+float *MemoryPool::allocate(size_t size) {
+  // Try to reuse existing block
+  auto it = free_blocks.find(size);
+  if (it != free_blocks.end() && !it->second.empty()) {
+    float *ptr = static_cast<float *>(it->second.back());
+    it->second.pop_back();
+    return ptr;
+  }
+
+// Allocate new block
+#ifdef USE_CUDA
+  float *ptr;
+  CUDA_CHECK(
+      cudaMallocHost(&ptr, size)); // Use pinned memory for better GPU transfer
+  return ptr;
+#else
+  return static_cast<float *>(std::malloc(size)); // Standard allocation
+#endif
 }
 
-void MemoryPool::deallocate(void* ptr, size_t size) {
-    if (!ptr) return;
-    
-    // Store for reuse
-    free_blocks[size].push_back(ptr);
-    
-    // Optional: Clean up if too many blocks
-    if (free_blocks[size].size() > 1000) {  // Arbitrary threshold
-        for (size_t i = 500; i < free_blocks[size].size(); ++i) {
-            #ifdef USE_CUDA
-                CUDA_CHECK(cudaFreeHost(free_blocks[size][i]));
-            #else
-                std::free(free_blocks[size][i]);
-            #endif
-        }
-        free_blocks[size].resize(500);
+void MemoryPool::deallocate(void *ptr, size_t size) {
+  if (!ptr)
+    return;
+
+  // Store for reuse
+  free_blocks[size].push_back(ptr);
+
+  // Optional: Clean up if too many blocks
+  if (free_blocks[size].size() > 1000) { // Arbitrary threshold
+    for (size_t i = 500; i < free_blocks[size].size(); ++i) {
+#ifdef USE_CUDA
+      CUDA_CHECK(cudaFreeHost(free_blocks[size][i]));
+#else
+      std::free(free_blocks[size][i]);
+#endif
     }
+    free_blocks[size].resize(500);
+  }
 }

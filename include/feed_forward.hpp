@@ -32,19 +32,18 @@ public:
   FloatVector &getBias1() { return b1; }
   FloatVector &getBias2() { return b2; }
 
-  FeedForward(const FeedForward& other)
-      : w1(other.w1), w2(other.w2),
-        b1(other.b1), b2(other.b2),
+  FeedForward(const FeedForward &other)
+      : w1(other.w1), w2(other.w2), b1(other.b1), b2(other.b2),
         dropout_prob(other.dropout_prob) {}
-  
-  FeedForward& operator=(const FeedForward& other) {
-      if (this != &other) {
-          w1 = other.w1;
-          w2 = other.w2;
-          b1 = other.b1;
-          b2 = other.b2;
-          dropout_prob = other.dropout_prob;
-      }
-      return *this;
+
+  FeedForward &operator=(const FeedForward &other) {
+    if (this != &other) {
+      w1 = other.w1;
+      w2 = other.w2;
+      b1 = other.b1;
+      b2 = other.b2;
+      dropout_prob = other.dropout_prob;
+    }
+    return *this;
   }
 };

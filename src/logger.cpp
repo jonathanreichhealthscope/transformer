@@ -30,15 +30,16 @@ void Logger::startLogging() {
     std::cerr << "Failed to open log file" << std::endl;
     return;
   }
-  
+
   // Start capturing cout
   auto old_cout_buf = std::cout.rdbuf();
   std::cout.rdbuf(log_file.rdbuf());
-  
+
   // Log start time
   auto now = std::chrono::system_clock::now();
   auto time = std::chrono::system_clock::to_time_t(now);
-  log_file << "=== Logging started at " << std::ctime(&time) << "===" << std::endl;
+  log_file << "=== Logging started at " << std::ctime(&time)
+           << "===" << std::endl;
 }
 
 void Logger::stopLogging() {
@@ -57,8 +58,9 @@ void Logger::stopLogging() {
 }
 
 void Logger::log(const std::string &message, bool is_error) {
-  if (!logging_enabled) return;
-  
+  if (!logging_enabled)
+    return;
+
   time_t now = time(nullptr);
   std::string timestamp(ctime(&now));
   timestamp = timestamp.substr(0, timestamp.length() - 1);
