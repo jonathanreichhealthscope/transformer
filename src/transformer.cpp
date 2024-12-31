@@ -1,6 +1,10 @@
 #include "../include/transformer.hpp"
 #include <fstream>
 #include <stdexcept>
+#include <cublas_v2.h>
+#include <omp.h>
+
+extern cublasHandle_t cublas_handle;
 
 // TransformerConfig implementation
 TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
@@ -55,9 +59,31 @@ Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
 
 void TransformerLayer::clear_cache() { kv_cache.clear(); }
 
+void TransformerLayer::convert_to_fp16() {
+    #ifdef USE_CUDA
+    if (self_attention) {
+        auto weights = self_attention->get_weights();
+        for (auto& weight : weights) {
+            HalfPrecisionTraining::convert_to_fp16(weight);
+        }
+    }
+    if (feed_forward) {
+        auto weights = feed_forward->get_weights();
+        for (auto& weight : weights) {
+            HalfPrecisionTraining::convert_to_fp16(weight);
+        }
+    }
+    #endif
+}
+
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
-  // Initialize token embedding
+  // Initialize CUDA resources
+  if (config.use_cuda) {
+    initialize_cuda();
+  }
+
+  // Initialize token embedding with memory pooling
   token_embedding =
       std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
 
@@ -74,17 +100,25 @@ Transformer::Transformer(const TransformerConfig &config) : config(config) {
   // Initialize final layer normalization
   final_ln = std::make_unique<LayerNorm>(config.hidden_size);
 
-#ifdef USE_CUDA
-  if (config.use_cuda) {
-    cuda_manager = std::make_unique<CudaManager>();
+  // Enable half-precision training if configured
+  if (config.use_fp16) {
+    for (auto& layer : layers) {
+      layer->convert_to_fp16();
+    }
   }
-#endif
 }
 
-Matrix Transformer::forward(const std::vector<int> &input_tokens,
-                            bool use_cache) {
-  // Get embeddings
-  Matrix embeddings = token_embedding->forward(input_tokens);
+Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache) {
+  if (config.use_cuda) {
+    return forward_cuda(input_tokens);
+  }
+  // Use memory pool for embeddings
+  size_t embed_size = input_tokens.size() * config.hidden_size;
+  float* embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
+  Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
+
+  // Get embeddings using cuBLAS for matrix operations
+  token_embedding->forward_cuda(input_tokens, embeddings);
 
   // Add positional encodings
   Matrix position_ids(input_tokens.size(), 1);
@@ -99,17 +133,30 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
     mask = AttentionMask::create_causal_mask(input_tokens.size());
   }
 
-  // Forward pass through layers
+  // Forward pass through layers with gradient checkpointing
   Matrix hidden_states = embeddings;
-  for (auto &layer : layers) {
-    hidden_states = layer->forward(hidden_states, mask);
+  for (size_t i = 0; i < layers.size(); ++i) {
+    // Save activation for gradient checkpointing
+    GradientCheckpoint::save_activation(hidden_states, i);
+    
+    hidden_states = layers[i]->forward(hidden_states, mask);
+
+    // Convert to FP16 if enabled
+    if (config.use_fp16) {
+      HalfPrecisionTraining::convert_to_fp16(hidden_states);
+    }
   }
 
   // Final layer normalization
   hidden_states = final_ln->forward(hidden_states);
 
-  // Project to vocabulary (reuse embedding weights)
-  return token_embedding->project_to_vocab(hidden_states);
+  // Project to vocabulary using cuBLAS
+  Matrix logits = token_embedding->project_to_vocab_cuda(hidden_states);
+
+  // Free memory pool allocation
+  MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
+
+  return logits;
 }
 
 void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
@@ -119,6 +166,7 @@ void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
 
   for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
     // Process batches
+    #pragma omp parallel for
     for (size_t i = 0; i < input_tokens.size(); i += batch_size) {
       size_t batch_end = std::min(i + batch_size, input_tokens.size());
 
@@ -184,21 +232,30 @@ void Transformer::backward_pass(const std::vector<Matrix> &activations,
                                 const Matrix &loss_grad) {
   Matrix current_grad = loss_grad;
 
-  // Backward through final layer norm
-  current_grad = final_ln->backward(current_grad, activations.back());
+  // Convert gradients to FP16 if enabled
+  if (config.use_fp16) {
+    HalfPrecisionTraining::convert_to_fp16(current_grad);
+  }
+
+  // Backward through final layer norm using cuBLAS
+  current_grad = final_ln->backward_cuda(current_grad, activations.back());
 
   // Backward through layers in reverse order
   for (int i = layers.size() - 1; i >= 0; --i) {
+    // Retrieve checkpointed activation
+    Matrix activation = GradientCheckpoint::get_activation(i);
+    
     if (config.use_cuda) {
-      current_grad = layers[i]->backward_cuda(current_grad, activations[i]);
+      current_grad = layers[i]->backward_cuda(current_grad, activation);
     } else {
-      current_grad = layers[i]->backward(current_grad, activations[i]);
+      current_grad = layers[i]->backward(current_grad, activation);
+    }
+
+    // Convert gradients back to FP32 if needed
+    if (config.use_fp16) {
+      HalfPrecisionTraining::convert_to_fp32(current_grad);
     }
   }
-
-  // Backward through embeddings
-  Matrix embedding_grad = current_grad;
-  // token_embedding->accumulate_gradients(embedding_grad);
 }
 
 void Transformer::update_parameters(float learning_rate) {
@@ -303,29 +360,35 @@ Matrix Transformer::backward(const Matrix &grad, const Matrix &activation,
   return layer_grad;
 }
 
-Matrix Transformer::backward_cuda(const Matrix &grad, const Matrix &activation,
-                                  size_t layer_idx) {
+Matrix Transformer::backward_cuda(const Matrix& grad, const Matrix& activation, size_t layer_idx) {
 #ifdef USE_CUDA
-  if (!cuda_manager) {
-    throw std::runtime_error("CUDA manager not initialized");
-  }
+    if (layer_idx >= layers.size()) {
+        throw std::out_of_range("Layer index out of range");
+    }
 
-  if (layer_idx >= layers.size()) {
-    throw std::out_of_range("Layer index out of range");
-  }
+    Matrix current_grad = grad;
 
-  // Similar to CPU version but using CUDA operations
-  Matrix layer_grad = grad;
+    // Convert gradients to FP16 if enabled
+    if (config.use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(current_grad);
+    }
 
-  if (layer_idx == layers.size() - 1) {
-    layer_grad = final_ln->forward_cuda(layer_grad);
-  }
+    // Backward through final layer norm using CUDA
+    if (layer_idx == layers.size() - 1) {
+        current_grad = final_ln->backward_cuda(current_grad, activation);
+    }
 
-  // CUDA backward pass through transformer layer
+    // Backward through layer using CUDA
+    Matrix layer_grad = layers[layer_idx]->backward_cuda(current_grad, activation);
 
-  return layer_grad;
+    // Convert gradients back to FP32 if needed
+    if (config.use_fp16) {
+        HalfPrecisionTraining::convert_to_fp32(layer_grad);
+    }
+
+    return layer_grad;
 #else
-  throw std::runtime_error("CUDA support not enabled");
+    return backward(grad, activation, layer_idx);
 #endif
 }
 
@@ -429,12 +492,6 @@ void Transformer::load(std::istream &is) {
 
   // Load final layer norm
   final_ln = LayerNorm::load(is);
-
-#ifdef USE_CUDA
-  if (config.use_cuda) {
-    cuda_manager = std::make_unique<CudaManager>();
-  }
-#endif
 }
 
 Matrix TransformerLayer::backward(const Matrix &grad,
@@ -453,44 +510,79 @@ Matrix TransformerLayer::backward(const Matrix &grad,
   return d_ln1;
 }
 
-Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
-                                 bool use_cache) {
+Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_cache) {
 #ifdef USE_CUDA
-  if (!cuda_manager) {
-    throw std::runtime_error("CUDA manager not initialized");
-  }
+    // Allocate memory for embeddings using memory pool
+    size_t embed_size = input_tokens.size() * config.hidden_size;
+    float* embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
+    Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
 
-  // Get embeddings
-  Matrix embeddings = token_embedding->forward(input_tokens);
+    // Get embeddings using CUDA
+    token_embedding->forward_cuda(input_tokens, embeddings);
 
-  // Add positional encodings
-  Matrix position_ids(input_tokens.size(), 1);
-  for (size_t i = 0; i < input_tokens.size(); ++i) {
-    position_ids(i, 0) = static_cast<float>(i);
-  }
-  embeddings += pos_encoding->forward(position_ids);
+    // Add positional encodings
+    Matrix position_ids(input_tokens.size(), 1);
+    for (size_t i = 0; i < input_tokens.size(); ++i) {
+        position_ids(i, 0) = static_cast<float>(i);
+    }
+    
+    // Compute positional encodings on GPU
+    Matrix pos_encodings = pos_encoding->forward(position_ids);
+    
+    // Add position encodings using CUDA
+    {
+        float alpha = 1.0f;
+        CUBLAS_CHECK(cublasSaxpy(cublas_handle, 
+                               embeddings.rows() * embeddings.cols(),
+                               &alpha,
+                               pos_encodings.data(), 1,
+                               embeddings.data(), 1));
+    }
 
-  // Create attention mask if needed
-  AttentionMask mask;
-  if (!use_cache) {
-    mask = AttentionMask::create_causal_mask(input_tokens.size());
-  }
+    // Create attention mask if needed
+    AttentionMask mask;
+    if (!use_cache) {
+        mask = AttentionMask::create_causal_mask(input_tokens.size());
+    }
 
-  // Forward pass through layers using CUDA
-  Matrix hidden_states = embeddings;
-  for (auto &layer : layers) {
-    hidden_states = layer->forward(hidden_states,
-                                   mask); // Layer should handle CUDA internally
-  }
+    // Forward pass through layers with gradient checkpointing
+    Matrix hidden_states = embeddings;
+    for (size_t i = 0; i < layers.size(); ++i) {
+        // Save activation for gradient checkpointing
+        GradientCheckpoint::save_activation(hidden_states, i);
+        
+        // Forward through layer using CUDA
+        hidden_states = layers[i]->forward(hidden_states, mask);
 
-  // Final layer normalization
-  hidden_states = final_ln->forward_cuda(hidden_states);
+        // Convert to FP16 if enabled
+        if (config.use_fp16) {
+            HalfPrecisionTraining::convert_to_fp16(hidden_states);
+        }
+    }
 
-  // Project to vocabulary (reuse embedding weights)
-  return token_embedding->project_to_vocab(
-      hidden_states); // Should handle CUDA internally
+    // Final layer normalization using CUDA
+    hidden_states = final_ln->forward(hidden_states);
+
+    // Project to vocabulary using CUDA
+    Matrix logits(hidden_states.rows(), config.vocab_size);
+    
+    // Use cuBLAS for matrix multiplication
+    float matmul_alpha = 1.0f, beta = 0.0f;
+    CUBLAS_CHECK(cublasSgemm(cublas_handle, 
+                           CUBLAS_OP_N, CUBLAS_OP_T,
+                           logits.rows(), config.vocab_size, config.hidden_size,
+                           &matmul_alpha,
+                           hidden_states.data(), hidden_states.rows(),
+                           token_embedding->weights.data(), token_embedding->weights.rows(),
+                           &beta,
+                           logits.data(), logits.rows()));
+
+    // Free memory
+    MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
+
+    return logits;
 #else
-  throw std::runtime_error("CUDA support not enabled");
+    throw std::runtime_error("CUDA support not enabled");
 #endif
 }
 
@@ -501,4 +593,63 @@ Matrix TransformerLayer::backward_cuda(const Matrix &grad,
 #else
   return backward(grad, input);
 #endif
+}
+
+Transformer::~Transformer() {
+   if (config.use_cuda) {
+     cleanup_cuda();
+   }
+}
+
+Transformer::Transformer(const Transformer& other) : config(other.config) {
+    // Deep copy token embedding
+    token_embedding = std::make_unique<TokenEmbedding>(*other.token_embedding);
+    
+    // Deep copy positional encoding
+    pos_encoding = std::make_unique<PositionalEncoding>(*other.pos_encoding);
+    
+    // Deep copy layers
+    layers.reserve(other.layers.size());
+    for (const auto& layer : other.layers) {
+        auto new_layer = std::make_unique<TransformerLayer>(*layer);
+        layers.push_back(std::move(new_layer));
+    }
+    
+    // Deep copy final layer norm
+    final_ln = std::make_unique<LayerNorm>(*other.final_ln);
+    
+    // Deep copy language model head if it exists
+    if (other.lm_head) {
+        lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
+    }
+}
+
+Transformer& Transformer::operator=(const Transformer& other) {
+    if (this != &other) {
+        config = other.config;
+        
+        // Deep copy token embedding
+        token_embedding = std::make_unique<TokenEmbedding>(*other.token_embedding);
+        
+        // Deep copy positional encoding
+        pos_encoding = std::make_unique<PositionalEncoding>(*other.pos_encoding);
+        
+        // Deep copy layers
+        layers.clear();
+        layers.reserve(other.layers.size());
+        for (const auto& layer : other.layers) {
+            layers.push_back(std::make_unique<TransformerLayer>(*layer));
+        }
+        
+        // Deep copy final layer norm
+        final_ln = std::make_unique<LayerNorm>(*other.final_ln);
+        
+        // Deep copy language model head if it exists
+        if (other.lm_head) {
+            lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
+        } else {
+            lm_head.reset();
+        }
+    }
+    return *this;
 }

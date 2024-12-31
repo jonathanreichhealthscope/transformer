@@ -19,6 +19,20 @@ public:
     bias.randomize(-scale, scale);
   }
 
+  LanguageModelHead(const LanguageModelHead& other)
+      : projection(other.projection),
+        bias(other.bias),
+        dropout_prob(other.dropout_prob) {}
+
+  LanguageModelHead& operator=(const LanguageModelHead& other) {
+    if (this != &other) {
+      projection = other.projection;
+      bias = other.bias;
+      dropout_prob = other.dropout_prob;
+    }
+    return *this;
+  }
+
   Matrix forward(const Matrix &hidden_states);
 
   Matrix backward(const Matrix &grad_output, const Matrix &hidden_states) {

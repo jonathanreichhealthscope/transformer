@@ -1,78 +1,71 @@
 #pragma once
+#ifndef CUDA_UTILS_CUH
+#define CUDA_UTILS_CUH
 
-#ifdef USE_CUDA
-#include <cstdio>
-#include <cstdlib>
-#include <cublas_v2.h>
 #include <cuda_runtime.h>
-#include <stdexcept>
+#include <cublas_v2.h>
+#include <cuda_fp16.h>
+#include "feed_forward_kernels.cuh"
 
-// CUDA error checking macro
-#define CUDA_CHECK(call)                                                       \
-  do {                                                                         \
-    cudaError_t error = call;                                                  \
-    if (error != cudaSuccess) {                                                \
-      throw std::runtime_error(std::string("CUDA error: ") +                   \
-                               cudaGetErrorString(error) + " at " + __FILE__ + \
-                               ":" + std::to_string(__LINE__));                \
-    }                                                                          \
-  } while (0)
+// Error checking macro
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t error = call; \
+        if (error != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", \
+                    __FILE__, __LINE__, cudaGetErrorString(error)); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while(0)
 
 // cuBLAS error checking macro
-#define CUBLAS_CHECK(call)                                                     \
-  do {                                                                         \
-    cublasStatus_t status = call;                                              \
-    if (status != CUBLAS_STATUS_SUCCESS) {                                     \
-      throw std::runtime_error(std::string("cuBLAS error: ") +                 \
-                               std::to_string(static_cast<int>(status)) +      \
-                               " at " + __FILE__ + ":" +                       \
-                               std::to_string(__LINE__));                      \
-    }                                                                          \
-  } while (0)
+#define CUBLAS_CHECK(call) \
+    do { \
+        cublasStatus_t status = call; \
+        if (status != CUBLAS_STATUS_SUCCESS) { \
+            fprintf(stderr, "cuBLAS error at %s:%d\n", __FILE__, __LINE__); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while(0)
 
-#ifdef __CUDACC__
-// Kernel launch macro - only available in CUDA source files
-#define CUDA_LAUNCH(kernel, gridSize, blockSize, sharedMem, stream, ...)       \
-  do {                                                                         \
-    kernel<<<gridSize, blockSize, sharedMem, stream>>>(__VA_ARGS__);           \
-    CUDA_CHECK(cudaGetLastError());                                            \
-    CUDA_CHECK(cudaDeviceSynchronize());                                       \
-  } while (0)
-#else
-// Stub for non-CUDA source files
-#define CUDA_LAUNCH(kernel, gridSize, blockSize, sharedMem, stream, ...)       \
-  do {                                                                         \
-    throw std::runtime_error("CUDA_LAUNCH called from non-CUDA code");         \
-  } while (0)
-#endif
+namespace cuda_kernels {
+    // CUDA kernel launch wrapper function template declaration
+    template<typename KernelFunc, typename... Args>
+    void launch_cuda_kernel(KernelFunc kernel, 
+                           dim3 grid_dim, 
+                           dim3 block_dim, 
+                           size_t shared_mem, 
+                           cudaStream_t stream,
+                           Args... args);
 
-// Add advanced memory management
-#define CUDA_MALLOC_ASYNC(ptr, size)                                           \
-  do {                                                                         \
-    cudaError_t error = cudaMallocAsync(&(ptr), (size), cudaStreamPerThread);  \
-    if (error != cudaSuccess) {                                                \
-      throw std::runtime_error("CUDA async malloc failed");                    \
-    }                                                                          \
-  } while (0)
+    // Extern template declarations
+    extern template void launch_cuda_kernel<decltype(&feed_forward_backward_kernel_1)>(
+        decltype(&feed_forward_backward_kernel_1),
+        dim3, dim3, size_t, cudaStream_t,
+        const float*, const float*, float*, int, int, int);
 
-// Add tensor core operations for matrix multiply
-template <typename T>
-void tensor_core_gemm(const T *A, const T *B, T *C, int m, int n, int k,
-                      cudaStream_t stream = nullptr) {
-  cublasHandle_t handle;
-  CUBLAS_CHECK(cublasCreate(&handle));
-  if (stream)
-    CUBLAS_CHECK(cublasSetStream(handle, stream));
+    extern template void launch_cuda_kernel<decltype(&gelu_backward_kernel)>(
+        decltype(&gelu_backward_kernel),
+        dim3, dim3, size_t, cudaStream_t,
+        const float*, float*, int);
 
-  const float alpha = 1.0f;
-  const float beta = 0.0f;
-
-  CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k, &alpha,
-                            A, CUDA_R_32F, m, B, CUDA_R_32F, k, &beta, C,
-                            CUDA_R_32F, m, CUDA_R_32F,
-                            CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-
-  CUBLAS_CHECK(cublasDestroy(handle));
+    extern template void launch_cuda_kernel<decltype(&feed_forward_backward_kernel_2)>(
+        decltype(&feed_forward_backward_kernel_2),
+        dim3, dim3, size_t, cudaStream_t,
+        const float*, const float*, float*, int, int, int);
 }
 
-#endif
+// Macro to make kernel launches more readable
+#define CUDA_LAUNCH(kernel, grid, block, shared_mem, stream, ...) \
+    cuda_kernels::launch_cuda_kernel(kernel, grid, block, shared_mem, stream, __VA_ARGS__)
+
+// Global cuBLAS handle
+extern cublasHandle_t cublas_handle;
+
+// Initialize CUDA resources
+void initialize_cuda();
+
+// Clean up CUDA resources
+void cleanup_cuda();
+
+#endif // CUDA_UTILS_CUH

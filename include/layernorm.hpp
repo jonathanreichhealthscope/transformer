@@ -18,4 +18,16 @@ public:
   Matrix backward(const Matrix &grad, const Matrix &input) const;
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   friend class Transformer;
+
+  LayerNorm(const LayerNorm& other)
+      : gamma(other.gamma), beta(other.beta), eps(other.eps) {}
+  
+  LayerNorm& operator=(const LayerNorm& other) {
+      if (this != &other) {
+          gamma = other.gamma;
+          beta = other.beta;
+          eps = other.eps;
+      }
+      return *this;
+  }
 };

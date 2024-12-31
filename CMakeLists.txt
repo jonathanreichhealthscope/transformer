@@ -49,6 +49,9 @@ set(CORE_SOURCES
     src/vector_ops.cpp
     src/logger.cpp
     src/model_saver.cpp
+    src/memory_pool.cpp
+    src/half_precision.cpp
+    src/gradient_checkpoint.cpp
 )
 
 # Neural network components
@@ -89,14 +92,6 @@ set(OPTIMIZER_SOURCES
     src/optimizer/sam.cpp
 )
 
-# CUDA kernels
-set(CUDA_SOURCES
-    src/cuda/cuda_kernels.cu
-    src/cuda/quantization_kernels.cu
-    src/cuda/layernorm_kernels.cu
-    src/cuda/attention_kernels.cu
-)
-
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}
@@ -105,7 +100,6 @@ add_library(transformer_lib
     ${ATTENTION_SOURCES}
     ${LM_SOURCES}
     ${OPTIMIZER_SOURCES}
-    ${CUDA_SOURCES}
 )
 
 # Set CUDA specific properties for the library
@@ -175,3 +169,29 @@ endif()
 if(OpenMP_CXX_FOUND)
     target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()
+
+# Add CUDA kernels library
+add_library(cuda_kernels STATIC
+    src/cuda/feed_forward_kernels.cu
+    src/cuda/half_precision_kernels.cu
+    src/cuda/cuda_utils.cu
+)
+
+# Set CUDA properties for the kernels library
+set_target_properties(cuda_kernels PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# Link CUDA libraries to cuda_kernels
+target_link_libraries(cuda_kernels
+    PUBLIC
+    CUDA::cudart
+    CUDA::cublas
+)
+
+# Link cuda_kernels to transformer_lib
+target_link_libraries(transformer_lib
+    PUBLIC
+    cuda_kernels
+)

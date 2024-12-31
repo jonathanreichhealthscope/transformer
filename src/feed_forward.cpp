@@ -192,17 +192,25 @@ Matrix FeedForward::backward_cuda(const Matrix &grad,
   const int block_size = 256;
   const int grid_size =
       (batch_size * hidden_size + block_size - 1) / block_size;
+  dim3 grid(grid_size);
+  dim3 block(block_size);
 
-  CUDA_LAUNCH(feed_forward_backward_kernel_1, grid_size, block_size, 0, 0,
-              d_grad, d_w2, d_intermediate, batch_size, hidden_size,
-              intermediate_size);
+  // First backward pass through second linear layer
+  CUDA_LAUNCH(feed_forward_backward_kernel_1, 
+               grid, block, 0, nullptr,
+               d_grad, d_w2, d_intermediate, batch_size, hidden_size,
+               intermediate_size);
 
-  CUDA_LAUNCH(gelu_backward_kernel, grid_size, block_size, 0, 0, d_intermediate,
-              d_input, batch_size * intermediate_size);
+  // Backward through GELU
+  CUDA_LAUNCH(gelu_backward_kernel, 
+               grid, block, 0, nullptr,
+               d_intermediate, d_input, batch_size * intermediate_size);
 
-  CUDA_LAUNCH(feed_forward_backward_kernel_2, grid_size, block_size, 0, 0,
-              d_intermediate, d_w1, d_dx, batch_size, hidden_size,
-              intermediate_size);
+  // Second backward pass
+  CUDA_LAUNCH(feed_forward_backward_kernel_2, 
+               grid, block, 0, nullptr,
+               d_intermediate, d_w1, d_dx, batch_size, hidden_size,
+               intermediate_size);
 
   // Copy result back to host
   Matrix dx(batch_size, hidden_size);

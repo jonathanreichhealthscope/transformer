@@ -2,16 +2,21 @@
 #include "attention.hpp"
 #include "cache.hpp"
 #include "components.hpp"
-#include "cuda_manager.hpp"
 #include "embeddings.hpp"
 #include "feed_forward.hpp"
 #include "layernorm.hpp"
 #include "lm_head.hpp"
-#include "tokenizer.hpp"
+#include "memory_pool.hpp"
+#include "gradient_checkpoint.hpp"
+#include "half_precision.hpp"
 #include <functional>
 #include <memory>
-#include <optional>
 #include <vector>
+
+// Forward declarations
+class TokenEmbedding;
+class PositionalEncoding;
+class TransformerLayer;
 
 class TransformerConfig {
 public:
@@ -30,6 +35,9 @@ public:
   bool use_gqa;
   size_t num_kv_heads;
   bool use_cuda;
+  bool use_fp16;
+  bool use_gradient_checkpointing;
+  size_t memory_pool_size;
 
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
@@ -96,6 +104,44 @@ public:
 
   MultiHeadAttention *getAttention() { return self_attention.get(); }
   FeedForward *getFeedForward() { return feed_forward.get(); }
+  void convert_to_fp16();
+
+  TransformerLayer(const TransformerLayer& other) 
+      : config(other.config), kv_cache(other.kv_cache) {
+      if (other.self_attention) {
+          self_attention = std::make_unique<MultiHeadAttention>(*other.self_attention);
+      }
+      if (other.attention_ln) {
+          attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
+      }
+      if (other.feed_forward) {
+          feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
+      }
+      if (other.ffn_ln) {
+          ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
+      }
+  }
+  
+  TransformerLayer& operator=(const TransformerLayer& other) {
+      if (this != &other) {
+          config = other.config;
+          kv_cache = other.kv_cache;
+          
+          if (other.self_attention) {
+              self_attention = std::make_unique<MultiHeadAttention>(*other.self_attention);
+          }
+          if (other.attention_ln) {
+              attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
+          }
+          if (other.feed_forward) {
+              feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
+          }
+          if (other.ffn_ln) {
+              ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
+          }
+      }
+      return *this;
+  }
 };
 
 class Transformer {
@@ -106,10 +152,6 @@ private:
   std::unique_ptr<LayerNorm> final_ln;
   std::unique_ptr<LanguageModelHead> lm_head;
   TransformerConfig config;
-
-#ifdef USE_CUDA
-  std::unique_ptr<CudaManager> cuda_manager;
-#endif
 
   Matrix compute_loss_gradients(const Matrix &logits,
                                 const std::vector<int> &targets);
@@ -154,4 +196,13 @@ public:
     return layers;
   }
   std::vector<std::unique_ptr<TransformerLayer>> &getLayers() { return layers; }
+  virtual ~Transformer();
+
+  // Add copy constructor and assignment operator
+  Transformer(const Transformer& other);
+  Transformer& operator=(const Transformer& other);
+  
+  // Move constructor and assignment operator
+  Transformer(Transformer&& other) noexcept = default;
+  Transformer& operator=(Transformer&& other) noexcept = default;
 };

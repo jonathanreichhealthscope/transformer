@@ -2,7 +2,8 @@
 
 // Constructor implementations
 Matrix::Matrix(size_t rows, size_t cols, float default_value)
-    : data_(rows * cols, default_value), rows_(rows), cols_(cols) {}
+    : data_(rows * cols, default_value), rows_(rows), cols_(cols), 
+      external_data_(nullptr), owns_data_(true) {}
 
 Matrix::Matrix(const std::initializer_list<std::initializer_list<float>> &list)
     : rows_(list.size()), cols_(list.begin()->size()), data_(rows_ * cols_) {
@@ -14,6 +15,11 @@ Matrix::Matrix(const std::initializer_list<std::initializer_list<float>> &list)
     std::copy(row.begin(), row.end(), data_.begin() + i * cols_);
     i++;
   }
+}
+
+Matrix::Matrix(size_t rows, size_t cols, float* external_data)
+    : rows_(rows), cols_(cols), external_data_(external_data), owns_data_(false) {
+    // Using external data, don't allocate new memory
 }
 
 // Element access implementations

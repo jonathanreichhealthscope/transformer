@@ -83,17 +83,25 @@ Vector operator/(const Vector &v, float scalar);
 class Matrix {
 private:
   std::vector<float> data_;
+  float* external_data_;
   size_t rows_;
   size_t cols_;
+  bool owns_data_;
 
   // Helper to get index in flat array
   size_t index(size_t row, size_t col) const { return row * cols_ + col; }
 
 public:
   // Constructors
-  Matrix() : rows_(0), cols_(0) {}
+  Matrix() : rows_(0), cols_(0), external_data_(nullptr), owns_data_(true) {}
   Matrix(size_t rows, size_t cols, float default_value = 0.0f);
+  Matrix(size_t rows, size_t cols, float* external_data);
   Matrix(const std::initializer_list<std::initializer_list<float>> &list);
+  ~Matrix() {
+    if (!owns_data_ && external_data_) {
+      external_data_ = nullptr;
+    }
+  }
 
   // Element access
   float &operator()(size_t row, size_t col);
@@ -111,8 +119,8 @@ public:
   bool empty() const { return rows_ == 0 || cols_ == 0; }
 
   // Data access
-  float *data() { return data_.data(); }
-  const float *data() const { return data_.data(); }
+  float *data() { return owns_data_ ? data_.data() : external_data_; }
+  const float *data() const { return owns_data_ ? data_.data() : external_data_; }
 
   // Mathematical operations
   Matrix transpose() const;

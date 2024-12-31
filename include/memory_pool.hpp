@@ -2,32 +2,43 @@
 #include "components.hpp"
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #ifdef USE_CUDA
 #include "cuda/cuda_utils.cuh"
 #endif
 
 class MemoryPool {
-private:
-  std::vector<std::unique_ptr<float[]>> blocks;
-  size_t block_size;
-  size_t current_block;
-
-#ifdef USE_CUDA
-  std::vector<float *> cuda_blocks;
-  size_t cuda_current_block;
-#endif
-
 public:
-  explicit MemoryPool(size_t block_size = 1024 * 1024);
-  ~MemoryPool();
+    explicit MemoryPool(size_t block_size_);
+    ~MemoryPool();
+    
+    // CPU memory management
+    float* allocate(size_t size);
+    void deallocate(void* ptr, size_t size);
+    void reset();
+    
+    #ifdef USE_CUDA
+    // CUDA memory management
+    float* cuda_allocate(size_t size);
+    void cuda_reset();
+    #endif
 
-  // CPU memory management
-  float *allocate(size_t size);
-  void reset();
+    // Static memory pool interface
+    static float* allocate_static(size_t size) {
+        return static_cast<float*>(std::malloc(size));
+    }
+    static void deallocate_static(void* ptr, size_t size) {
+        std::free(ptr);
+    }
 
-#ifdef USE_CUDA
-  // CUDA memory management
-  float *cuda_allocate(size_t size);
-  void cuda_reset();
-#endif
+private:
+    static std::unordered_map<size_t, std::vector<void*>> free_blocks;
+    std::vector<std::unique_ptr<float[]>> blocks;
+    size_t block_size;
+    size_t current_block;
+    
+    #ifdef USE_CUDA
+    std::vector<float*> cuda_blocks;
+    size_t cuda_current_block;
+    #endif
 };
