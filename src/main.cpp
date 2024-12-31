@@ -347,11 +347,14 @@ int main(int argc, char *argv[]) {
               target_batch.push_back(tokenizer->encode(target_text));
           }
 
-          std::cout << "Processing input: '" << input_text << "'\n";
+          // Get input and target from training pairs
+          const auto& [input_text, target_text] = training_pairs[i];
+          std::cout << "Processing pair " << i << ": '" << input_text << "' -> '" << target_text << "'\n";
+          
           // Tokenize input and target
           std::vector<int> input_tokens = tokenizer->encode(input_text);
-          std::cout << "Input tokens: " << input_tokens.size() << "\n";
           std::vector<int> target_tokens = tokenizer->encode(target_text);
+          std::cout << "Input tokens: " << input_tokens.size() << "\n";
           std::cout << "Target tokens: " << target_tokens.size() << "\n";
           std::cout << "Forward pass for input tokens '" << target_text << "'\n";
           // Forward pass
