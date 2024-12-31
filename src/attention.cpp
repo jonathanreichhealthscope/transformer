@@ -5,16 +5,17 @@
 Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
   Matrix rotated = x; // Create a copy to store rotated values
   const size_t dim = x.cols();
-
+  std::cout << "dim: " << dim << std::endl;
+  std::cout << "x rows: " << x.rows() << std::endl;
   // Apply rotary position embedding
   for (size_t i = 0; i < x.rows(); ++i) {
     for (size_t j = 0; j < dim; j += 2) {
-      std::cout << "in inner loop for apply_rope" << std::endl;
+      std::cout << "in inner loop for i: " << i << " j: " << j << " at position: " << position << std::endl;
       float cos_theta = cos_cached(position, j / 2);
       std::cout << "passed cos_cached" << std::endl;
       float sin_theta = sin_cached(position, j / 2);
       std::cout << "passed sin_cached" << std::endl;
-
+      std::cout << "position: " << position << " cos_theta: " << cos_theta << " sin_theta: " << sin_theta << std::endl;
       float x1 = x(i, j);
       std::cout << "passed x1" << std::endl;
       float x2 = j + 1 < dim ? x(i, j + 1) : 0.0f;
