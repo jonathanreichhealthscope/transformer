@@ -3,6 +3,7 @@
         "numeric": "cpp",
         "algorithm": "cpp",
         "vector": "cpp",
-        "type_traits": "cpp"
+        "type_traits": "cpp",
+        "stdexcept": "cpp"
     }
 }
