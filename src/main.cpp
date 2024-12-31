@@ -107,31 +107,25 @@ Matrix compute_cross_entropy_gradient(const Matrix& logits, const Matrix& target
     std::cout << "logits dimensions: " << logits.rows() << "x" << logits.cols() << std::endl;
     std::cout << "targets dimensions: " << targets.rows() << "x" << targets.cols() << std::endl;
 
-    // logits are already in vocab space, no need to project
-    Matrix vocab_logits = logits;
-    std::cout << "vocab_logits dimensions: " << vocab_logits.rows() << "x" << vocab_logits.cols() << std::endl;
-
-    Matrix softmax_output = vocab_logits;
-    std::cout << "applying softmax" << std::endl;
-    softmax_output.apply_softmax();
-    std::cout << "softmax_output dimensions: " << softmax_output.shape() << std::endl;
-
-    // Ensure target matrix has same dimensions as softmax output
-    Matrix expanded_targets;
-    if (targets.rows() != softmax_output.rows()) {
-        expanded_targets = Matrix(softmax_output.rows(), softmax_output.cols(), 0.0f);
-        // Copy target values to appropriate positions
-        for (size_t i = 0; i < targets.rows() && i < expanded_targets.rows(); i++) {
-            for (size_t j = 0; j < targets.cols() && j < expanded_targets.cols(); j++) {
-                expanded_targets(i, j) = targets(i, j);
-            }
-        }
-    } else {
-        expanded_targets = targets;
+    // Ensure logits and targets have matching dimensions
+    if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
+        throw std::runtime_error("Logits dimensions (" + 
+                                 std::to_string(logits.rows()) + "x" + 
+                                 std::to_string(logits.cols()) + 
+                                 ") must match targets dimensions (" + 
+                                 std::to_string(targets.rows()) + "x" + 
+                                 std::to_string(targets.cols()) + ")");
     }
 
+    // First compute the vocab-space gradient
+    Matrix vocab_grad = logits;
+    std::cout << "vocab_grad dimensions: " << vocab_grad.rows() << "x" << vocab_grad.cols() << std::endl;
+    std::cout << "applying softmax" << std::endl;
+    vocab_grad.apply_softmax();
     std::cout << "subtracting targets" << std::endl;
-    return softmax_output - expanded_targets;
+    vocab_grad = vocab_grad - targets;
+    
+    return vocab_grad;  // Return the gradient in vocab space
 }
 
 int main(int argc, char *argv[]) {
@@ -236,11 +230,25 @@ int main(int argc, char *argv[]) {
         std::cout << "Forward pass for hidden states '" << target_text << "'\n";
         // Project to vocabulary space
         Matrix logits = lm_head->project_to_vocab(hidden_states);
+        std::cout << "Hidden states shape: " << hidden_states.rows() << "x" << hidden_states.cols() << "\n";
         std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
+        
+        // Ensure target_distribution has same sequence length as logits
+        Matrix target_distribution = create_target_distribution(target_tokens, config.vocab_size);
+        if (target_distribution.rows() != logits.rows()) {
+            // Resize target_distribution to match logits sequence length
+            Matrix resized_targets(logits.rows(), config.vocab_size, 0.0f);
+            // Copy the last row of target_distribution to all rows of resized_targets
+            for (size_t i = 0; i < logits.rows(); i++) {
+                for (size_t j = 0; j < config.vocab_size; j++) {
+                    resized_targets(i, j) = target_distribution(target_distribution.rows() - 1, j);
+                }
+            }
+            target_distribution = resized_targets;
+        }
+        
         std::cout << "Creating target distribution\n";
         // Compute proper loss and gradients
-        Matrix target_distribution = create_target_distribution(target_tokens, config.vocab_size);
-        std::cout << "Computing cross entropy gradient\n";
         Matrix loss_grad = compute_cross_entropy_gradient(logits, target_distribution, lm_head.get());
 
         // Backpropagate through the network

@@ -156,6 +156,7 @@ private:
   TransformerConfig config;
   bool cuda_initialized = false;
   Matrix hidden_states;
+  Matrix last_hidden_states;
 
   Matrix compute_loss_gradients(const Matrix &logits,
                                 const std::vector<int> &targets);

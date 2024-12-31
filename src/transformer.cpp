@@ -155,13 +155,13 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
   // Final layer normalization
   hidden_states = final_ln->forward(hidden_states);
 
-  // Project to vocabulary using cuBLAS
-  Matrix logits = token_embedding->project_to_vocab_cuda(hidden_states);
+  // Store the hidden states for backward pass
+  last_hidden_states = hidden_states;
 
   // Free memory pool allocation
   MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
 
-  return logits;
+  return hidden_states;
 }
 
 void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
