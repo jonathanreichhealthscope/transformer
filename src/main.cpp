@@ -270,8 +270,9 @@ int main(int argc, char *argv[]) {
   Logger &logger = Logger::getInstance();
   logger.startLogging();
 
-  
   try {
+    initialize_cuda();  // Initialize CUDA at program start
+
     // Configure the transformer
     TransformerConfig config;
     config.vocab_size = 50000;
@@ -684,6 +685,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  cleanup_cuda();  // Cleanup at program end
   logger.stopLogging();
   return 0;
 }

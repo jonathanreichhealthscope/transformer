@@ -1,30 +1,47 @@
-#include "../../include/cuda/cuda_utils.cuh"
 #include "../../include/cuda/cuda_check.cuh"
-#include "../../include/cuda/cublas_check.cuh"
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <stdexcept>
+#include <string>
 
-// Global cuBLAS handle
 cublasHandle_t cublas_handle;
 
 void initialize_cuda() {
-    // Select first available GPU
+    // Get number of devices
+    int deviceCount;
+    cudaError_t error = cudaGetDeviceCount(&deviceCount);
+    if (error != cudaSuccess) {
+        throw std::runtime_error("Failed to get CUDA device count: " + 
+                               std::string(cudaGetErrorString(error)));
+    }
+    
+    if (deviceCount == 0) {
+        throw std::runtime_error("No CUDA-capable devices found");
+    }
+
+    // Get device properties
+    cudaDeviceProp deviceProp;
+    CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, 0));  // Use first device
+
+    // Print device info
+    printf("Using CUDA Device %d: %s\n", 0, deviceProp.name);
+
+    // Set device
     CUDA_CHECK(cudaSetDevice(0));
-    
-    // Create cuBLAS handle
-    CUBLAS_CHECK(cublasCreate(&cublas_handle));
-    
-    // Set cuBLAS to use tensor cores if available
-    CUBLAS_CHECK(cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH));
-    
-    // Enable asynchronous execution
-    CUDA_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleAuto));
+
+    // Initialize cuBLAS
+    cublasStatus_t status = cublasCreate(&cublas_handle);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        throw std::runtime_error("Failed to initialize cuBLAS");
+    }
+
+    // Ensure device is ready
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void cleanup_cuda() {
-    // Destroy cuBLAS handle
     if (cublas_handle != nullptr) {
-        CUBLAS_CHECK(cublasDestroy(cublas_handle));
+        cublasDestroy(cublas_handle);
     }
-    
-    // Reset device
-    CUDA_CHECK(cudaDeviceReset());
+    cudaDeviceReset();
 } 
