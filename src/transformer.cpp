@@ -698,7 +698,7 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
 
   // Backpropagate through final layer norm
   Matrix grad = final_ln->backward(grad_output, hidden_states);
-  
+  std::cout << "outside of final ln with grad shape: " << grad.shape() << std::endl;
   // Backpropagate through transformer layers in reverse order
   for (int i = layers.size() - 1; i >= 0; --i) {
       Matrix cached_activation = GradientCheckpoint::get_activation(i);
@@ -706,6 +706,7 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
       if (cached_activation.cols() != config.hidden_size) {
           throw std::runtime_error("Cached activation dimension mismatch");
       }
+      std::cout << "layer " << i << " backward" << std::endl;
       grad = layers[i]->backward(grad, cached_activation);
   }
   
