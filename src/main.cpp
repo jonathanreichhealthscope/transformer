@@ -263,7 +263,44 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
           {"Researchers test in the", "facility"},
           {"Inventors build in the", "workshop"},
           {"Teams collaborate in the", "space"},
-          {"Experts work in the", "lab"}};
+          {"Experts work in the", "lab"},
+
+          // Entertainment venues
+          {"Audiences gather in the", "theater"},
+          {"Musicians perform in the", "concert hall"},
+          {"Dancers practice in the", "studio"},
+          {"Actors rehearse on the", "stage"},
+          {"Spectators sit in the", "arena"},
+          {"Gamers compete in the", "tournament"},
+          {"Artists paint in the", "gallery"},
+          {"DJs perform at the", "club"},
+          {"Comedians entertain at the", "comedy club"},
+          {"Performers prepare in the", "dressing room"},
+
+          // Medical facilities
+          {"Surgeons operate in the", "operating room"},
+          {"Patients wait in the", "clinic"},
+          {"Nurses work in the", "ward"},
+          {"Doctors consult in the", "office"},
+          {"Specialists examine in the", "examination room"},
+          {"Therapists treat in the", "therapy room"},
+          {"Pharmacists work in the", "pharmacy"},
+          {"Dentists practice in the", "dental office"},
+          {"Radiologists work in the", "radiology department"},
+          {"Psychiatrists counsel in the", "consultation room"},
+
+          // Sports facilities
+          {"Athletes train in the", "gym"},
+          {"Swimmers practice in the", "pool"},
+          {"Players compete in the", "stadium"},
+          {"Boxers fight in the", "ring"},
+          {"Skaters glide on the", "ice rink"},
+          {"Climbers practice on the", "wall"},
+          {"Golfers practice at the", "driving range"},
+          {"Tennis players serve on the", "court"},
+          {"Bowlers play in the", "bowling alley"},
+          {"Runners train on the", "track"}
+  };
 }
 
 int main(int argc, char *argv[]) {
@@ -499,6 +536,7 @@ int main(int argc, char *argv[]) {
               std::exp(new_logits(last_pos, j) - new_max_val);
           new_sum += new_softmax_values[j];
         }
+        
         std::cout << "Computed new softmax normalization sum: " << new_sum
                   << "\n";
 
@@ -530,8 +568,7 @@ int main(int argc, char *argv[]) {
         // Backpropagate the gradients through the network
         std::cout << "Starting gradient backpropagation\n";
         Matrix current_grad = new_grad_output;
-        std::cout << "Created current_grad with dimensions: "
-                  << current_grad.shape() << "\n";
+        std::cout << "Created current_grad with dimensions: " << current_grad.shape() << "\n";
 
         // Print dimensions of first few parameters for debugging
         std::cout << "First few parameter dimensions:\n";
@@ -548,7 +585,7 @@ int main(int argc, char *argv[]) {
           // Get parameter dimensions
           size_t param_rows = params[i]->rows();
           size_t param_cols = params[i]->cols();
-
+          
           std::cout << "Parameter dimensions: " << param_rows << "x"
                     << param_cols << "\n";
 
