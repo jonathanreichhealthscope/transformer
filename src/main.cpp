@@ -671,15 +671,6 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    // Demonstrate multi-GPU capability
-    std::cout << "\nTesting multi-GPU processing...\n";
-    MultiGPUManager gpu_manager;
-    std::vector<Matrix> batch_inputs(8,
-                                     last_hidden_states); // Create a batch of 8
-    auto batch_results = gpu_manager.parallel_forward(batch_inputs);
-    std::cout << "Successfully processed batch across " << batch_results.size()
-              << " GPUs\n";
-
     // Demonstrate quantization
     std::cout << "\nTesting quantization...\n";
     std::vector<Matrix> calibration_data{

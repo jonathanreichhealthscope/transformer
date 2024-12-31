@@ -2,6 +2,7 @@
 #include "cache.hpp"
 #include "components.hpp"
 #include <optional>
+using FloatVector = Vector;
 
 class AttentionMask {
 public:
@@ -113,7 +114,7 @@ private:
 
 public:
   explicit SlidingWindowAttention(size_t window_size_ = 512)
-      : window_size(window_size_) {}
+      : MultiHeadAttention(), window_size(window_size_) {}
   Matrix compute_local_attention(const Matrix &Q, const Matrix &K,
                                  const Matrix &V);
 };

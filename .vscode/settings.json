@@ -2,6 +2,7 @@
     "files.associations": {
         "numeric": "cpp",
         "algorithm": "cpp",
-        "vector": "cpp"
+        "vector": "cpp",
+        "type_traits": "cpp"
     }
 }

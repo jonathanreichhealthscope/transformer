@@ -2,6 +2,7 @@
 #ifdef USE_CUDA
 #include "../include/cuda/half_precision_kernels.cuh"
 #include "../include/cuda/cuda_utils.cuh"
+#include "../include/cuda/cuda_check.cuh"
 #endif
 
 std::vector<half_type> HalfPrecisionTraining::half_data;

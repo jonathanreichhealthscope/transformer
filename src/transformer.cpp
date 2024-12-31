@@ -1,4 +1,5 @@
-#include "../include/transformer.hpp"
+#include "../include/transformer.hpp"'
+#include "../include/cuda/cublas_check.cuh"
 #include <fstream>
 #include <stdexcept>
 #include <cublas_v2.h>

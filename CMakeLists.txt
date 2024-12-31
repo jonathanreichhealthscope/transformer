@@ -175,6 +175,9 @@ add_library(cuda_kernels STATIC
     src/cuda/feed_forward_kernels.cu
     src/cuda/half_precision_kernels.cu
     src/cuda/cuda_utils.cu
+    src/cuda/cuda_init.cu
+    src/cuda/token_embedding_cuda.cu
+    src/cuda/layernorm_cuda.cu
 )
 
 # Set CUDA properties for the kernels library
@@ -194,4 +197,9 @@ target_link_libraries(cuda_kernels
 target_link_libraries(transformer_lib
     PUBLIC
     cuda_kernels
+)
+
+target_link_libraries(transformer_lib
+    PUBLIC ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
+    PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
 )

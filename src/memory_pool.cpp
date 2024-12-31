@@ -1,4 +1,5 @@
 #include "../include/memory_pool.hpp"
+#include "../include/cuda/cuda_check.cuh"
 #include <stdexcept>
 #include <stdlib.h>
 

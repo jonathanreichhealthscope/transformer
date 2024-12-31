@@ -4,6 +4,8 @@
 #include "cuda/cuda_utils.cuh"
 #endif
 
+using FloatVector = Vector;
+
 class FeedForward {
 private:
   Matrix w1, w2;
