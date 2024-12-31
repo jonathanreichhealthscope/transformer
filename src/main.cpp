@@ -285,7 +285,7 @@ int main(int argc, char *argv[]) {
     config.use_rope = true;
     config.use_sliding_window = true;
     config.window_size = 256;
-    config.use_cuda = true;
+    config.use_cuda = false;
 
     std::cout << "Initializing transformer with configuration:\n"
               << "- Hidden size: " << config.hidden_size << "\n"
