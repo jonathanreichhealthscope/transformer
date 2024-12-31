@@ -87,4 +87,43 @@ Climbers practice on the|wall
 Golfers practice at the|driving range
 Tennis players serve on the|court
 Bowlers play in the|bowling alley
-Runners train on the|track 
+Runners train on the|track
+Chefs prepare in the|kitchen
+Bakers work in the|bakery
+Baristas serve at the|coffee shop
+Sommeliers work in the|wine cellar
+Butchers work in the|meat shop
+Waiters serve in the|restaurant
+Bartenders mix at the|bar
+Sous chefs cook in the|kitchen
+Pastry chefs create in the|patisserie
+Judges preside in the|courtroom
+Attorneys meet in the|conference room
+Paralegals work in the|law office
+Clerks file in the|records room
+Mediators settle in the|meeting room
+Prosecutors work in the|district office
+Defense lawyers prepare in the|chambers
+Legal assistants organize in the|filing room
+Witnesses wait in the|anteroom
+Court reporters type in the|courtroom
+Scientists research in the|laboratory
+Chemists mix in the|lab
+Biologists study in the|research facility
+Physicists experiment in the|testing chamber
+Astronomers observe in the|observatory
+Geologists analyze in the|field station
+Researchers collect in the|sample room
+Lab technicians work in the|clean room
+Data analysts work in the|computer lab
+Research assistants prepare in the|prep room
+Pilots rest in the|cockpit
+Flight attendants prepare in the|galley
+Air traffic controllers work in the|tower
+Ground crew work on the|tarmac
+Mechanics repair in the|hangar
+Navigators plan in the|briefing room
+Aviation engineers test in the|wind tunnel
+Flight instructors teach in the|simulator
+Baggage handlers work in the|cargo hold
+Aircraft technicians maintain in the|service bay 

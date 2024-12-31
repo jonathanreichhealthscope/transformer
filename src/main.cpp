@@ -466,7 +466,17 @@ int main(int argc, char *argv[]) {
             "Surgeons operate in the",  // Medical context
             "Athletes train in the",    // Sports context
             "Musicians perform in the", // Entertainment context
-            "Students research in the"  // Educational context
+            "Students research in the", // Educational context
+            "Chefs cook in the",        // Culinary context
+            "Artists create in the",    // Creative context
+            "Engineers work in the",    // Technical context
+            "Lawyers practice in the",  // Legal context
+            "Teachers instruct in the", // Educational context 
+            "Scientists experiment in", // Research context
+            "Pilots fly through the",   // Aviation context
+            "Dancers rehearse in the",  // Performance context
+            "Writers compose in the",   // Literary context
+            "Mechanics repair in the"   // Automotive context
         };
 
         for (const auto &test_input : test_inputs) {
