@@ -3,6 +3,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 // Forward declarations
@@ -14,6 +15,7 @@ private:
   std::vector<float> data_;
   size_t rows_;
   size_t cols_;
+  std::tuple<size_t, size_t> shape_;
 
 public:
   // Constructors
@@ -26,17 +28,22 @@ public:
   size_t cols() const { return cols_; }
   size_t size() const { return data_.size(); }
   size_t bytes() const { return size() * sizeof(float); }
-
+  std::tuple<size_t, size_t> shape() const {
+    return std::make_tuple(rows_, cols_);
+  }
   // Matrix operations
   void resize(size_t new_rows, size_t new_cols);
   float &operator()(size_t row, size_t col);
   const float &operator()(size_t row, size_t col) const;
   float &at(size_t row, size_t col);
   const float &at(size_t row, size_t col) const;
+  // const std::tuple<size_t, size_t> &operator(&Matrix) { return this->shape_;
+  // }
 
   // Data access
   float *data() { return data_.data(); }
   const float *data() const { return data_.data(); }
+  // const std::tuple<size_t, size_t> &operator() { return this->shape_; }
 
   // Additional operations from components.cpp
   Vector row(size_t row) const;
@@ -120,3 +127,9 @@ Matrix operator*(float scalar, const Matrix &m);
 Matrix operator/(const Matrix &m, float scalar);
 Matrix operator*(const Matrix &a, const Matrix &b);
 Matrix matmul(const Matrix &a, const Matrix &b);
+
+inline std::ostream &operator<<(std::ostream &os,
+                                const std::tuple<size_t, size_t> &shape) {
+  os << std::get<0>(shape) << "x" << std::get<1>(shape);
+  return os;
+}

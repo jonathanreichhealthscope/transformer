@@ -53,7 +53,7 @@ Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
   Matrix attention_output = self_attention->forward(
       normalized, mask, std::make_optional(std::ref(kv_cache)));
   Matrix residual = x + attention_output;
-  std::cout << "Residual:" << *residual.data() << std::endl;
+  std::cout << "Residual: " << *residual.data() << std::endl;
   // Feed-forward with residual connection
   normalized = ffn_ln->forward(residual);
   Matrix ffn_output = feed_forward->forward(normalized);

@@ -531,13 +531,14 @@ int main(int argc, char *argv[]) {
         std::cout << "Starting gradient backpropagation\n";
         Matrix current_grad = new_grad_output;
         std::cout << "Created current_grad with dimensions: "
-                  << current_grad.rows() << "x" << current_grad.cols() << "\n";
+                  << current_grad.shape() << "\n";
 
         // Print dimensions of first few parameters for debugging
         std::cout << "First few parameter dimensions:\n";
         for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
-          std::cout << "Parameter " << i << ": " << params[i]->rows() << "x"
-                    << params[i]->cols() << "\n";
+          /*std::cout << "Parameter " << i << ": " << params[i]->rows() << "x"
+                    << params[i]->cols() << "\n";*/
+          std::cout << "Parameter shape: " << params[i]->shape() << "\n";
         }
 
         // Ensure gradients match parameter dimensions exactly
@@ -547,6 +548,7 @@ int main(int argc, char *argv[]) {
           // Get parameter dimensions
           size_t param_rows = params[i]->rows();
           size_t param_cols = params[i]->cols();
+
           std::cout << "Parameter dimensions: " << param_rows << "x"
                     << param_cols << "\n";
 
@@ -560,10 +562,8 @@ int main(int argc, char *argv[]) {
               new_grads[i](r, c) = 1e-4f; // Very small constant gradient
             }
           }
-
           std::cout << "Created gradient with matching dimensions: "
-                    << new_grads[i].rows() << "x" << new_grads[i].cols()
-                    << "\n";
+                    << new_grads[i].shape() << "\n";
         }
         std::cout << "Completed gradient computation for all parameters\n";
 
@@ -573,10 +573,9 @@ int main(int argc, char *argv[]) {
           if (params[i]->rows() != new_grads[i].rows() ||
               params[i]->cols() != new_grads[i].cols()) {
             std::cout << "Dimension mismatch at parameter " << i << "!\n";
-            std::cout << "Parameter: " << params[i]->rows() << "x"
-                      << params[i]->cols() << "\n";
-            std::cout << "Gradient: " << new_grads[i].rows() << "x"
-                      << new_grads[i].cols() << "\n";
+            std::cout << "Parameter: " << params[i]->shape() << "\n";
+            std::cout << "Gradient: " << new_grads[i].shape() << "\n";
+
             throw std::runtime_error(
                 "Gradient dimensions don't match parameters");
           }
