@@ -1,6 +1,7 @@
 #include "../include/transformer.hpp"'
 #include "../include/cuda/cublas_check.cuh"
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <cublas_v2.h>
 #include <omp.h>
@@ -43,17 +44,21 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config)
 }
 
 Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
+  std::cout << "Forwarding through TransformerLayer" << std::endl;
   // Pre-layer normalization
   Matrix normalized = attention_ln->forward(x);
-
+  std::cout << "Normalized: " << std::endl;
   // Self-attention with residual connection
   Matrix attention_output = self_attention->forward(
       normalized, mask, std::make_optional(std::ref(kv_cache)));
+  std::cout << "Attention output: " << std::endl;
   Matrix residual = x + attention_output;
 
   // Feed-forward with residual connection
   normalized = ffn_ln->forward(residual);
+  std::cout << "Normalized: " << std::endl;
   Matrix ffn_output = feed_forward->forward(normalized);
+  std::cout << "FFN output: " << std::endl;
 
   return residual + ffn_output;
 }
@@ -111,6 +116,7 @@ Transformer::Transformer(const TransformerConfig &config) : config(config) {
 
 Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache) {
   if (config.use_cuda) {
+    std::cout << "Using CUDA for forward pass" << std::endl;
     return forward_cuda(input_tokens);
   }
   // Use memory pool for embeddings
@@ -519,21 +525,24 @@ Matrix TransformerLayer::backward(const Matrix &grad,
 
 Matrix Transformer::forward_cuda(const std::vector<int>& input_tokens, bool use_cache) {
 #ifdef USE_CUDA
+    std::cout << "Using CUDA for forward pass" << std::endl;
     // Allocate memory for embeddings using memory pool
+    std::cout << "Allocating memory for embeddings" << std::endl;
     size_t embed_size = input_tokens.size() * config.hidden_size;
     float* embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
     Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
 
     // Get embeddings using CUDA
+    std::cout << "Getting embeddings using CUDA" << std::endl;
     token_embedding->forward_cuda(input_tokens, embeddings);
-
+    std::cout << "Got embeddings" << std::endl;
     // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
-    
     // Compute positional encodings on GPU
+    std::cout << "Computing positional encodings on GPU" << std::endl;
     Matrix pos_encodings = pos_encoding->forward(position_ids);
     
     // Add position encodings using CUDA

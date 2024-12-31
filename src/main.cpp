@@ -267,25 +267,6 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
 }
 
 int main(int argc, char *argv[]) {
-  // CUDA Debug Information
-  int deviceCount;
-  cudaError_t error = cudaGetDeviceCount(&deviceCount);
-  if (error != cudaSuccess) {
-    std::cerr << "CUDA Error: " << cudaGetErrorString(error) << std::endl;
-    std::cerr << "Failed to get CUDA device count" << std::endl;
-    return 1;
-  }
-
-  std::cout << "Found " << deviceCount << " CUDA device(s)" << std::endl;
-  
-  for (int i = 0; i < deviceCount; i++) {
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, i);
-    std::cout << "Device " << i << ": " << deviceProp.name << std::endl;
-    std::cout << "  Compute capability: " << deviceProp.major << "." << deviceProp.minor << std::endl;
-    std::cout << "  Total global memory: " << deviceProp.totalGlobalMem / (1024*1024) << " MB" << std::endl;
-  }
-
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
@@ -299,7 +280,7 @@ int main(int argc, char *argv[]) {
     config.hidden_size = 768;
     config.num_heads = 12;
     config.num_layers = 6;
-    config.use_flash_attention = true;
+    config.use_flash_attention = false;
     config.use_rope = true;
     config.use_sliding_window = true;
     config.window_size = 256;
