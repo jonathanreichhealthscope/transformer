@@ -492,9 +492,6 @@ int main(int argc, char *argv[]) {
         // Initialize gradients
         for (size_t i = 0; i < params.size(); ++i) {
           grads.push_back(Matrix(params[i]->rows(), params[i]->cols()));
-          std::cout << "Initialized gradient for param " << i
-                    << " with dimensions: " << params[i]->rows() << "x"
-                    << params[i]->cols() << "\n";
         }
 
         // First step with initial gradients
@@ -573,14 +570,11 @@ int main(int argc, char *argv[]) {
         // Print dimensions of first few parameters for debugging
         std::cout << "First few parameter dimensions:\n";
         for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
-          /*std::cout << "Parameter " << i << ": " << params[i]->rows() << "x"
-                    << params[i]->cols() << "\n";*/
           std::cout << "Parameter shape: " << params[i]->shape() << "\n";
         }
 
         // Ensure gradients match parameter dimensions exactly
         for (size_t i = 0; i < params.size(); ++i) {
-          std::cout << "Computing gradient for parameter " << i << "\n";
 
           // Get parameter dimensions
           size_t param_rows = params[i]->rows();
@@ -599,9 +593,7 @@ int main(int argc, char *argv[]) {
               new_grads[i](r, c) = 1e-4f; // Very small constant gradient
             }
           }
-          std::cout << "Created gradient with matching dimensions: "
-                    << new_grads[i].shape() << "\n";
-        }
+       }
         std::cout << "Completed gradient computation for all parameters\n";
 
         // Verify gradient dimensions before second step
@@ -684,12 +676,22 @@ int main(int argc, char *argv[]) {
 
       // Test prediction on a sample input
       if ((epoch + 1) % 2 == 0) {
-        std::string test_input = "I go to";
-        std::cout << "\nTesting: '" << test_input << "'\n";
-        std::vector<int> test_tokens = tokenizer->encode(test_input);
-        Matrix test_hidden = transformer.forward(test_tokens);
-        Matrix test_logits = lm_head->forward(test_hidden);
-        print_top_predictions(test_logits, *tokenizer, 3);
+        // Test multiple different contexts
+        std::vector<std::string> test_inputs = {
+            "I go to",                    // Basic location
+            "Surgeons operate in the",    // Medical context
+            "Athletes train in the",      // Sports context
+            "Musicians perform in the",   // Entertainment context
+            "Students research in the"    // Educational context
+        };
+        
+        for (const auto& test_input : test_inputs) {
+            std::cout << "\nTesting: '" << test_input << "'\n";
+            std::vector<int> test_tokens = tokenizer->encode(test_input);
+            Matrix test_hidden = transformer.forward(test_tokens);
+            Matrix test_logits = lm_head->forward(test_hidden);
+            print_top_predictions(test_logits, *tokenizer, 3);
+        }
       }
     }
 
