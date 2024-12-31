@@ -1,21 +1,34 @@
 #pragma once
-#include "components.hpp"
+#include "matrix.hpp"
+#include <iostream>
+#include <memory>
+#include <vector>
+
+// Forward declaration
+class LayerNorm;
 
 class LayerNorm {
 private:
-  Vector gamma;
-  Vector beta;
-  float eps;
+  Vector gamma_;
+  Vector beta_;
+  float eps_;
 
 public:
-  virtual ~LayerNorm() = default;
-  LayerNorm() : eps(1e-5) {}
-  LayerNorm(size_t hidden_size, float eps = 1e-5);
-  Matrix forward(const Matrix &x) const;
-  Matrix forward_cuda(const Matrix &x) const;
+  LayerNorm(size_t hidden_size, float eps = 1e-5)
+      : gamma_(hidden_size, 1.0f), beta_(hidden_size, 0.0f), eps_(eps) {}
+
+  // Core functionality
+  Matrix forward(const Matrix &input) const;
+  Matrix backward(const Matrix &grad_output, const Matrix &input) const;
+  Matrix backward_cuda(const Matrix &grad_output, const Matrix &input) const;
+
+  // Accessors
+  const Vector &get_gamma() const { return gamma_; }
+  const Vector &get_beta() const { return beta_; }
+  Vector &get_gamma() { return gamma_; }
+  Vector &get_beta() { return beta_; }
+
+  // Serialization
   void save(std::ostream &os) const;
   static std::unique_ptr<LayerNorm> load(std::istream &is);
-  Matrix backward(const Matrix &grad, const Matrix &input) const;
-  Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
-  friend class Transformer;
 };

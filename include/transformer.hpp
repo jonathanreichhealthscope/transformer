@@ -2,16 +2,21 @@
 #include "attention.hpp"
 #include "cache.hpp"
 #include "components.hpp"
-#include "cuda_manager.hpp"
 #include "embeddings.hpp"
 #include "feed_forward.hpp"
+#include "gradient_checkpoint.hpp"
+#include "half_precision.hpp"
 #include "layernorm.hpp"
 #include "lm_head.hpp"
-#include "tokenizer.hpp"
+#include "memory_pool.hpp"
 #include <functional>
 #include <memory>
-#include <optional>
 #include <vector>
+
+// Forward declarations
+class TokenEmbedding;
+class PositionalEncoding;
+class TransformerLayer;
 
 class TransformerConfig {
 public:
@@ -30,10 +35,25 @@ public:
   bool use_gqa;
   size_t num_kv_heads;
   bool use_cuda;
+  bool use_fp16;
+  bool use_gradient_checkpointing;
+  size_t memory_pool_size;
 
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
                     size_t num_heads = 12);
+
+  friend bool operator!=(const TransformerConfig &lhs,
+                         const TransformerConfig &rhs) {
+    return lhs.vocab_size != rhs.vocab_size ||
+           lhs.max_seq_length != rhs.max_seq_length ||
+           lhs.hidden_size != rhs.hidden_size ||
+           lhs.num_layers != rhs.num_layers || lhs.num_heads != rhs.num_heads ||
+           lhs.use_flash_attention != rhs.use_flash_attention ||
+           lhs.use_rope != rhs.use_rope ||
+           lhs.use_sliding_window != rhs.use_sliding_window ||
+           lhs.window_size != rhs.window_size;
+  }
 };
 
 class TransformerLayer {
@@ -51,8 +71,22 @@ public:
   explicit TransformerLayer(const TransformerConfig &config);
   Matrix forward(const Matrix &x, const AttentionMask &mask = {});
   void clear_cache();
-  void save(std::ostream &os) const;
-  static std::unique_ptr<TransformerLayer> load(std::istream &is);
+  void save(std::ostream &os) const {
+    self_attention->save(os);
+    attention_ln->save(os);
+    feed_forward->save(os);
+    ffn_ln->save(os);
+  }
+  static std::unique_ptr<TransformerLayer>
+  create(const TransformerConfig &config) {
+    return std::make_unique<TransformerLayer>(config);
+  }
+  void load(std::istream &is) {
+    self_attention->load(is);
+    attention_ln->load(is);
+    feed_forward->load(is);
+    ffn_ln->load(is);
+  }
   Matrix backward(const Matrix &grad, const Matrix &input) const;
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   std::vector<std::reference_wrapper<Matrix>> get_weights() {
@@ -67,6 +101,49 @@ public:
     return weights;
   }
   friend class Transformer;
+
+  MultiHeadAttention *getAttention() { return self_attention.get(); }
+  FeedForward *getFeedForward() { return feed_forward.get(); }
+  void convert_to_fp16();
+
+  TransformerLayer(const TransformerLayer &other)
+      : config(other.config), kv_cache(other.kv_cache) {
+    if (other.self_attention) {
+      self_attention =
+          std::make_unique<MultiHeadAttention>(*other.self_attention);
+    }
+    if (other.attention_ln) {
+      attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
+    }
+    if (other.feed_forward) {
+      feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
+    }
+    if (other.ffn_ln) {
+      ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
+    }
+  }
+
+  TransformerLayer &operator=(const TransformerLayer &other) {
+    if (this != &other) {
+      config = other.config;
+      kv_cache = other.kv_cache;
+
+      if (other.self_attention) {
+        self_attention =
+            std::make_unique<MultiHeadAttention>(*other.self_attention);
+      }
+      if (other.attention_ln) {
+        attention_ln = std::make_unique<LayerNorm>(*other.attention_ln);
+      }
+      if (other.feed_forward) {
+        feed_forward = std::make_unique<FeedForward>(*other.feed_forward);
+      }
+      if (other.ffn_ln) {
+        ffn_ln = std::make_unique<LayerNorm>(*other.ffn_ln);
+      }
+    }
+    return *this;
+  }
 };
 
 class Transformer {
@@ -77,10 +154,7 @@ private:
   std::unique_ptr<LayerNorm> final_ln;
   std::unique_ptr<LanguageModelHead> lm_head;
   TransformerConfig config;
-
-#ifdef USE_CUDA
-  std::unique_ptr<CudaManager> cuda_manager;
-#endif
+  bool cuda_initialized = false;
 
   Matrix compute_loss_gradients(const Matrix &logits,
                                 const std::vector<int> &targets);
@@ -119,4 +193,19 @@ public:
 
   friend class TransformerTrainer;
   friend class QuantizationAwareTraining;
+
+  const TransformerConfig &getConfig() const { return config; }
+  const std::vector<std::unique_ptr<TransformerLayer>> &getLayers() const {
+    return layers;
+  }
+  std::vector<std::unique_ptr<TransformerLayer>> &getLayers() { return layers; }
+  virtual ~Transformer();
+
+  // Add copy constructor and assignment operator
+  Transformer(const Transformer &other);
+  Transformer &operator=(const Transformer &other);
+
+  // Move constructor and assignment operator
+  Transformer(Transformer &&other) noexcept = default;
+  Transformer &operator=(Transformer &&other) noexcept = default;
 };

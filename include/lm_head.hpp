@@ -1,6 +1,8 @@
 #pragma once
 #include "components.hpp"
+#include <functional>
 #include <memory>
+#include <vector>
 
 class LanguageModelHead {
 private:
@@ -15,6 +17,19 @@ public:
     float scale = std::sqrt(1.0f / hidden_size);
     projection.randomize(-scale, scale);
     bias.randomize(-scale, scale);
+  }
+
+  LanguageModelHead(const LanguageModelHead &other)
+      : projection(other.projection), bias(other.bias),
+        dropout_prob(other.dropout_prob) {}
+
+  LanguageModelHead &operator=(const LanguageModelHead &other) {
+    if (this != &other) {
+      projection = other.projection;
+      bias = other.bias;
+      dropout_prob = other.dropout_prob;
+    }
+    return *this;
   }
 
   Matrix forward(const Matrix &hidden_states);
@@ -91,4 +106,13 @@ public:
             sizeof(lm_head->dropout_prob));
     return lm_head;
   }
+
+  std::vector<std::reference_wrapper<Matrix>> get_parameters() {
+    std::vector<std::reference_wrapper<Matrix>> params;
+    params.push_back(std::ref(projection));
+    // Note: We'll need to handle bias separately since it's a Vector
+    return params;
+  }
+
+  Vector &get_bias() { return bias; }
 };

@@ -2,6 +2,7 @@
 #include "cache.hpp"
 #include "components.hpp"
 #include <optional>
+using FloatVector = Vector;
 
 class AttentionMask {
 public:
@@ -18,6 +19,10 @@ private:
   Matrix key_proj;
   Matrix value_proj;
   Matrix output_proj;
+  FloatVector query_bias;
+  FloatVector key_bias;
+  FloatVector value_bias;
+  FloatVector output_bias;
   size_t num_heads;
   size_t head_dim;
   bool use_rope;
@@ -58,6 +63,44 @@ public:
   }
 
   friend class TransformerLayer;
+
+  FloatVector &getQueryBias() { return query_bias; }
+  FloatVector &getKeyBias() { return key_bias; }
+  FloatVector &getValueBias() { return value_bias; }
+  FloatVector &getOutputBias() { return output_bias; }
+
+  MultiHeadAttention(const MultiHeadAttention &other)
+      : query_proj(other.query_proj), key_proj(other.key_proj),
+        value_proj(other.value_proj), output_proj(other.output_proj),
+        query_bias(other.query_bias), key_bias(other.key_bias),
+        value_bias(other.value_bias), output_bias(other.output_bias),
+        num_heads(other.num_heads), head_dim(other.head_dim),
+        use_rope(other.use_rope), use_flash(other.use_flash),
+        use_sliding_window(other.use_sliding_window),
+        window_size(other.window_size), cos_cached(other.cos_cached),
+        sin_cached(other.sin_cached) {}
+
+  MultiHeadAttention &operator=(const MultiHeadAttention &other) {
+    if (this != &other) {
+      query_proj = other.query_proj;
+      key_proj = other.key_proj;
+      value_proj = other.value_proj;
+      output_proj = other.output_proj;
+      query_bias = other.query_bias;
+      key_bias = other.key_bias;
+      value_bias = other.value_bias;
+      output_bias = other.output_bias;
+      num_heads = other.num_heads;
+      head_dim = other.head_dim;
+      use_rope = other.use_rope;
+      use_flash = other.use_flash;
+      use_sliding_window = other.use_sliding_window;
+      window_size = other.window_size;
+      cos_cached = other.cos_cached;
+      sin_cached = other.sin_cached;
+    }
+    return *this;
+  }
 };
 
 // Add sliding window attention
@@ -72,7 +115,7 @@ private:
 
 public:
   explicit SlidingWindowAttention(size_t window_size_ = 512)
-      : window_size(window_size_) {}
+      : MultiHeadAttention(), window_size(window_size_) {}
   Matrix compute_local_attention(const Matrix &Q, const Matrix &K,
                                  const Matrix &V);
 };

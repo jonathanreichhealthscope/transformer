@@ -4,10 +4,12 @@
 #include "cuda/cuda_utils.cuh"
 #endif
 
+using FloatVector = Vector;
+
 class FeedForward {
 private:
   Matrix w1, w2;
-  Vector b1, b2;
+  FloatVector b1, b2;
   float dropout_prob;
 
 public:
@@ -26,4 +28,22 @@ public:
   }
 
   friend class TransformerLayer;
+
+  FloatVector &getBias1() { return b1; }
+  FloatVector &getBias2() { return b2; }
+
+  FeedForward(const FeedForward &other)
+      : w1(other.w1), w2(other.w2), b1(other.b1), b2(other.b2),
+        dropout_prob(other.dropout_prob) {}
+
+  FeedForward &operator=(const FeedForward &other) {
+    if (this != &other) {
+      w1 = other.w1;
+      w2 = other.w2;
+      b1 = other.b1;
+      b2 = other.b2;
+      dropout_prob = other.dropout_prob;
+    }
+    return *this;
+  }
 };

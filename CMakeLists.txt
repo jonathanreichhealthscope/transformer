@@ -24,10 +24,18 @@ find_package(OpenMP)
 # Download and build sentencepiece
 FetchContent_Declare(
     sentencepiece
-    GIT_REPOSITORY https://github.com/google/sentencepiece.git
-    GIT_TAG v0.1.97
+    URL https://github.com/google/sentencepiece/archive/refs/tags/v0.1.97.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(sentencepiece)
+
+# Download and build nlohmann/json
+FetchContent_Declare(
+    json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(json)
 
 # Include directories
 include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
@@ -39,6 +47,11 @@ set(CORE_SOURCES
     src/components.cpp
     src/matrix_ops.cpp
     src/vector_ops.cpp
+    src/logger.cpp
+    src/model_saver.cpp
+    src/memory_pool.cpp
+    src/half_precision.cpp
+    src/gradient_checkpoint.cpp
 )
 
 # Neural network components
@@ -79,14 +92,6 @@ set(OPTIMIZER_SOURCES
     src/optimizer/sam.cpp
 )
 
-# CUDA kernels
-set(CUDA_SOURCES
-    src/cuda/cuda_kernels.cu
-    src/cuda/quantization_kernels.cu
-    src/cuda/layernorm_kernels.cu
-    src/cuda/attention_kernels.cu
-)
-
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}
@@ -95,7 +100,6 @@ add_library(transformer_lib
     ${ATTENTION_SOURCES}
     ${LM_SOURCES}
     ${OPTIMIZER_SOURCES}
-    ${CUDA_SOURCES}
 )
 
 # Set CUDA specific properties for the library
@@ -114,6 +118,7 @@ target_link_libraries(transformer_lib
     CUDA::cudart
     CUDA::cublas
     CUDA::curand
+    nlohmann_json::nlohmann_json
 )
 
 target_link_libraries(transformer
@@ -164,3 +169,37 @@ endif()
 if(OpenMP_CXX_FOUND)
     target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()
+
+# Add CUDA kernels library
+add_library(cuda_kernels STATIC
+    src/cuda/feed_forward_kernels.cu
+    src/cuda/half_precision_kernels.cu
+    src/cuda/cuda_utils.cu
+    src/cuda/cuda_init.cu
+    src/cuda/token_embedding_cuda.cu
+    src/cuda/layernorm_cuda.cu
+)
+
+# Set CUDA properties for the kernels library
+set_target_properties(cuda_kernels PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# Link CUDA libraries to cuda_kernels
+target_link_libraries(cuda_kernels
+    PUBLIC
+    CUDA::cudart
+    CUDA::cublas
+)
+
+# Link cuda_kernels to transformer_lib
+target_link_libraries(transformer_lib
+    PUBLIC
+    cuda_kernels
+)
+
+target_link_libraries(transformer_lib
+    PUBLIC ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
+    PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
+)

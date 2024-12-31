@@ -39,68 +39,57 @@ void Vocabulary::add_special_token(const std::string &token, int id) {
 void Vocabulary::initialize_basic_vocabulary() {
   // Basic pronouns and their contractions
   std::vector<std::string> pronouns = {
-      "i", "me", "my", "mine", "myself", "you", "your", "yours", "yourself",
-      "he", "him", "his", "himself", "she", "her", "hers", "herself",
-      "it", "its", "itself", "we", "us", "our", "ours", "ourselves",
-      "they", "them", "their", "theirs", "themselves", "this", "that",
-      "these", "those", "who", "whom", "whose", "which", "what", "whatever",
-      "whoever", "whomever", "anyone", "everyone", "someone", "nobody",
-      "everybody", "somebody", "anyone", "everyone", "no one", "each", "either",
-      "neither", "many", "few", "several", "all", "both", "any", "some"
-  };
+      "i",       "me",        "my",       "mine",     "myself",
+      "you",     "your",      "yours",    "yourself", "he",
+      "him",     "his",       "himself",  "she",      "her",
+      "hers",    "herself",   "it",       "its",      "itself",
+      "we",      "us",        "our",      "ours",     "ourselves",
+      "they",    "them",      "their",    "theirs",   "themselves",
+      "this",    "that",      "these",    "those",    "who",
+      "whom",    "whose",     "which",    "what",     "whatever",
+      "whoever", "whomever",  "anyone",   "everyone", "someone",
+      "nobody",  "everybody", "somebody", "anyone",   "everyone",
+      "no one",  "each",      "either",   "neither",  "many",
+      "few",     "several",   "all",      "both",     "any",
+      "some"};
 
   // Common contractions and their variations
   std::vector<std::string> contractions = {
-      "i'm", "i've", "i'll", "i'd", "you're", "you've", "you'll", "you'd",
-      "he's", "he'll", "he'd", "she's", "she'll", "she'd", "it's", "it'll",
-      "it'd", "we're", "we've", "we'll", "we'd", "they're", "they've",
-      "they'll", "they'd", "isn't", "aren't", "wasn't", "weren't", "haven't",
-      "hasn't", "hadn't", "doesn't", "don't", "didn't", "won't", "wouldn't",
-      "can't", "couldn't", "mustn't", "shouldn't", "mightn't", "shan't",
-      "let's", "that's", "who's", "what's", "here's", "there's", "where's",
-      "when's", "why's", "how's", "daren't", "needn't", "oughtn't", "ain't"
-  };
+      "i'm",      "i've",     "i'll",     "i'd",     "you're",    "you've",
+      "you'll",   "you'd",    "he's",     "he'll",   "he'd",      "she's",
+      "she'll",   "she'd",    "it's",     "it'll",   "it'd",      "we're",
+      "we've",    "we'll",    "we'd",     "they're", "they've",   "they'll",
+      "they'd",   "isn't",    "aren't",   "wasn't",  "weren't",   "haven't",
+      "hasn't",   "hadn't",   "doesn't",  "don't",   "didn't",    "won't",
+      "wouldn't", "can't",    "couldn't", "mustn't", "shouldn't", "mightn't",
+      "shan't",   "let's",    "that's",   "who's",   "what's",    "here's",
+      "there's",  "where's",  "when's",   "why's",   "how's",     "daren't",
+      "needn't",  "oughtn't", "ain't"};
 
   // Common verbs with all their forms
   std::vector<std::string> verbs = {
       // Basic verbs
-      "be", "am", "is", "are", "was", "were", "being", "been",
-      "have", "has", "had", "having", "do", "does", "did", "doing", "done",
+      "be", "am", "is", "are", "was", "were", "being", "been", "have", "has",
+      "had", "having", "do", "does", "did", "doing", "done",
       // Common action verbs
-      "go", "goes", "went", "going", "gone",
-      "say", "says", "said", "saying",
-      "get", "gets", "got", "getting", "gotten",
-      "make", "makes", "made", "making",
-      "know", "knows", "knew", "knowing", "known",
-      "think", "thinks", "thought", "thinking",
-      "take", "takes", "took", "taking", "taken",
-      "see", "sees", "saw", "seeing", "seen",
-      "come", "comes", "came", "coming",
-      "want", "wants", "wanted", "wanting",
-      "look", "looks", "looked", "looking",
-      "use", "uses", "used", "using",
-      "find", "finds", "found", "finding",
-      "give", "gives", "gave", "giving", "given",
-      "tell", "tells", "told", "telling",
-      "work", "works", "worked", "working",
-      "call", "calls", "called", "calling",
-      "try", "tries", "tried", "trying",
-      "ask", "asks", "asked", "asking",
-      "need", "needs", "needed", "needing",
-      "feel", "feels", "felt", "feeling",
-      "become", "becomes", "became", "becoming",
-      "leave", "leaves", "left", "leaving",
-      "put", "puts", "putting",
-      "mean", "means", "meant", "meaning",
-      "keep", "keeps", "kept", "keeping",
-      "let", "lets", "letting",
-      "begin", "begins", "began", "beginning", "begun",
-      "seem", "seems", "seemed", "seeming",
-      "help", "helps", "helped", "helping",
-      "talk", "talks", "talked", "talking",
-      "turn", "turns", "turned", "turning",
-      "show", "shows", "showed", "showing", "shown"
-  };
+      "go", "goes", "went", "going", "gone", "say", "says", "said", "saying",
+      "get", "gets", "got", "getting", "gotten", "make", "makes", "made",
+      "making", "know", "knows", "knew", "knowing", "known", "think", "thinks",
+      "thought", "thinking", "take", "takes", "took", "taking", "taken", "see",
+      "sees", "saw", "seeing", "seen", "come", "comes", "came", "coming",
+      "want", "wants", "wanted", "wanting", "look", "looks", "looked",
+      "looking", "use", "uses", "used", "using", "find", "finds", "found",
+      "finding", "give", "gives", "gave", "giving", "given", "tell", "tells",
+      "told", "telling", "work", "works", "worked", "working", "call", "calls",
+      "called", "calling", "try", "tries", "tried", "trying", "ask", "asks",
+      "asked", "asking", "need", "needs", "needed", "needing", "feel", "feels",
+      "felt", "feeling", "become", "becomes", "became", "becoming", "leave",
+      "leaves", "left", "leaving", "put", "puts", "putting", "mean", "means",
+      "meant", "meaning", "keep", "keeps", "kept", "keeping", "let", "lets",
+      "letting", "begin", "begins", "began", "beginning", "begun", "seem",
+      "seems", "seemed", "seeming", "help", "helps", "helped", "helping",
+      "talk", "talks", "talked", "talking", "turn", "turns", "turned",
+      "turning", "show", "shows", "showed", "showing", "shown"};
 
   // Common prepositions and conjunctions
   std::vector<std::string> connectors = {
@@ -114,55 +103,55 @@ void Vocabulary::initialize_basic_vocabulary() {
       "and", "but", "or", "nor", "for", "yet", "so", "because", "although",
       "unless", "since", "while", "where", "if", "then", "else", "therefore",
       "however", "moreover", "furthermore", "nevertheless", "meanwhile",
-      "afterwards", "consequently", "otherwise", "instead", "whereas"
-  };
+      "afterwards", "consequently", "otherwise", "instead", "whereas"};
 
   // Common adjectives
   std::vector<std::string> adjectives = {
-      "good", "new", "first", "last", "long", "great", "little", "own",
-      "other", "old", "right", "big", "high", "different", "small", "large",
-      "next", "early", "young", "important", "few", "public", "bad", "same",
-      "able", "best", "better", "low", "late", "general", "specific", "certain",
-      "free", "full", "special", "easy", "clear", "recent", "final", "main",
-      "sure", "real", "available", "local", "particular", "hard", "major",
-      "current", "nice", "happy", "serious", "ready", "simple", "possible",
-      "whole", "short", "private", "past", "beautiful", "strong", "quick"
-  };
+      "good",      "new",       "first",      "last",   "long",      "great",
+      "little",    "own",       "other",      "old",    "right",     "big",
+      "high",      "different", "small",      "large",  "next",      "early",
+      "young",     "important", "few",        "public", "bad",       "same",
+      "able",      "best",      "better",     "low",    "late",      "general",
+      "specific",  "certain",   "free",       "full",   "special",   "easy",
+      "clear",     "recent",    "final",      "main",   "sure",      "real",
+      "available", "local",     "particular", "hard",   "major",     "current",
+      "nice",      "happy",     "serious",    "ready",  "simple",    "possible",
+      "whole",     "short",     "private",    "past",   "beautiful", "strong",
+      "quick"};
 
   // Common nouns
   std::vector<std::string> nouns = {
       // People and roles
       "person", "people", "family", "friend", "parent", "mother", "father",
       "child", "baby", "teacher", "student", "doctor", "worker", "artist",
-      
+
       // Places
       "home", "house", "school", "office", "store", "hospital", "city",
       "country", "world", "room", "building", "street", "park", "garden",
-      
+
       // Time
       "time", "day", "night", "morning", "evening", "week", "month", "year",
       "today", "tomorrow", "minute", "hour", "moment", "future", "past",
-      
+
       // Nature
-      "water", "air", "earth", "fire", "sun", "moon", "star", "sky",
-      "tree", "flower", "grass", "river", "ocean", "mountain", "forest",
-      
+      "water", "air", "earth", "fire", "sun", "moon", "star", "sky", "tree",
+      "flower", "grass", "river", "ocean", "mountain", "forest",
+
       // Objects
       "book", "phone", "computer", "car", "door", "window", "table", "chair",
       "bed", "food", "money", "paper", "key", "screen", "picture",
-      
+
       // Abstract concepts
-      "life", "death", "love", "hate", "peace", "war", "truth", "lie",
-      "idea", "thought", "dream", "hope", "fear", "mind", "soul",
-      
+      "life", "death", "love", "hate", "peace", "war", "truth", "lie", "idea",
+      "thought", "dream", "hope", "fear", "mind", "soul",
+
       // Body parts
-      "head", "face", "eye", "ear", "nose", "mouth", "hand", "foot",
-      "heart", "brain", "body", "hair", "finger", "skin", "bone",
-      
+      "head", "face", "eye", "ear", "nose", "mouth", "hand", "foot", "heart",
+      "brain", "body", "hair", "finger", "skin", "bone",
+
       // Groups and organizations
       "group", "team", "company", "government", "community", "society",
-      "organization", "club", "party", "family"
-  };
+      "organization", "club", "party", "family"};
 
   // Add all words to vocabulary
   std::vector<std::string> all_words;
@@ -175,11 +164,12 @@ void Vocabulary::initialize_basic_vocabulary() {
 
   // Sort and remove duplicates
   std::sort(all_words.begin(), all_words.end());
-  all_words.erase(std::unique(all_words.begin(), all_words.end()), all_words.end());
+  all_words.erase(std::unique(all_words.begin(), all_words.end()),
+                  all_words.end());
 
   // Add each word
-  for (const auto& word : all_words) {
-      add_word(word);
+  for (const auto &word : all_words) {
+    add_word(word);
   }
 }
 
@@ -208,10 +198,6 @@ void Vocabulary::print_vocabulary_mappings() const {
 
   std::cout << "\n=== Full Vocabulary ===\n";
   std::cout << "Total size: " << size() << " tokens\n\n";
-  for (const auto &[token, id] : token_to_id) {
-    std::cout << "ID " << std::setw(3) << id << ": '" << std::setw(15) << token
-              << "'\n";
-  }
 }
 
 bool Vocabulary::verify_mappings() const {

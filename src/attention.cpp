@@ -1,5 +1,6 @@
 #include "../include/attention.hpp"
 #include <cmath>
+#include <iostream>
 
 Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
   Matrix rotated = x; // Create a copy to store rotated values
@@ -8,9 +9,13 @@ Matrix MultiHeadAttention::apply_rope(const Matrix &x, size_t position) const {
   // Apply rotary position embedding
   for (size_t i = 0; i < x.rows(); ++i) {
     for (size_t j = 0; j < dim; j += 2) {
+      // Add bounds check
+      if (j / 2 >= cos_cached.cols()) {
+        break;
+      }
+
       float cos_theta = cos_cached(position, j / 2);
       float sin_theta = sin_cached(position, j / 2);
-
       float x1 = x(i, j);
       float x2 = j + 1 < dim ? x(i, j + 1) : 0.0f;
 
@@ -84,7 +89,7 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
 
 Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                    const std::optional<KVCache> &kv_cache) {
-
+  std::cout << "Forwarding through MultiHeadAttention" << std::endl;
   // Project input to Q, K, V
   Matrix Q = matmul(x, query_proj);
   Matrix K = matmul(x, key_proj);
@@ -100,7 +105,6 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
         Q_row(0, j) = Q(pos, j);
         K_row(0, j) = K(pos, j);
       }
-
       // Apply RoPE
       Matrix Q_rotated = apply_rope(Q_row, pos);
       Matrix K_rotated = apply_rope(K_row, pos);
@@ -116,12 +120,12 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   // Use flash attention if enabled
   Matrix attention_output;
   if (use_flash) {
+    std::cout << "Using flash attention" << std::endl;
     attention_output = flash_attention(Q, K, V, mask);
   } else {
+    std::cout << "Using standard attention" << std::endl;
     attention_output = standard_attention(Q, K, V, mask);
   }
-
-  // Project output
   return matmul(attention_output, output_proj);
 }
 
@@ -172,11 +176,17 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
 
   // Initialize RoPE buffers if needed
   if (use_rope) {
-    cos_cached = Matrix(window_size, head_dim / 2);
-    sin_cached = Matrix(window_size, head_dim / 2);
+    // Fix: Use ceiling division to ensure we have enough columns
+    size_t required_cols = (head_dim + 1) / 2; // Ceiling division
+    cos_cached = Matrix(window_size, required_cols);
+    sin_cached = Matrix(window_size, required_cols);
+
+    std::cout << "Initializing RoPE buffers with dimensions: " << window_size
+              << "x" << required_cols << std::endl;
+
     // Initialize RoPE angle cache
     for (size_t pos = 0; pos < window_size; ++pos) {
-      for (size_t i = 0; i < head_dim / 2; ++i) {
+      for (size_t i = 0; i < required_cols; ++i) {
         float theta = pos / std::pow(10000.0f, (2.0f * i) / head_dim);
         cos_cached(pos, i) = std::cos(theta);
         sin_cached(pos, i) = std::sin(theta);
@@ -188,9 +198,11 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
                                               const Matrix &V,
                                               const AttentionMask &mask) const {
+  std::cout << "Standard attention" << std::endl;
   Matrix scores = matmul(Q, K.transpose());
   scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
-
+  std::cout << "Scores: rows: " << scores.rows()
+            << " Scores: cols: " << scores.cols() << std::endl;
   if (!mask.mask.empty()) {
     for (size_t i = 0; i < scores.rows(); ++i) {
       for (size_t j = 0; j < scores.cols(); ++j) {
