@@ -1,15 +1,13 @@
 #include "../include/matrix.hpp"
 #include <cmath>
-#include <random>
 #include <iostream>
+#include <random>
 #include <string>
 // Constructor implementations
 Matrix::Matrix() : rows_(0), cols_(0) {}
 
 Matrix::Matrix(size_t rows, size_t cols, float init_val)
-    : data_(rows * cols, init_val), rows_(rows), cols_(cols) {
-  std::cout << "Creating matrix with dimensions: " << rows << "x" << cols << std::endl;
-}
+    : data_(rows * cols, init_val), rows_(rows), cols_(cols) {}
 
 Matrix::Matrix(size_t rows, size_t cols, float *external_data)
     : rows_(rows), cols_(cols) {
@@ -255,12 +253,12 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
 
   if (a.cols() != b.rows()) {
     throw std::runtime_error("Invalid matrix dimensions for multiplication: " +
-                             std::to_string(a.cols()) + " != " + 
-                             std::to_string(b.rows()));
+                             std::to_string(a.cols()) +
+                             " != " + std::to_string(b.rows()));
   }
 
   Matrix result(a.rows(), b.cols());
-  
+
   for (size_t i = 0; i < a.rows(); i++) {
     for (size_t j = 0; j < b.cols(); j++) {
       float sum = 0.0f;
@@ -270,7 +268,8 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
       result(i, j) = sum;
     }
   }
-  
-  std::cout << "Result dimensions: " << result.rows() << "x" << result.cols() << std::endl;
+
+  std::cout << "Result dimensions: " << result.rows() << "x" << result.cols()
+            << std::endl;
   return result;
 }

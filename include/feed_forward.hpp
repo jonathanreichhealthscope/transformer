@@ -16,7 +16,8 @@ private:
 public:
   virtual ~FeedForward() = default;
   FeedForward() = default;
-  FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1);
+  FeedForward(size_t hidden_size, size_t intermediate_size,
+              float dropout = 0.1);
   Matrix forward(const Matrix &x);
   Matrix backward(const Matrix &grad_output, const Matrix &input);
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;

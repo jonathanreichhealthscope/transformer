@@ -5,8 +5,8 @@
 #include "../include/cuda/feed_forward_kernels.cuh"
 #endif
 #include <cmath>
-#include <random>
 #include <iostream>
+#include <random>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -126,20 +126,11 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream &is) {
 }
 
 Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
-  std::cout << "FeedForward backward dimensions:" << std::endl;
-  std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-  std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-  std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
-  std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
-
   // First compute gradients for second layer
   Matrix d_intermediate = matmul(grad_output, w2.transpose());
   d_intermediate.apply_gelu_derivative(intermediate_cache);
-  std::cout << "d_intermediate: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
-  std::cout << "w1_transpose: " << w1.transpose().rows() << "x" << w1.transpose().cols() << std::endl;
   // Compute gradients for first layer
   Matrix grad_input = matmul(d_intermediate, w1.transpose());
-  std::cout << "grad_input: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
   return grad_input;
 }
 

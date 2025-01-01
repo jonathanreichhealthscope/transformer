@@ -211,5 +211,6 @@ public:
   Transformer(Transformer &&other) noexcept = default;
   Transformer &operator=(Transformer &&other) noexcept = default;
 
-  void backward(const Matrix& grad_output, const std::vector<int>& input_tokens);
+  void backward(const Matrix &grad_output,
+                const std::vector<int> &input_tokens);
 };

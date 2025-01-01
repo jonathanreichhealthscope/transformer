@@ -17,10 +17,12 @@ private:
 public:
   LanguageModelHead(size_t hidden_size, size_t vocab_size, float dropout = 0.1)
       : projection(Matrix(hidden_size, vocab_size)), bias(Vector(vocab_size)),
-        dropout_prob(dropout), vocab_size_(vocab_size), hidden_size_(hidden_size) {
+        dropout_prob(dropout), vocab_size_(vocab_size),
+        hidden_size_(hidden_size) {
     float scale = std::sqrt(1.0f / hidden_size);
     std::cout << "LM Head initialization:" << std::endl;
-    std::cout << "Creating projection matrix: [" << hidden_size << " × " << vocab_size << "]" << std::endl;
+    std::cout << "Creating projection matrix: [" << hidden_size << " × "
+              << vocab_size << "]" << std::endl;
     projection.randomize(-scale, scale);
     bias.randomize(-scale, scale);
   }
@@ -91,15 +93,17 @@ public:
       bias[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
     }
     std::cout << "Gradient with respect to input" << std::endl;
-    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-    std::cout << "projection dims: " << projection.rows() << "x" << projection.cols() << std::endl;
+    std::cout << "grad_output dims: " << grad_output.rows() << "x"
+              << grad_output.cols() << std::endl;
+    std::cout << "projection dims: " << projection.rows() << "x"
+              << projection.cols() << std::endl;
     // Compute gradient with respect to input
     Matrix grad_input = matmul(grad_output, projection);
     if (grad_input.cols() != hidden_states.cols()) {
-      throw std::runtime_error("Language model head gradient output dimension (" + 
-                               std::to_string(grad_input.cols()) + 
-                               ") must match hidden size (" + 
-                               std::to_string(hidden_states.cols()) + ")");
+      throw std::runtime_error(
+          "Language model head gradient output dimension (" +
+          std::to_string(grad_input.cols()) + ") must match hidden size (" +
+          std::to_string(hidden_states.cols()) + ")");
     }
     return grad_input;
   }
@@ -129,7 +133,7 @@ public:
 
   Vector &get_bias() { return bias; }
 
-  Matrix project_to_vocab(const Matrix& hidden_states) const;
+  Matrix project_to_vocab(const Matrix &hidden_states) const;
 
-  const Matrix& get_projection() const { return projection; }
+  const Matrix &get_projection() const { return projection; }
 };
