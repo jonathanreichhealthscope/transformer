@@ -48,6 +48,14 @@ public:
   Matrix transpose() const;
   void apply_relu();
   void apply_gelu();
+  void apply_gelu_derivative(const Matrix& x) {
+    for (size_t i = 0; i < data_.size(); ++i) {
+      float cdf = 0.5f * (1.0f + std::tanh(std::sqrt(2.0f / M_PI) * 
+                         (x.data_[i] + 0.044715f * std::pow(x.data_[i], 3))));
+      float pdf = std::exp(-0.5f * x.data_[i] * x.data_[i]) / std::sqrt(2.0f * M_PI);
+      data_[i] *= (cdf + x.data_[i] * pdf);
+    }
+  }
   void apply_softmax();
   void add_bias(const Vector &bias);
   Matrix &operator+=(const Matrix &other);

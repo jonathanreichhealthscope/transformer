@@ -509,15 +509,29 @@ void Transformer::load(std::istream &is) {
 
 Matrix TransformerLayer::backward(const Matrix &grad,
                                   const Matrix &input) const {
+  std::cout << "TransformerLayer backward dimensions:" << std::endl;
+  std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+  std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+
+  // Verify dimensions match
+  if (grad.rows() != input.rows() || grad.cols() != input.cols()) {
+    throw std::runtime_error("Gradient and input dimensions must match in layer backward. "
+                             "grad: " + std::to_string(grad.rows()) + "x" + std::to_string(grad.cols()) +
+                             " input: " + std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
+  }
+
   // Backward through feed forward
   Matrix d_residual2 = grad;
-  Matrix d_ffn = feed_forward->backward(d_residual2, ffn_ln->forward(input));
+  Matrix normalized = ffn_ln->forward(input);
+  std::cout << "ffn_ln forward output: " << normalized.rows() << "x" << normalized.cols() << std::endl;
+  Matrix d_ffn = feed_forward->backward(d_residual2, normalized);
   Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
 
   // Backward through attention
   Matrix d_residual1 = d_ln2 + d_residual2;
-  Matrix d_attn =
-      self_attention->backward(d_residual1, attention_ln->forward(input));
+  Matrix attn_normalized = attention_ln->forward(input);
+  std::cout << "attention_ln forward output: " << attn_normalized.rows() << "x" << attn_normalized.cols() << std::endl;
+  Matrix d_attn = self_attention->backward(d_residual1, attn_normalized);
   Matrix d_ln1 = attention_ln->backward(d_attn, input);
 
   return d_ln1;

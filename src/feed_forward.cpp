@@ -6,6 +6,7 @@
 #endif
 #include <cmath>
 #include <random>
+#include <iostream>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -121,45 +122,22 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream &is) {
   return ffn;
 }
 
-Matrix FeedForward::backward(const Matrix &grad, const Matrix &input) const {
-  const size_t batch_size = input.rows();
-  Matrix dx(batch_size, w1.rows());
+Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
+  std::cout << "FeedForward backward dimensions:" << std::endl;
+  std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+  std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+  std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
+  std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
 
-  // Backward through second linear layer
-  Matrix d_intermediate(batch_size, w1.cols());
-  for (size_t i = 0; i < batch_size; ++i) {
-    for (size_t j = 0; j < w1.cols(); ++j) {
-      float sum = 0.0f;
-      for (size_t k = 0; k < w2.cols(); ++k) {
-        sum += grad(i, k) * w2(j, k);
-      }
-      d_intermediate(i, j) = sum;
-    }
-  }
-
-  // Backward through GELU
-  for (size_t i = 0; i < batch_size; ++i) {
-    for (size_t j = 0; j < w1.cols(); ++j) {
-      float x = input(i, j);
-      float cdf = 0.5f * (1.0f + std::tanh(std::sqrt(2.0f / M_PI) *
-                                           (x + 0.044715f * std::pow(x, 3))));
-      float pdf = std::exp(-0.5f * x * x) / std::sqrt(2.0f * M_PI);
-      d_intermediate(i, j) *= cdf + x * pdf;
-    }
-  }
-
-  // Backward through first linear layer
-  for (size_t i = 0; i < batch_size; ++i) {
-    for (size_t j = 0; j < w1.rows(); ++j) {
-      float sum = 0.0f;
-      for (size_t k = 0; k < w1.cols(); ++k) {
-        sum += d_intermediate(i, k) * w1(j, k);
-      }
-      dx(i, j) = sum;
-    }
-  }
-
-  return dx;
+  // First compute gradients for second layer
+  Matrix d_intermediate = matmul(grad_output, w2.transpose());
+  d_intermediate.apply_gelu_derivative(intermediate_cache);
+  std::cout << "d_intermediate: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
+  std::cout << "w1_transpose: " << w1.transpose().rows() << "x" << w1.transpose().cols() << std::endl;
+  // Compute gradients for first layer
+  Matrix grad_input = matmul(d_intermediate, w1.transpose());
+  std::cout << "grad_input: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
+  return grad_input;
 }
 
 Matrix FeedForward::backward_cuda(const Matrix &grad,
