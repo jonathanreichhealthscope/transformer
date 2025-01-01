@@ -574,12 +574,15 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
   Matrix pos_encodings = pos_encoding->forward(position_ids);
 
   // Add position encodings using CUDA
-  {
-    float alpha = 1.0f;
-    CUBLAS_CHECK(cublasSaxpy(cublas_handle,
-                             embeddings.rows() * embeddings.cols(), &alpha,
-                             pos_encodings.data(), 1, embeddings.data(), 1));
+        // Add positional encodings using OpenMP
+  #pragma omp parallel for
+  for (size_t i = 0; i < embeddings.rows(); ++i) {
+      for (size_t j = 0; j < embeddings.cols(); ++j) {
+          embeddings(i, j) += pos_encodings(i % pos_encodings.rows(), j);
+      }
   }
+  // Create deep copy for hidden states
+  hidden_states = Matrix(embeddings.rows(), embeddings.cols(), embeddings.data(), false);
 
   // Create attention mask if needed
   AttentionMask mask;
@@ -587,8 +590,6 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
     mask = AttentionMask::create_causal_mask(input_tokens.size());
   }
 
-  // Forward pass through layers with gradient checkpointing
-  hidden_states = embeddings;
   for (size_t i = 0; i < layers.size(); ++i) {
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);

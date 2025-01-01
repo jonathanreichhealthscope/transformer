@@ -11,7 +11,7 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # Set default CUDA architectures if not specified
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 60 70 75 80)
+    set(CMAKE_CUDA_ARCHITECTURES 86)
 endif()
 
 # Include FetchContent for downloading dependencies

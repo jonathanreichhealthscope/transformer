@@ -18,12 +18,15 @@ private:
   size_t rows_;
   size_t cols_;
   std::tuple<size_t, size_t> shape_;
+  bool owns_data_ = true;
 
 public:
   // Constructors
   Matrix();
   Matrix(size_t rows, size_t cols, float init_val = 0.0f);
   Matrix(size_t rows, size_t cols, float *external_data);
+  Matrix(size_t rows, size_t cols, float *external_data, bool is_owner);
+
 
   // Size-related methods
   size_t rows() const { return rows_; }

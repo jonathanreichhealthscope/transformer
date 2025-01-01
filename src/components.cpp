@@ -14,6 +14,17 @@ Matrix::Matrix(size_t rows, size_t cols, float *external_data)
   data_.assign(external_data, external_data + (rows * cols));
 }
 
+Matrix::Matrix(size_t rows, size_t cols, float* external_data, bool is_owner) 
+    : rows_(rows), cols_(cols), shape_(std::make_tuple(rows, cols)), owns_data_(is_owner) {
+    if (is_owner) {
+        // If we own the data, copy it to our vector
+        data_.assign(external_data, external_data + (rows * cols));
+    } else {
+        // If we don't own the data, just point to it
+        data_ = std::vector<float>(external_data, external_data + (rows * cols));
+    }
+} 
+
 // Basic operations
 void Matrix::resize(size_t new_rows, size_t new_cols) {
   if (new_rows == rows_ && new_cols == cols_) {
