@@ -42,20 +42,17 @@ Matrix LayerNorm::backward(const Matrix &grad_output,
       mean += input(i, j);
     }
     mean /= input.cols();
-
     for (size_t j = 0; j < input.cols(); ++j) {
       float diff = input(i, j) - mean;
       var += diff * diff;
     }
     var = var / input.cols() + eps_;
-
     // Compute gradients
     float inv_std = 1.0f / std::sqrt(var);
     for (size_t j = 0; j < input.cols(); ++j) {
       grad_input(i, j) = grad_output(i, j) * gamma_[j] * inv_std;
     }
   }
-
   return grad_input;
 }
 

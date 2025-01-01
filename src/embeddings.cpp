@@ -1,6 +1,8 @@
 #include "../include/embeddings.hpp"
 #include <cmath>
+#include <iostream>
 #include <random>
+#include <string>
 
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),
@@ -48,6 +50,61 @@ std::unique_ptr<TokenEmbedding> TokenEmbedding::load(std::istream &is) {
   auto embedding = std::make_unique<TokenEmbedding>(vocab_size, embedding_dim);
   embedding->weights_ = Matrix::load(is);
   return embedding;
+}
+
+void TokenEmbedding::backward(const Matrix &grad_output,
+                              const std::vector<int> &input_tokens) {
+  // Debug dimension information
+  std::cout << "Gradient output dimensions: " << grad_output.rows() << "x"
+            << grad_output.cols() << "\n";
+  std::cout << "Embedding weights dimensions: " << weights_.rows() << "x"
+            << weights_.cols() << "\n";
+  std::cout << "Input tokens size: " << input_tokens.size() << "\n";
+
+  // Verify dimensions
+  if (grad_output.cols() != embedding_dim_) {
+    throw std::runtime_error("Gradient output dimension (" +
+                             std::to_string(grad_output.cols()) +
+                             ") must match embedding dimension (" +
+                             std::to_string(embedding_dim_) + ")");
+  }
+
+  // Initialize gradient accumulator matrix with same dimensions as weights
+  Matrix weight_grads(weights_.rows(), weights_.cols(), 0.0f);
+  std::cout << "Weight grads dimensions: " << weight_grads.rows() << "x"
+            << weight_grads.cols() << "\n";
+
+  // For each token in the input sequence
+  for (size_t i = 0; i < input_tokens.size(); i++) {
+    int token_id = input_tokens[i];
+    if (token_id >= static_cast<int>(weights_.rows())) {
+      throw std::runtime_error("Token ID " + std::to_string(token_id) +
+                               " exceeds vocabulary size " +
+                               std::to_string(weights_.rows()));
+    }
+
+    // Accumulate gradients
+    for (size_t j = 0; j < embedding_dim_; j++) {
+      if (j >= grad_output.cols()) {
+        throw std::runtime_error("Embedding dimension index out of bounds");
+      }
+      weight_grads(token_id, j) += grad_output(i, j);
+    }
+  }
+
+  // Apply gradients with learning rate
+  const float learning_rate = 0.01f;
+  std::cout << "Applying gradients with dimensions check...\n";
+  for (size_t i = 0; i < weights_.rows(); i++) {
+    for (size_t j = 0; j < weights_.cols(); j++) {
+      if (weight_grads(i, j) != 0.0f) {
+        std::cout << "Non-zero gradient at position (" << i << "," << j
+                  << "): " << weight_grads(i, j) << "\n";
+      }
+      weights_(i, j) -= learning_rate * weight_grads(i, j);
+    }
+  }
+  std::cout << "Gradient application complete\n";
 }
 
 PositionalEncoding::PositionalEncoding(size_t max_seq_length,

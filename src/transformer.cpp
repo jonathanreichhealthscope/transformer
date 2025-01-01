@@ -46,7 +46,6 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config)
 }
 
 Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
-  std::cout << "Forwarding through TransformerLayer" << std::endl;
   // Pre-layer normalization
   Matrix normalized = attention_ln->forward(x);
   // Self-attention with residual connection
@@ -140,7 +139,7 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
   }
 
   // Forward pass through layers with gradient checkpointing
-  Matrix hidden_states = embeddings;
+  hidden_states = embeddings;
   for (size_t i = 0; i < layers.size(); ++i) {
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);
@@ -156,13 +155,13 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
   // Final layer normalization
   hidden_states = final_ln->forward(hidden_states);
 
-  // Project to vocabulary using cuBLAS
-  Matrix logits = token_embedding->project_to_vocab_cuda(hidden_states);
+  // Store the hidden states for backward pass
+  last_hidden_states = hidden_states;
 
   // Free memory pool allocation
   MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
 
-  return logits;
+  return hidden_states;
 }
 
 void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
@@ -510,15 +509,30 @@ void Transformer::load(std::istream &is) {
 
 Matrix TransformerLayer::backward(const Matrix &grad,
                                   const Matrix &input) const {
+  std::cout << "TransformerLayer backward dimensions:" << std::endl;
+  std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+  std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+
+  // Verify dimensions match
+  if (grad.rows() != input.rows() || grad.cols() != input.cols()) {
+    throw std::runtime_error(
+        "Gradient and input dimensions must match in layer backward. "
+        "grad: " +
+        std::to_string(grad.rows()) + "x" + std::to_string(grad.cols()) +
+        " input: " + std::to_string(input.rows()) + "x" +
+        std::to_string(input.cols()));
+  }
+
   // Backward through feed forward
   Matrix d_residual2 = grad;
-  Matrix d_ffn = feed_forward->backward(d_residual2, ffn_ln->forward(input));
+  Matrix normalized = ffn_ln->forward(input);
+  Matrix d_ffn = feed_forward->backward(d_residual2, normalized);
   Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
 
   // Backward through attention
   Matrix d_residual1 = d_ln2 + d_residual2;
-  Matrix d_attn =
-      self_attention->backward(d_residual1, attention_ln->forward(input));
+  Matrix attn_normalized = attention_ln->forward(input);
+  Matrix d_attn = self_attention->backward(d_residual1, attn_normalized);
   Matrix d_ln1 = attention_ln->backward(d_attn, input);
 
   return d_ln1;
@@ -574,7 +588,7 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
   }
 
   // Forward pass through layers with gradient checkpointing
-  Matrix hidden_states = embeddings;
+  hidden_states = embeddings;
   for (size_t i = 0; i < layers.size(); ++i) {
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);
@@ -687,3 +701,42 @@ Transformer &Transformer::operator=(const Transformer &other) {
   }
   return *this;
 }
+
+void Transformer::backward(const Matrix &grad_output,
+                           const std::vector<int> &input_tokens) {
+  // Verify dimensions
+  if (grad_output.cols() != config.hidden_size) {
+    throw std::runtime_error("Gradient output dimension (" +
+                             std::to_string(grad_output.cols()) +
+                             ") must match hidden size (" +
+                             std::to_string(config.hidden_size) + ")");
+  }
+
+  // Backpropagate through final layer norm
+  Matrix grad = final_ln->backward(grad_output, hidden_states);
+  std::cout << "outside of final ln with grad shape: " << grad.shape()
+            << std::endl;
+  // Backpropagate through transformer layers in reverse order
+  for (int i = layers.size() - 1; i >= 0; --i) {
+    Matrix cached_activation = GradientCheckpoint::get_activation(i);
+    // Verify cached activation dimensions
+    if (cached_activation.cols() != config.hidden_size) {
+      throw std::runtime_error("Cached activation dimension mismatch");
+    }
+    std::cout << "layer " << i << " backward" << std::endl;
+    grad = layers[i]->backward(grad, cached_activation);
+  }
+
+  // Backpropagate through embeddings
+  if (grad.rows() != input_tokens.size()) {
+    throw std::runtime_error("Gradient rows (" + std::to_string(grad.rows()) +
+                             ") must match sequence length (" +
+                             std::to_string(input_tokens.size()) + ")");
+  }
+
+  // Update token embeddings
+  token_embedding->backward(grad, input_tokens);
+}
+
+// Add member to store last hidden states for backward pass
+Matrix hidden_states;

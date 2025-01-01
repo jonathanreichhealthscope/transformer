@@ -1,7 +1,9 @@
 #pragma once
 #include "components.hpp"
 #include <functional>
+#include <iostream>
 #include <memory>
+#include <string>
 #include <vector>
 
 class LanguageModelHead {
@@ -9,12 +11,18 @@ private:
   Matrix projection;
   Vector bias;
   float dropout_prob;
+  size_t vocab_size_;
+  size_t hidden_size_;
 
 public:
   LanguageModelHead(size_t hidden_size, size_t vocab_size, float dropout = 0.1)
-      : projection(Matrix(vocab_size, hidden_size)), bias(Vector(vocab_size)),
-        dropout_prob(dropout) {
+      : projection(Matrix(hidden_size, vocab_size)), bias(Vector(vocab_size)),
+        dropout_prob(dropout), vocab_size_(vocab_size),
+        hidden_size_(hidden_size) {
     float scale = std::sqrt(1.0f / hidden_size);
+    std::cout << "LM Head initialization:" << std::endl;
+    std::cout << "Creating projection matrix: [" << hidden_size << " × "
+              << vocab_size << "]" << std::endl;
     projection.randomize(-scale, scale);
     bias.randomize(-scale, scale);
   }
@@ -32,11 +40,12 @@ public:
     return *this;
   }
 
-  Matrix forward(const Matrix &hidden_states);
+  Matrix forward(const Matrix &hidden_states) const;
 
   Matrix backward(const Matrix &grad_output, const Matrix &hidden_states) {
     // Compute gradients for projection and bias
-    Matrix grad_proj = matmul(grad_output, hidden_states);
+    std::cout << "Computing gradients for projection and bias" << std::endl;
+    Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
     Vector grad_bias = grad_output.row_sum();
 
     // Apply weight updates with adaptive learning rate
@@ -62,11 +71,9 @@ public:
         // Update RMSprop
         v_proj(i, j) = beta2 * v_proj(i, j) +
                        (1 - beta2) * grad_proj(i, j) * grad_proj(i, j);
-
         // Bias correction
         float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
         float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
-
         // Update weights
         projection(i, j) -= lr * m_hat / (std::sqrt(v_hat) + eps);
       }
@@ -82,13 +89,23 @@ public:
       // Bias correction
       float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
       float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
-
       // Update bias
       bias[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
     }
-
+    std::cout << "Gradient with respect to input" << std::endl;
+    std::cout << "grad_output dims: " << grad_output.rows() << "x"
+              << grad_output.cols() << std::endl;
+    std::cout << "projection dims: " << projection.rows() << "x"
+              << projection.cols() << std::endl;
     // Compute gradient with respect to input
-    return matmul(projection.transpose(), grad_output);
+    Matrix grad_input = matmul(grad_output, projection);
+    if (grad_input.cols() != hidden_states.cols()) {
+      throw std::runtime_error(
+          "Language model head gradient output dimension (" +
+          std::to_string(grad_input.cols()) + ") must match hidden size (" +
+          std::to_string(hidden_states.cols()) + ")");
+    }
+    return grad_input;
   }
 
   void save(std::ostream &os) const {
@@ -115,4 +132,8 @@ public:
   }
 
   Vector &get_bias() { return bias; }
+
+  Matrix project_to_vocab(const Matrix &hidden_states) const;
+
+  const Matrix &get_projection() const { return projection; }
 };

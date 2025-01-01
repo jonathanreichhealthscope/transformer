@@ -20,6 +20,8 @@ public:
   // Core functionality
   Matrix forward(const std::vector<int> &tokens);
   Matrix project_to_vocab(const Matrix &hidden_states);
+  void backward(const Matrix &grad_output,
+                const std::vector<int> &input_tokens);
   virtual void forward_cuda(const std::vector<int> &tokens, Matrix &output);
   virtual Matrix project_to_vocab_cuda(const Matrix &input);
 

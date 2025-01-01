@@ -1,7 +1,8 @@
 #include "../include/matrix.hpp"
 #include <cmath>
+#include <iostream>
 #include <random>
-
+#include <string>
 // Constructor implementations
 Matrix::Matrix() : rows_(0), cols_(0) {}
 
@@ -245,4 +246,30 @@ Matrix operator*(const Matrix &a, const Matrix &b) {
   return result;
 }
 
-Matrix matmul(const Matrix &a, const Matrix &b) { return a * b; }
+Matrix matmul(const Matrix &a, const Matrix &b) {
+  std::cout << "Matrix multiplication dimensions:" << std::endl;
+  std::cout << "A: " << a.rows() << "x" << a.cols() << std::endl;
+  std::cout << "B: " << b.rows() << "x" << b.cols() << std::endl;
+
+  if (a.cols() != b.rows()) {
+    throw std::runtime_error("Invalid matrix dimensions for multiplication: " +
+                             std::to_string(a.cols()) +
+                             " != " + std::to_string(b.rows()));
+  }
+
+  Matrix result(a.rows(), b.cols());
+
+  for (size_t i = 0; i < a.rows(); i++) {
+    for (size_t j = 0; j < b.cols(); j++) {
+      float sum = 0.0f;
+      for (size_t k = 0; k < a.cols(); k++) {
+        sum += a(i, k) * b(k, j);
+      }
+      result(i, j) = sum;
+    }
+  }
+
+  std::cout << "Result dimensions: " << result.rows() << "x" << result.cols()
+            << std::endl;
+  return result;
+}

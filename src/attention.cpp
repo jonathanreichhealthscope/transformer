@@ -89,7 +89,6 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
 
 Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                    const std::optional<KVCache> &kv_cache) {
-  std::cout << "Forwarding through MultiHeadAttention" << std::endl;
   // Project input to Q, K, V
   Matrix Q = matmul(x, query_proj);
   Matrix K = matmul(x, key_proj);

@@ -86,11 +86,56 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
   return training_pairs;
 }
 
+Matrix create_target_distribution(const std::vector<int> &targets,
+                                  size_t vocab_size) {
+  // Create distribution matrix with same number of rows as sequence length
+  Matrix distribution(targets.size(), vocab_size, 0.0f);
+  std::cout << "Creating target distribution with shape: "
+            << distribution.rows() << "x" << distribution.cols() << std::endl;
+  for (int target : targets) {
+    if (target >= static_cast<int>(vocab_size)) {
+      throw std::runtime_error("Target ID exceeds vocabulary size");
+    }
+    // Set target positions to 1.0 in the last row (for next token prediction)
+    distribution(distribution.rows() - 1, target) = 1.0f;
+  }
+  return distribution;
+}
+
+Matrix compute_cross_entropy_gradient(const Matrix &logits,
+                                      const Matrix &targets,
+                                      const LanguageModelHead *lm_head) {
+  std::cout << "within compute_cross_entropy_gradient" << std::endl;
+  std::cout << "logits dimensions: " << logits.rows() << "x" << logits.cols()
+            << std::endl;
+  std::cout << "targets dimensions: " << targets.rows() << "x" << targets.cols()
+            << std::endl;
+
+  // Ensure logits and targets have matching dimensions
+  if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
+    throw std::runtime_error(
+        "Logits dimensions (" + std::to_string(logits.rows()) + "x" +
+        std::to_string(logits.cols()) + ") must match targets dimensions (" +
+        std::to_string(targets.rows()) + "x" + std::to_string(targets.cols()) +
+        ")");
+  }
+
+  // First compute the vocab-space gradient
+  Matrix vocab_grad = logits;
+  std::cout << "vocab_grad dimensions: " << vocab_grad.rows() << "x"
+            << vocab_grad.cols() << std::endl;
+  std::cout << "applying softmax" << std::endl;
+  vocab_grad.apply_softmax();
+  std::cout << "subtracting targets" << std::endl;
+  vocab_grad = vocab_grad - targets;
+
+  return vocab_grad; // Return the gradient in vocab space
+}
+
 int main(int argc, char *argv[]) {
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
-  // logger.disableLogging();
 
   try {
     initialize_cuda(); // Initialize CUDA at program start
@@ -187,9 +232,41 @@ int main(int argc, char *argv[]) {
         Matrix hidden_states = transformer.forward(input_tokens);
         last_hidden_states = hidden_states;
         std::cout << "Forward pass for hidden states '" << target_text << "'\n";
-        Matrix logits = lm_head->forward(hidden_states);
+        // Project to vocabulary space
+        Matrix logits = lm_head->project_to_vocab(hidden_states);
+        std::cout << "Hidden states shape: " << hidden_states.rows() << "x"
+                  << hidden_states.cols() << "\n";
         std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols()
                   << "\n";
+
+        // Ensure target_distribution has same sequence length as logits
+        Matrix target_distribution =
+            create_target_distribution(target_tokens, config.vocab_size);
+        if (target_distribution.rows() != logits.rows()) {
+          // Resize target_distribution to match logits sequence length
+          Matrix resized_targets(logits.rows(), config.vocab_size, 0.0f);
+          // Copy the last row of target_distribution to all rows of
+          // resized_targets
+          for (size_t i = 0; i < logits.rows(); i++) {
+            for (size_t j = 0; j < config.vocab_size; j++) {
+              resized_targets(i, j) =
+                  target_distribution(target_distribution.rows() - 1, j);
+            }
+          }
+          target_distribution = resized_targets;
+        }
+
+        std::cout << "Creating target distribution\n";
+        // Compute proper loss and gradients
+        Matrix loss_grad = compute_cross_entropy_gradient(
+            logits, target_distribution, lm_head.get());
+
+        // Backpropagate through the network
+        std::cout << "Backward pass for loss gradient\n";
+        Matrix hidden_grad = lm_head->backward(loss_grad, hidden_states);
+        std::cout << "Backward pass for hidden states\n";
+        transformer.backward(hidden_grad, input_tokens);
+        std::cout << "Target Matrix calculation" << target_text << "'\n";
 
         // Compute loss and gradients
         Matrix target_matrix(logits.rows(), logits.cols(), 0.0f);
@@ -471,7 +548,7 @@ int main(int argc, char *argv[]) {
             "Artists create in the",    // Creative context
             "Engineers work in the",    // Technical context
             "Lawyers practice in the",  // Legal context
-            "Teachers instruct in the", // Educational context 
+            "Teachers instruct in the", // Educational context
             "Scientists experiment in", // Research context
             "Pilots fly through the",   // Aviation context
             "Dancers rehearse in the",  // Performance context
