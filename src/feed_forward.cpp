@@ -64,6 +64,9 @@ Matrix FeedForward::forward(const Matrix &x) {
     }
   }
 
+  // Store intermediate values for backward pass
+  intermediate_cache = intermediate;
+
   // Second linear layer
   Matrix output(x.rows(), w2.cols());
   for (size_t i = 0; i < x.rows(); ++i) {

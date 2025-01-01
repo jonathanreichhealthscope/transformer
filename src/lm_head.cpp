@@ -7,7 +7,9 @@ Matrix LanguageModelHead::forward(const Matrix &hidden_states) const {
   // hidden_states: [seq_len × hidden_size] = [5 × 768]
   // projection: [hidden_size × vocab_size] = [768 × 50000]
   // Result: [seq_len × vocab_size] = [5 × 50000]
-  Matrix logits = matmul(hidden_states, projection);
+  std::cout << "hidden_states: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+  std::cout << "projection: " << projection.rows() << "x" << projection.cols() << std::endl;
+  Matrix logits = matmul(hidden_states, projection.transpose());
 
   // Add bias
   for (size_t i = 0; i < logits.rows(); ++i) {
