@@ -704,15 +704,17 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
         }
         
         // Validate total size matches
-        size_t total_elements = batch_size * seq_length * head_size;
-        if (total_elements != x.size()) {
+        size_t expected_rows = batch_size;
+        size_t expected_cols = num_heads * head_size;
+
+        if (x.rows() != expected_rows || x.cols() != expected_cols) {
             throw std::runtime_error(
-                "Dimension mismatch: input size (" + std::to_string(x.size()) + 
-                ") != batch_size * seq_length * head_size (" + 
-                std::to_string(total_elements) + ")"
+                "Input matrix dimension mismatch: expected shape [" + 
+                std::to_string(expected_rows) + ", " + std::to_string(expected_cols) + 
+                "], got [" + std::to_string(x.rows()) + ", " + std::to_string(x.cols()) + "]"
             );
         }
-        
+
         // Check for multiplication overflow
         if (batch_size > std::numeric_limits<size_t>::max() / num_heads) {
             throw std::runtime_error("Overflow in batch_size * num_heads calculation");
@@ -740,21 +742,24 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
         std::cout << "All dimension checks passed" << std::endl;
         
         // Create reshaped matrix
-        std::cout << "\nCreating reshaped matrix..." << std::endl;
-        Matrix reshaped(batch_size * num_heads * seq_length, head_size, 0.0f);
-        std::cout << "Reshaped matrix created: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
-        
-        // Verify reshaped matrix
-        if (reshaped.empty()) {
-            throw std::runtime_error("Failed to allocate reshaped matrix");
-        }
-        if (reshaped.data() == nullptr) {
-            throw std::runtime_error("Reshaped matrix has null data pointer");
-        }
+        std::cout << "\nCalculating reshaped dimensions..." << std::endl;
+        std::cout << "Input matrix size: " << x.size() << std::endl;
+        std::cout << "Input matrix shape: " << x.rows() << "x" << x.cols() << std::endl;
+
+        Matrix reshaped(batch_size * num_heads, seq_length * head_size, 0.0f);
+
+        std::cout << "Reshaped matrix dimensions: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
+        std::cout << "Reshaped matrix size: " << reshaped.size() << std::endl;
+
+        // Verify sizes match before proceeding
         if (reshaped.size() != x.size()) {
             throw std::runtime_error(
-                "Size mismatch after reshape: reshaped size (" + std::to_string(reshaped.size()) + 
-                ") != input size (" + std::to_string(x.size()) + ")"
+                "Size mismatch in reshape: input size=" + std::to_string(x.size()) +
+                ", reshaped size=" + std::to_string(reshaped.size()) +
+                " (batch_size=" + std::to_string(batch_size) +
+                ", num_heads=" + std::to_string(num_heads) +
+                ", seq_length=" + std::to_string(seq_length) +
+                ", head_size=" + std::to_string(head_size) + ")"
             );
         }
         
