@@ -198,23 +198,27 @@ int main(int argc, char *argv[]) {
       float epoch_loss = 0.0f;
 
       const size_t batch_size = 32; // Adjust based on your GPU memory
-      for (size_t i = 0; i < training_pairs.size(); i += batch_size) {
-        std::cout << "Processing batch " << i << std::endl;
+      size_t total_batches = (training_pairs.size() + batch_size - 1) / batch_size;
+      
+      // Process each batch sequentially to avoid thread issues
+      for (size_t batch = 0; batch < total_batches; ++batch) {
+        size_t start_idx = batch * batch_size;
+        size_t end_idx = std::min(start_idx + batch_size, training_pairs.size());
+        
         // Create batch
         std::vector<std::vector<int>> input_batch;
         std::vector<std::vector<int>> target_batch;
 
         // Fill batch
-        for (size_t j = 0; j < batch_size && (i + j) < training_pairs.size();
-             ++j) {
-          const auto &[input_text, target_text] = training_pairs[i + j];
+        for (size_t j = start_idx; j < end_idx; ++j) {
+          const auto &[input_text, target_text] = training_pairs[j];
           input_batch.push_back(tokenizer->encode(input_text));
           target_batch.push_back(tokenizer->encode(target_text));
         }
 
         // Get input and target from training pairs
-        const auto &[input_text, target_text] = training_pairs[i];
-        std::cout << "Processing pair " << i << ": '" << input_text << "' -> '"
+        const auto &[input_text, target_text] = training_pairs[start_idx];
+        std::cout << "Processing pair " << start_idx << ": '" << input_text << "' -> '"
                   << target_text << "'\n";
 
         // Tokenize input and target
@@ -430,11 +434,6 @@ int main(int argc, char *argv[]) {
         std::cout << "Created current_grad with dimensions: "
                   << current_grad.shape() << "\n";
 
-        // Print dimensions of first few parameters for debugging
-        /*std::cout << "First few parameter dimensions:\n";
-        for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
-          std::cout << "Parameter shape: " << params[i]->shape() << "\n";
-        }*/
 
         // Ensure gradients match parameter dimensions exactly
         for (size_t i = 0; i < params.size(); ++i) {
@@ -442,9 +441,6 @@ int main(int argc, char *argv[]) {
           // Get parameter dimensions
           size_t param_rows = params[i]->rows();
           size_t param_cols = params[i]->cols();
-
-          /*std::cout << "Parameter dimensions: " << param_rows << "x"
-                    << param_cols << "\n";*/
 
           // Create gradient with matching dimensions
           new_grads[i] = Matrix(param_rows, param_cols, 0.0f);
@@ -521,12 +517,14 @@ int main(int argc, char *argv[]) {
           std::cerr << "Error updating biases: " << e.what() << std::endl;
           throw;
         }
-      }
 
-      // Print epoch statistics
-      epoch_loss /= training_pairs.size();
-      std::cout << "Epoch " << epoch + 1 << "/" << num_epochs
-                << ", Loss: " << epoch_loss << "\n";
+        // Print progress
+        std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
+                  << " in epoch " << epoch + 1 << std::flush;
+      }
+      
+      std::cout << "\nCompleted epoch " << epoch + 1 << "/" << num_epochs 
+                << " (Loss: " << epoch_loss/total_batches << ")" << std::endl;
 
       // Save checkpoint
       if ((epoch + 1) % checkpoint_frequency == 0) {
