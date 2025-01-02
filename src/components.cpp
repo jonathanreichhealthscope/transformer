@@ -258,9 +258,9 @@ Matrix operator*(const Matrix &a, const Matrix &b) {
 }
 
 Matrix matmul(const Matrix &a, const Matrix &b) {
-  std::cout << "Matrix multiplication dimensions:" << std::endl;
+  /*std::cout << "Matrix multiplication dimensions:" << std::endl;
   std::cout << "A: " << a.rows() << "x" << a.cols() << std::endl;
-  std::cout << "B: " << b.rows() << "x" << b.cols() << std::endl;
+  std::cout << "B: " << b.rows() << "x" << b.cols() << std::endl;*/
 
   if (a.cols() != b.rows()) {
     throw std::runtime_error("Invalid matrix dimensions for multiplication: " +
@@ -280,7 +280,5 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
     }
   }
 
-  std::cout << "Result dimensions: " << result.rows() << "x" << result.cols()
-            << std::endl;
   return result;
 }

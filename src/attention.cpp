@@ -132,6 +132,42 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     std::cerr << "value_proj min: " << value_proj.min() << " max: " << value_proj.max() << "\n";
   }
 
+  // Analyze value distributions
+  auto analyze_matrix = [](const Matrix& m, const std::string& name) {
+    float min_val = m.min();
+    float max_val = m.max();
+    
+    // Calculate mean and std
+    float sum = 0.0f;
+    float sq_sum = 0.0f;
+    size_t count = 0;
+    
+    for(size_t i = 0; i < m.size(); i++) {
+      float val = m.data()[i];
+      sum += val;
+      sq_sum += val * val;
+      count++;
+    }
+    
+    float mean = sum / count;
+    float variance = (sq_sum / count) - (mean * mean);
+    float std_dev = std::sqrt(variance);
+    
+    std::cerr << name << " stats:\n"
+              << "  Range: [" << min_val << ", " << max_val << "]\n"
+              << "  Mean: " << mean << "\n"
+              << "  Std Dev: " << std_dev << "\n";
+              
+    // Warning if values are too extreme
+    if(std::abs(mean) > 0.1f || std_dev > 0.1f) {
+      std::cerr << "Warning: " << name << " values may be too large!\n";
+    }
+  };
+  
+  analyze_matrix(Q, "Query");
+  analyze_matrix(K, "Key");
+  analyze_matrix(V, "Value");
+
   // Apply RoPE if enabled
   if (use_rope) {
     for (size_t pos = 0; pos < x.rows(); ++pos) {
