@@ -93,6 +93,9 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   Matrix Q = matmul(x, query_proj);
   Matrix K = matmul(x, key_proj);
   Matrix V = matmul(x, value_proj);
+  std::cout << "Q: " << *Q.data() << std::endl;
+  std::cout << "K: " << *K.data() << std::endl;
+  std::cout << "V: " << *V.data() << std::endl;
 
   // Apply RoPE if enabled
   if (use_rope) {
@@ -119,10 +122,8 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   // Use flash attention if enabled
   Matrix attention_output;
   if (use_flash) {
-    std::cout << "Using flash attention" << std::endl;
     attention_output = flash_attention(Q, K, V, mask);
   } else {
-    std::cout << "Using standard attention" << std::endl;
     attention_output = standard_attention(Q, K, V, mask);
   }
   return matmul(attention_output, output_proj);
@@ -197,22 +198,45 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
                                               const Matrix &V,
                                               const AttentionMask &mask) const {
-  std::cout << "Standard attention" << std::endl;
+  
   Matrix scores = matmul(Q, K.transpose());
-  scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
-  std::cout << "Scores: rows: " << scores.rows()
-            << " Scores: cols: " << scores.cols() << std::endl;
+  std::cout << "Q: " << *Q.data() << std::endl;
+  std::cout << "K: " << *K.data() << std::endl;
+  std::cout << "V: " << *V.data() << std::endl;
+  // Add numerical stability to attention scaling
+  float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+  scale = std::min(scale, 10.0f);  // Prevent too large scaling
+  scores *= scale;
+
   if (!mask.mask.empty()) {
     for (size_t i = 0; i < scores.rows(); ++i) {
       for (size_t j = 0; j < scores.cols(); ++j) {
+        std::cout << "score: " << scores(i, j) << std::endl;
         if (mask.mask(i, j) == 0.0f) {
-          scores(i, j) = -std::numeric_limits<float>::infinity();
+          scores(i, j) = -1e6f;  // Use finite value instead of infinity
         }
       }
     }
   }
 
-  scores.apply_softmax();
+  // Add numerical stability to softmax
+  for (size_t i = 0; i < scores.rows(); ++i) {
+    float max_val = scores(i, 0);
+    for (size_t j = 1; j < scores.cols(); ++j) {
+      max_val = std::max(max_val, scores(i, j));
+    }
+    float sum = 0.0f;
+    const float epsilon = 1e-10f;
+    for (size_t j = 0; j < scores.cols(); ++j) {
+      scores(i, j) = std::exp(scores(i, j) - max_val);
+      sum += scores(i, j);
+    }
+    sum = std::max(sum, epsilon);
+    for (size_t j = 0; j < scores.cols(); ++j) {
+      scores(i, j) /= sum;
+    }
+  }
+
   return matmul(scores, V);
 }
 

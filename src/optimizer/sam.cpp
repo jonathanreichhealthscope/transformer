@@ -1,13 +1,22 @@
 #include "../../include/optimizer/sam.hpp"
+#include <algorithm>
 #include <cmath>
 
 float SAM::compute_grad_norm(const std::vector<Matrix> &grads) {
   float total_norm = 0.0f;
+  const float epsilon = 1e-12f;  // Prevent underflow
   for (const auto &grad : grads) {
     for (size_t i = 0; i < grad.size(); ++i) {
-      total_norm += grad.data()[i] * grad.data()[i];
+      // Prevent underflow by clamping tiny gradients
+      float g = grad.data()[i];
+      if (std::abs(g) < epsilon) {
+        g = 0.0f;
+      }
+      total_norm += g * g;
     }
   }
+  // Prevent sqrt of zero
+  total_norm = std::max(total_norm, epsilon * epsilon);
   return std::sqrt(total_norm);
 }
 
@@ -39,12 +48,15 @@ void SAM::first_step(std::vector<Matrix *> &params,
 
   // Compute gradient norm
   float grad_norm = compute_grad_norm(grads);
-  if (grad_norm == 0.0f) {
+  const float min_norm = 1e-8f;
+  if (grad_norm < min_norm) {
+    std::cerr << "Warning: Very small gradient norm: " << grad_norm << std::endl;
     return;
   }
 
   // Scale factor for gradient
-  float scale = rho / (grad_norm + 1e-12f);
+  // Clamp scale to prevent extreme values
+  float scale = std::min(rho / grad_norm, 10.0f);
 
   // Update parameters with scaled gradients
   for (size_t i = 0; i < params.size(); ++i) {
@@ -52,7 +64,10 @@ void SAM::first_step(std::vector<Matrix *> &params,
     const Matrix &grad = grads[i];
 
     for (size_t j = 0; j < param.size(); ++j) {
-      param.data()[j] += scale * grad.data()[j];
+      // Prevent parameter updates from becoming too large
+      float update = scale * grad.data()[j];
+      update = std::clamp(update, -1.0f, 1.0f);
+      param.data()[j] += update;
     }
   }
 }
@@ -91,7 +106,11 @@ void SAM::update_bias(std::vector<std::reference_wrapper<FloatVector>> &biases,
 
     // Apply gradient update
     for (size_t j = 0; j < bias.size(); ++j) {
-      bias[j] -= learning_rate * grad[j];
+      // Clamp gradients and prevent extreme updates
+      float grad_value = std::clamp(grad[j], -10.0f, 10.0f);
+      float update = learning_rate * grad_value;
+      update = std::clamp(update, -0.1f, 0.1f);
+      bias[j] -= update;
     }
   }
 }

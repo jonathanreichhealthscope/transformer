@@ -105,11 +105,6 @@ Matrix create_target_distribution(const std::vector<int> &targets,
 Matrix compute_cross_entropy_gradient(const Matrix &logits,
                                       const Matrix &targets,
                                       const LanguageModelHead *lm_head) {
-  std::cout << "within compute_cross_entropy_gradient" << std::endl;
-  std::cout << "logits dimensions: " << logits.rows() << "x" << logits.cols()
-            << std::endl;
-  std::cout << "targets dimensions: " << targets.rows() << "x" << targets.cols()
-            << std::endl;
 
   // Ensure logits and targets have matching dimensions
   if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
@@ -298,7 +293,7 @@ int main(int argc, char *argv[]) {
 
         // Apply softmax derivative: grad * (softmax - target)
         // First, apply softmax to the last position
-        float max_val = -std::numeric_limits<float>::infinity();
+        float max_val = 0.0001f;
         std::cout << "Initialized max value for softmax\n";
 
         // Only compute gradients for the last position
@@ -378,7 +373,7 @@ int main(int argc, char *argv[]) {
                   << "\n";
 
         // Recompute softmax and gradients for last position
-        float new_max_val = -std::numeric_limits<float>::infinity();
+        float new_max_val = 0.0001f;
         size_t last_pos = new_logits.rows() - 1;
         for (size_t j = 0; j < new_logits.cols(); ++j) {
           new_max_val = std::max(new_max_val, new_logits(last_pos, j));
@@ -429,10 +424,10 @@ int main(int argc, char *argv[]) {
                   << current_grad.shape() << "\n";
 
         // Print dimensions of first few parameters for debugging
-        std::cout << "First few parameter dimensions:\n";
+        /*std::cout << "First few parameter dimensions:\n";
         for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
           std::cout << "Parameter shape: " << params[i]->shape() << "\n";
-        }
+        }*/
 
         // Ensure gradients match parameter dimensions exactly
         for (size_t i = 0; i < params.size(); ++i) {
@@ -441,8 +436,8 @@ int main(int argc, char *argv[]) {
           size_t param_rows = params[i]->rows();
           size_t param_cols = params[i]->cols();
 
-          std::cout << "Parameter dimensions: " << param_rows << "x"
-                    << param_cols << "\n";
+          /*std::cout << "Parameter dimensions: " << param_rows << "x"
+                    << param_cols << "\n";*/
 
           // Create gradient with matching dimensions
           new_grads[i] = Matrix(param_rows, param_cols, 0.0f);

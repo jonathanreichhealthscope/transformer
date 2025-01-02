@@ -7,8 +7,7 @@ Matrix LanguageModelHead::forward(const Matrix &hidden_states) const {
   // hidden_states: [seq_len × hidden_size] = [5 × 768]
   // projection: [hidden_size × vocab_size] = [768 × 50000]
   // Result: [seq_len × vocab_size] = [5 × 50000]
-  std::cout << "hidden_states: " << hidden_states.rows() << "x"
-            << hidden_states.cols() << std::endl;
+  std::cout << "In language Model Head: " << std::endl;
   std::cout << "projection: " << projection.rows() << "x" << projection.cols()
             << std::endl;
   Matrix logits = matmul(hidden_states, projection.transpose());
@@ -20,15 +19,13 @@ Matrix LanguageModelHead::forward(const Matrix &hidden_states) const {
     }
   }
 
+  std::cout << "Logits data in language Model Head: " << *logits.data()
+            << std::endl;
   return logits;
 }
 
 Matrix LanguageModelHead::project_to_vocab(const Matrix &hidden_states) const {
-  std::cout << "Debug dimensions in project_to_vocab:" << std::endl;
-  std::cout << "hidden_states: " << hidden_states.rows() << "x"
-            << hidden_states.cols() << std::endl;
-  std::cout << "projection: " << projection.rows() << "x" << projection.cols()
-            << std::endl;
+  std::cout << "In project_to_vocab:" << std::endl;
 
   // Project from hidden space to vocab space
   // hidden_states: [5 × 768]
@@ -43,6 +40,6 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix &hidden_states) const {
       logits(i, j) += bias[j];
     }
   }
-
+  std::cout << "Logits data in project_to_vocab: " << *logits.data() << std::endl;
   return logits;
 }

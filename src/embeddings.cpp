@@ -1,4 +1,5 @@
 #include "../include/embeddings.hpp"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -7,8 +8,9 @@
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),
       embedding_dim_(embedding_dim) {
-  // Initialize weights with Xavier/Glorot initialization
-  weights_.randomize(-0.1f, 0.1f);
+  // Initialize weights with smaller values for better stability
+  float scale = std::sqrt(1.0f / embedding_dim_);  // Xavier initialization
+  weights_.randomize(-scale, scale);
 }
 
 Matrix TokenEmbedding::forward(const std::vector<int> &tokens) {
@@ -29,6 +31,8 @@ Matrix TokenEmbedding::project_to_vocab(const Matrix &hidden_states) {
       for (size_t h = 0; h < embedding_dim_; ++h) {
         sum += hidden_states(i, h) * weights_(v, h);
       }
+      // Prevent extreme values in logits
+      sum = std::clamp(sum, -100.0f, 100.0f);
       logits(i, v) = sum;
     }
   }

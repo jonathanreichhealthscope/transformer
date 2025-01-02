@@ -207,23 +207,29 @@ Matrix Transformer::compute_loss_gradients(const Matrix &logits,
   for (size_t i = 0; i < batch_size; ++i) {
     // Compute softmax probabilities
     std::vector<float> probs(vocab_size);
-    float max_logit = -std::numeric_limits<float>::infinity();
+    float max_logit = logits(i, 0);  // Initialize with first value
+    std::cout << "logit value: " << logits(i, 0) << std::endl;
 
-    // Find max logit for numerical stability
+    // Find max logit for numerical stabilxity
     for (size_t j = 0; j < vocab_size; ++j) {
       max_logit = std::max(max_logit, logits(i, j));
     }
 
-    // Compute softmax denominator
-    float sum_exp = 0.0f;
+    float sum = 0.0f;
+    // Add numerical stability to softmax computation
+    const float epsilon = 1e-10f;
     for (size_t j = 0; j < vocab_size; ++j) {
-      probs[j] = std::exp(logits(i, j) - max_logit);
-      sum_exp += probs[j];
+      // Clamp the exponent to prevent overflow
+      float exp_val = std::min(logits(i, j) - max_logit, 88.0f);
+      probs[j] = std::exp(exp_val);
+      sum += probs[j];
     }
+    // Prevent division by zero
+    sum = std::max(sum, epsilon);
 
     // Normalize and compute gradients
     for (size_t j = 0; j < vocab_size; ++j) {
-      probs[j] /= sum_exp;
+      probs[j] /= sum;
       // Gradient is (probability - 1) for correct class, probability for others
       gradients(i, j) = probs[j];
     }
@@ -563,7 +569,6 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
   // Get embeddings using CUDA
   std::cout << "Getting embeddings using CUDA" << std::endl;
   token_embedding->forward_cuda(input_tokens, embeddings);
-  std::cout << "Got embeddings" << std::endl;
   // Add positional encodings
   Matrix position_ids(input_tokens.size(), 1);
   for (size_t i = 0; i < input_tokens.size(); ++i) {
@@ -617,6 +622,7 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
       for (size_t k = 0; k < config.hidden_size; k++) {
         sum += hidden_states(i, k) * embedding_table(j, k);
       }
+      std::cout << "current sum is: " << sum << std::endl;
       logits(i, j) = sum;
     }
   }
