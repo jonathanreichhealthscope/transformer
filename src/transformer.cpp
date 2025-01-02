@@ -540,35 +540,30 @@ void Transformer::load(std::istream &is) {
   final_ln = LayerNorm::load(is);
 }
 
-Matrix TransformerLayer::backward(const Matrix &grad,
-                                  const Matrix &input) const {
-  std::cout << "TransformerLayer backward dimensions:" << std::endl;
-  std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-  std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-
-  // Verify dimensions match
-  if (grad.rows() != input.rows() || grad.cols() != input.cols()) {
-    throw std::runtime_error(
-        "Gradient and input dimensions must match in layer backward. "
-        "grad: " +
-        std::to_string(grad.rows()) + "x" + std::to_string(grad.cols()) +
-        " input: " + std::to_string(input.rows()) + "x" +
-        std::to_string(input.cols()));
-  }
-
-  // Backward through feed forward
-  Matrix d_residual2 = grad;
-  Matrix normalized = ffn_ln->forward(input);
-  Matrix d_ffn = feed_forward->backward(d_residual2, normalized);
-  Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
-
-  // Backward through attention
-  Matrix d_residual1 = d_ln2 + d_residual2;
-  Matrix attn_normalized = attention_ln->forward(input);
-  Matrix d_attn = self_attention->backward(d_residual1, attn_normalized);
-  Matrix d_ln1 = attention_ln->backward(d_attn, input);
-
-  return d_ln1;
+Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input,
+                                const Matrix& target_distribution) {
+    // Backward through second residual connection
+    Matrix d_residual2 = grad_output;
+    
+    // Forward passes to get normalized values
+    Matrix ffn_input = input;  // Store input for feed forward
+    Matrix ffn_normalized = ffn_ln->forward(ffn_input);
+    Matrix attn_normalized = attention_ln->forward(input);
+    
+    // Backward through feed forward network
+    Matrix d_ffn = feed_forward->backward(d_residual2, ffn_normalized);
+    Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
+    
+    // Backward through first residual connection
+    Matrix d_residual1 = d_ln2;
+    
+    Matrix d_attn = self_attention->backward(d_residual1, attn_normalized, target_distribution);
+    
+    // Backward through first layer norm
+    Matrix d_ln1 = attention_ln->backward(d_attn, input);
+    
+    // Final gradient
+    return d_ln1;
 }
 
 Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
@@ -737,7 +732,7 @@ Transformer &Transformer::operator=(const Transformer &other) {
 }
 
 void Transformer::backward(const Matrix &grad_output,
-                           const std::vector<int> &input_tokens) {
+                         const std::vector<int> &input_tokens) {
   // Verify dimensions
   if (grad_output.cols() != config.hidden_size) {
     throw std::runtime_error("Gradient output dimension (" +

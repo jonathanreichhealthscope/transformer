@@ -1,59 +1,36 @@
 #include "../include/layernorm.hpp"
 #include <cmath>
 
-Matrix LayerNorm::forward(const Matrix &input) const {
-  Matrix output(input.rows(), input.cols());
-
-  for (size_t i = 0; i < input.rows(); ++i) {
-    // Compute mean
-    float mean = 0.0f;
-    for (size_t j = 0; j < input.cols(); ++j) {
-      mean += input(i, j);
-    }
-    mean /= input.cols();
-
-    // Compute variance
-    float var = 0.0f;
-    for (size_t j = 0; j < input.cols(); ++j) {
-      float diff = input(i, j) - mean;
-      var += diff * diff;
-    }
-    var = var / input.cols() + eps_;
-
-    // Normalize and scale
-    for (size_t j = 0; j < input.cols(); ++j) {
-      output(i, j) =
-          ((input(i, j) - mean) / std::sqrt(var)) * gamma_[j] + beta_[j];
-    }
+Matrix LayerNorm::forward(const Matrix &x) {
+  // Compute mean and variance
+  float mean = 0.0f, var = 0.0f;
+  for (size_t i = 0; i < x.size(); i++) {
+    mean += x.data()[i];
+    var += x.data()[i] * x.data()[i];
   }
+  mean /= x.size();
+  var = var / x.size() - mean * mean;
+  float std = sqrt(var + eps_);
 
+  // Store normalized values for backward pass
+  normalized = Matrix(x.rows(), x.cols());
+  Matrix output(x.rows(), x.cols());
+  for (size_t i = 0; i < x.size(); i++) {
+    normalized.data()[i] = (x.data()[i] - mean) / std;
+    output.data()[i] = gamma_[i % hidden_size_] * normalized.data()[i] + beta_[i % hidden_size_];
+  }
   return output;
 }
 
-Matrix LayerNorm::backward(const Matrix &grad_output,
-                           const Matrix &input) const {
-  Matrix grad_input(input.rows(), input.cols());
-
-  for (size_t i = 0; i < input.rows(); ++i) {
-    // Compute mean and variance
-    float mean = 0.0f;
-    float var = 0.0f;
-    for (size_t j = 0; j < input.cols(); ++j) {
-      mean += input(i, j);
-    }
-    mean /= input.cols();
-    for (size_t j = 0; j < input.cols(); ++j) {
-      float diff = input(i, j) - mean;
-      var += diff * diff;
-    }
-    var = var / input.cols() + eps_;
-    // Compute gradients
-    float inv_std = 1.0f / std::sqrt(var);
-    for (size_t j = 0; j < input.cols(); ++j) {
-      grad_input(i, j) = grad_output(i, j) * gamma_[j] * inv_std;
-    }
+Matrix LayerNorm::backward(const Matrix &grad, const Matrix &input) {
+  Matrix dx(grad.rows(), grad.cols());
+  
+  // Compute gradients with respect to normalized inputs
+  for (size_t i = 0; i < grad.size(); i++) {
+    dx.data()[i] = grad.data()[i] * gamma_[i % hidden_size_];
   }
-  return grad_input;
+  
+  return dx;
 }
 
 void LayerNorm::save(std::ostream &os) const {

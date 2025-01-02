@@ -1,6 +1,7 @@
 #pragma once
 #include "../types.hpp"
 #include "optimizer.hpp"
+#include "../lm_head.hpp"
 #include <memory>
 
 class SAM {
@@ -25,6 +26,12 @@ public:
     }
   }
 
+  void compute_parameter_gradients(const Matrix& logits,
+                                  const Matrix& target_distribution,
+                                  std::vector<Matrix>& param_grads);
+  void compute_gradients(const Matrix& logits, 
+                        const Matrix& hidden_states,
+                        LanguageModelHead* lm_head);
   void first_step(std::vector<Matrix *> &params,
                   const std::vector<Matrix> &grads);
   void second_step(std::vector<Matrix *> &params,

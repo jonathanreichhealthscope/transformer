@@ -87,7 +87,8 @@ public:
     feed_forward->load(is);
     ffn_ln->load(is);
   }
-  Matrix backward(const Matrix &grad, const Matrix &input) const;
+  Matrix backward(const Matrix &grad_output, const Matrix &input,
+                 const Matrix &target_distribution = Matrix());
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   std::vector<std::reference_wrapper<Matrix>> get_weights() {
     std::vector<std::reference_wrapper<Matrix>> weights;

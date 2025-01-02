@@ -327,7 +327,7 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
 
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
                                               const Matrix &V,
-                                              const AttentionMask &mask) const {
+                                              const AttentionMask &mask) {
   Matrix scores = matmul(Q, K.transpose());
   
   // Clamp extreme values in scores
@@ -376,11 +376,28 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
     }
   }
 
+  // Store attention scores for backward pass
+  attention_scores = scores;
+  
   return matmul(scores, V);
 }
 
-Matrix MultiHeadAttention::backward(const Matrix &grad,
-                                    const Matrix &input) const {
-  // For now, return a simple gradient
-  return Matrix(input.rows(), input.cols());
+Matrix MultiHeadAttention::backward(const Matrix& grad_output,
+                                  const Matrix& input,
+                                  const Matrix& target_distribution) {
+    // Scale gradients based on attention scores
+    Matrix scaled_grads = grad_output;
+    for(size_t i = 0; i < scaled_grads.size(); i++) {
+        if (target_distribution.data()[i] > 0.0f) {
+            scaled_grads.data()[i] *= attention_scores.data()[i];
+        }
+    }
+    
+    // Compute gradients for Q, K, V
+    Matrix input_grads(input.rows(), input.cols(), 0.0f);
+    
+    // Add gradient contributions from attention mechanism
+    // ... implement the rest of backward pass
+    
+    return input_grads;
 }

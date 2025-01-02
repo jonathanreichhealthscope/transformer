@@ -62,10 +62,10 @@ Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
 
   CUDA_CHECK(cudaMalloc(&d_grad_output, grad_output.size() * sizeof(float)));
   CUDA_CHECK(cudaMalloc(&d_input, input.size() * sizeof(float)));
-  CUDA_CHECK(cudaMalloc(&d_gamma, gamma_.size() * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&d_gamma, hidden_size * sizeof(float)));
   CUDA_CHECK(cudaMalloc(&d_grad_input, input.size() * sizeof(float)));
-  CUDA_CHECK(cudaMalloc(&d_grad_gamma, gamma_.size() * sizeof(float)));
-  CUDA_CHECK(cudaMalloc(&d_grad_beta, beta_.size() * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&d_grad_gamma, hidden_size * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&d_grad_beta, hidden_size * sizeof(float)));
 
   // Copy data to device
   CUDA_CHECK(cudaMemcpy(d_grad_output, grad_output.data(),
@@ -73,7 +73,7 @@ Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
                         cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(d_input, input.data(), input.size() * sizeof(float),
                         cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(d_gamma, gamma_.data(), gamma_.size() * sizeof(float),
+  CUDA_CHECK(cudaMemcpy(d_gamma, gamma_.data(), hidden_size * sizeof(float),
                         cudaMemcpyHostToDevice));
 
   // Launch kernel

@@ -31,13 +31,14 @@ private:
   size_t window_size;
   Matrix cos_cached;
   Matrix sin_cached;
+  Matrix attention_scores;
 
   // Private helper methods
   Matrix apply_rope(const Matrix &x, size_t position) const;
   Matrix flash_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
                          const AttentionMask &mask) const;
   Matrix standard_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
-                            const AttentionMask &mask) const;
+                            const AttentionMask &mask);
 
 public:
   virtual ~MultiHeadAttention() = default;
@@ -51,7 +52,9 @@ public:
 
   Matrix forward(const Matrix &x, const AttentionMask &mask,
                  const std::optional<KVCache> &kv_cache = std::nullopt);
-  Matrix backward(const Matrix &grad, const Matrix &input) const;
+  Matrix backward(const Matrix& grad_output,
+                 const Matrix& input,
+                 const Matrix& target_distribution);
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   void save(std::ostream &os) const;
   static std::unique_ptr<MultiHeadAttention> load(std::istream &is);

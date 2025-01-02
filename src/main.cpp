@@ -1,4 +1,4 @@
-#include "../include/attention/advanced_attention.hpp"
+#include "../include/attention.hpp"
 #include "../include/cuda/cuda_init.cuh"
 #include "../include/lm_head.hpp"
 #include "../include/logger.hpp"
@@ -9,12 +9,16 @@
 #include "../include/transformer.hpp"
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
+#include "../include/matrix.hpp"
+#include "../include/gradient_tape.hpp"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <vector>
+#include <cmath>
 
 void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
                   size_t max_cols = 5) {
@@ -125,6 +129,85 @@ Matrix compute_cross_entropy_gradient(const Matrix &logits,
   vocab_grad = vocab_grad - targets;
 
   return vocab_grad; // Return the gradient in vocab space
+}
+
+void compute_parameter_gradients(const Matrix& logits, 
+                               const Matrix& target_matrix,
+                               const std::vector<Matrix*>& params,
+                               std::vector<Matrix>& param_grads,
+                               const Matrix& hidden_states,
+                               const std::vector<Matrix>& activations) {
+    
+    // Initialize gradient tape to track operations
+    GradientTape tape;
+    
+    // Compute loss gradient with respect to logits
+    Matrix loss_grad(logits.rows(), logits.cols());
+    for(size_t i = 0; i < logits.size(); i++) {
+        // Use target distribution from create_target_distribution
+        if (target_matrix.data()[i] > 0.0f) {
+            loss_grad.data()[i] = logits.data()[i] - target_matrix.data()[i];
+        }
+    }
+    
+    // 2. For each parameter, compute gradients through the computation graph
+    for(size_t param_idx = 0; param_idx < params.size(); param_idx++) {
+        Matrix& param = *params[param_idx];
+        Matrix& param_grad = param_grads[param_idx];
+        param_grad = Matrix(param.rows(), param.cols(), 0.0f);
+        
+        // 3. Compute gradient contribution from each path in computation graph
+        if(param_idx < activations.size()) {  // For weight matrices
+            const Matrix& activation = activations[param_idx];
+            
+            // Compute gradient using chain rule
+            for(size_t i = 0; i < param.rows(); i++) {
+                for(size_t j = 0; j < param.cols(); j++) {
+                    float grad = 0.0f;
+                    
+                    // Sum gradients from all outputs that depend on this parameter
+                    for(size_t k = 0; k < loss_grad.size(); k++) {
+                        float d_loss = loss_grad.data()[k];
+                        float d_activation = activation.data()[k] * (1.0f - activation.data()[k]);
+                        float d_input = hidden_states.data()[k];
+                        grad += d_loss * d_activation * d_input;
+                    }
+                    
+                    // Add L2 regularization
+                    const float reg_strength = 0.01f;
+                    grad += reg_strength * param(i, j);
+                    
+                    param_grad(i, j) = grad;
+                }
+            }
+        }
+    }
+    
+    // 4. Apply gradient clipping
+    for(Matrix& grad : param_grads) {
+        float grad_norm = 0.0f;
+        for(size_t i = 0; i < grad.size(); i++) {
+            grad_norm += grad.data()[i] * grad.data()[i];
+        }
+        grad_norm = std::sqrt(grad_norm);
+        
+        // Clip if gradient norm is too large
+        const float max_norm = 1.0f;
+        if(grad_norm > max_norm) {
+            float scale = max_norm / grad_norm;
+            for(size_t i = 0; i < grad.size(); i++) {
+                grad.data()[i] *= scale;
+            }
+        }
+        
+        // Check for numerical stability
+        for(size_t i = 0; i < grad.size(); i++) {
+            if(std::isnan(grad.data()[i]) || std::isinf(grad.data()[i])) {
+                std::cerr << "Warning: Invalid gradient detected!" << std::endl;
+                grad.data()[i] = 0.0f;
+            }
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -262,7 +345,7 @@ int main(int argc, char *argv[]) {
 
         // Backpropagate through the network
         std::cout << "Backward pass for loss gradient\n";
-        Matrix hidden_grad = lm_head->backward(loss_grad, hidden_states);
+        Matrix hidden_grad = lm_head->backward_pass(loss_grad, hidden_states);
         std::cout << "Backward pass for hidden states\n";
         transformer.backward(hidden_grad, input_tokens);
         std::cout << "Target Matrix calculation" << target_text << "'\n";
@@ -445,12 +528,50 @@ int main(int argc, char *argv[]) {
           // Create gradient with matching dimensions
           new_grads[i] = Matrix(param_rows, param_cols, 0.0f);
 
-          // For now, use a very small constant gradient for testing
-          // This ensures dimensions match exactly with the parameter
-          for (size_t r = 0; r < param_rows; ++r) {
-            for (size_t c = 0; c < param_cols; ++c) {
-              new_grads[i](r, c) = 1e-4f; // Very small constant gradient
-            }
+          // Compute actual gradients based on loss
+          Matrix &param = *params[i];
+          for(size_t r = 0; r < param_rows; r++) {
+              for(size_t c = 0; c < param_cols; c++) {
+                  // Compute gradient using chain rule
+                  float grad = 0.0f;
+                  
+                  // For each output that depends on this parameter
+                  for(size_t k = 0; k < logits.size(); k++) {
+                      // Compute partial derivative of loss with respect to output
+                      float d_loss = (logits.data()[k] - target_distribution.data()[k]);
+                      
+                      // Get cached activation for this layer
+                      auto cached_activation_opt = activation_cache.get(i);
+                      if (!cached_activation_opt) {
+                          throw std::runtime_error("No cached activation found for layer " + std::to_string(i));
+                      }
+                      const Matrix& cached_activation = *cached_activation_opt;
+                      
+                      // Multiply by partial derivative of output with respect to parameter
+                      grad += d_loss * cached_activation.data()[k] * hidden_states.data()[k];
+                  }
+                  
+                  // Add regularization if needed
+                  const float reg_strength = 0.01f;
+                  grad += reg_strength * param(r,c);  // L2 regularization
+                  
+                  // Store computed gradient
+                  new_grads[i](r,c) = grad;
+              }
+          }
+          
+          // Clip gradients to prevent instability
+          float grad_norm = 0.0f;
+          for(size_t j = 0; j < new_grads[i].size(); j++) {
+              grad_norm += new_grads[i].data()[j] * new_grads[i].data()[j];
+          }
+          grad_norm = std::sqrt(grad_norm);
+          
+          if(grad_norm > 1.0f) {
+              float scale = 1.0f / grad_norm;
+              for(size_t j = 0; j < new_grads[i].size(); j++) {
+                  new_grads[i].data()[j] *= scale;
+              }
           }
         }
         std::cout << "Completed gradient computation for all parameters\n";

@@ -114,3 +114,31 @@ void SAM::update_bias(std::vector<std::reference_wrapper<FloatVector>> &biases,
     }
   }
 }
+
+void SAM::compute_parameter_gradients(const Matrix& logits,
+                                    const Matrix& target_distribution,
+                                    std::vector<Matrix>& param_grads) {
+    // Initialize gradients
+    Matrix loss_grad(logits.rows(), logits.cols());
+    
+    // Compute cross entropy gradients
+    for(size_t i = 0; i < logits.size(); i++) {
+        if (target_distribution.data()[i] > 0.0f) {
+            loss_grad.data()[i] = logits.data()[i] - target_distribution.data()[i];
+        }
+    }
+    
+    // Rest of gradient computation...
+}
+
+void SAM::compute_gradients(const Matrix& logits, 
+                          const Matrix& hidden_states,
+                          LanguageModelHead* lm_head) {
+    // Initialize loss gradient
+    Matrix loss_grad(logits.rows(), logits.cols());
+    
+    // Compute gradients
+    Matrix grad = lm_head->backward_pass(loss_grad, hidden_states);
+    
+    // Rest of the implementation...
+}

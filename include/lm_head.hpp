@@ -13,6 +13,9 @@ private:
   float dropout_prob;
   size_t vocab_size_;
   size_t hidden_size_;
+  Matrix hidden_states;
+  void backward_linear(const Matrix& grad_output);
+  Matrix forward_impl(const Matrix &hidden_states) const;
 
 public:
   LanguageModelHead(size_t hidden_size, size_t vocab_size, float dropout = 0.1)
@@ -40,9 +43,12 @@ public:
     return *this;
   }
 
-  Matrix forward(const Matrix &hidden_states) const;
+  Matrix forward(const Matrix &hidden_states) {
+    this->hidden_states = hidden_states;
+    return forward_impl(hidden_states);
+  }
 
-  Matrix backward(const Matrix &grad_output, const Matrix &hidden_states) {
+  Matrix backward_pass(const Matrix &grad_output, const Matrix &hidden_states) {
     // Compute gradients for projection and bias
     std::cout << "Computing gradients for projection and bias" << std::endl;
     Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
@@ -136,4 +142,6 @@ public:
   Matrix project_to_vocab(const Matrix &hidden_states) const;
 
   const Matrix &get_projection() const { return projection; }
+
+  void backward(const Matrix& grad_output, const Matrix& target_distribution);
 };
