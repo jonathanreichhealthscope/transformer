@@ -5,6 +5,9 @@ This is a simple example of a transformer model in C++. It is based on the paper
 ## Dependencies
 
 - SentencePiece: <https://github.com/google/sentencepiece>
+- OpenMP: <https://github.com/OpenMP/openmp-api>
+- CUDA: <https://developer.nvidia.com/cuda-downloads>
+- cuDNN: <https://developer.nvidia.com/cudnn>
 
 ## Building
 
