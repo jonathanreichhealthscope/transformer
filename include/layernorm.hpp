@@ -9,26 +9,28 @@ class LayerNorm;
 
 class LayerNorm {
 private:
-  Vector gamma_;
-  Vector beta_;
+  size_t hidden_size_;
   float eps_;
+  Vector gamma_;  // Scale parameter (keep as Vector for CUDA compatibility)
+  Vector beta_;   // Shift parameter
+  Matrix normalized;  // Store normalized values for backward pass
 
 public:
   LayerNorm(size_t hidden_size, float eps = 1e-5)
-      : gamma_(hidden_size, 1.0f), beta_(hidden_size, 0.0f), eps_(eps) {}
-
-  // Core functionality
-  Matrix forward(const Matrix &input) const;
-  Matrix backward(const Matrix &grad_output, const Matrix &input) const;
+      : hidden_size_(hidden_size), eps_(eps),
+        gamma_(hidden_size, 1.0f), beta_(hidden_size, 0.0f) {}
+  Matrix forward(const Matrix& x);
+  Matrix backward(const Matrix& grad, const Matrix& input);
   Matrix backward_cuda(const Matrix &grad_output, const Matrix &input) const;
-
-  // Accessors
-  const Vector &get_gamma() const { return gamma_; }
-  const Vector &get_beta() const { return beta_; }
-  Vector &get_gamma() { return gamma_; }
-  Vector &get_beta() { return beta_; }
-
-  // Serialization
-  void save(std::ostream &os) const;
-  static std::unique_ptr<LayerNorm> load(std::istream &is);
+  const Matrix& get_normalized() const { return normalized; }
+  const Vector& gamma() const { return gamma_; }
+  const Vector& beta() const { return beta_; }
+  float eps() const { return eps_; }
+  size_t hidden_size() const { return hidden_size_; }
+  void save(std::ostream& os) const;
+  static std::unique_ptr<LayerNorm> load(std::istream& is);
+  const Vector& get_gamma() const { return gamma_; }
+  const Vector& get_beta() const { return beta_; }
+  Vector& get_gamma() { return gamma_; }
+  Vector& get_beta() { return beta_; }
 };

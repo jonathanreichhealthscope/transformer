@@ -35,6 +35,7 @@ __global__ void embedding_project_kernel(const float *input,
       sum += input[seq_pos * hidden_size + j] *
              embedding_table[vocab_pos * hidden_size + j];
     }
+    sum = max(min(sum, 100.0f), -100.0f);
     output[i] = sum;
   }
 }

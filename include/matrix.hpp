@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <iostream>
@@ -21,51 +22,46 @@ private:
   bool owns_data_ = true;
 
 public:
-  // Constructors
+  // Constructor declarations only
   Matrix();
   Matrix(size_t rows, size_t cols, float init_val = 0.0f);
   Matrix(size_t rows, size_t cols, float *external_data);
   Matrix(size_t rows, size_t cols, float *external_data, bool is_owner);
+  Matrix(size_t rows, size_t cols, size_t batch_size, float *external_data);
+  Matrix(const Matrix& other);
+  Matrix(Matrix&& other) noexcept;
+  Matrix(size_t rows, size_t cols, const float* data);
 
+  // Assignment operators
+  Matrix& operator=(const Matrix& other);
+  Matrix& operator=(Matrix&& other) noexcept;
 
-  // Size-related methods
+  // Rest of the class interface
   size_t rows() const { return rows_; }
   size_t cols() const { return cols_; }
   size_t size() const { return data_.size(); }
   size_t bytes() const { return size() * sizeof(float); }
-  std::tuple<size_t, size_t> shape() const {
-    return std::make_tuple(rows_, cols_);
-  }
-  // Matrix operations
+  std::tuple<size_t, size_t> shape() const { return shape_; }
+  bool empty() const { return data_.empty(); }
+  
+  // Data access
+  float *data() { return data_.data(); }
+  const float *data() const { return data_.data(); }
+  float min() const { return *std::min_element(data_.begin(), data_.end()); }
+  float max() const { return *std::max_element(data_.begin(), data_.end()); }
+
+  // Matrix operations declarations
   void resize(size_t new_rows, size_t new_cols);
   float &operator()(size_t row, size_t col);
   const float &operator()(size_t row, size_t col) const;
   float &at(size_t row, size_t col);
   const float &at(size_t row, size_t col) const;
-
-  // Data access
-  float *data() { return data_.data(); }
-  const float *data() const { return data_.data(); }
-
-  // Additional operations from components.cpp
   Vector row(size_t row) const;
   void set_row(size_t row, const Vector &vec);
   Matrix transpose() const;
   void apply_relu();
   void apply_gelu();
-  void apply_gelu_derivative(const Matrix &x) {
-    std::cout << "apply_gelu_derivative" << std::endl;
-    std::cout << "x.data_: " << x.data_[0] << std::endl;
-    for (size_t i = 0; i < data_.size(); ++i) {
-      float cdf =
-          0.5f * (1.0f + std::tanh(std::sqrt(2.0f / M_PI) *
-                                   (x.data_[i] +
-                                    0.044715f * std::pow(x.data_[i], 3))));
-      float pdf =
-          std::exp(-0.5f * x.data_[i] * x.data_[i]) / std::sqrt(2.0f * M_PI);
-      data_[i] *= (cdf + x.data_[i] * pdf);
-    }
-  }
+  void apply_gelu_derivative(const Matrix &x);
   void apply_softmax();
   void add_bias(const Vector &bias);
   Matrix &operator+=(const Matrix &other);
@@ -77,10 +73,12 @@ public:
   static Matrix load(std::istream &is);
   void randomize(float min_val, float max_val);
   Vector row_sum() const;
-
-  // Add empty() method
-  bool empty() const { return data_.empty(); }
 };
+
+// Make to_vector inline to allow multiple definitions
+inline std::vector<int> to_vector(const Matrix &m) {
+  return std::vector<int>(m.data(), m.data() + m.size());
+}
 
 class Vector {
 private:
@@ -133,6 +131,7 @@ public:
     size_ = new_size;
   }
 };
+
 
 // Non-member operators
 Matrix operator+(const Matrix &a, const Matrix &b);

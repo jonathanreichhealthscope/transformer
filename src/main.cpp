@@ -1,5 +1,7 @@
-#include "../include/attention/advanced_attention.hpp"
+#include "../include/attention.hpp"
+#ifdef CUDA_AVAILABLE
 #include "../include/cuda/cuda_init.cuh"
+#endif
 #include "../include/lm_head.hpp"
 #include "../include/logger.hpp"
 #include "../include/model_saver.hpp"
@@ -9,15 +11,218 @@
 #include "../include/transformer.hpp"
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
+#include "../include/matrix.hpp"
+#include "../include/preprocessing.hpp"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <vector>
+#include <cmath>
+#include <limits>
+#include <unordered_map>
+#include <sstream>
+
+// Add necessary forward declarations and structures
+class Tokenizer;
+std::unique_ptr<Tokenizer> tokenizer;
+
+// Define training example structure
+struct TrainingExample {
+    std::vector<int> input_tokens;
+    Matrix target;
+};
+
+// Configuration constants
+const float INITIAL_LEARNING_RATE = 0.001f;
+const float MIN_LEARNING_RATE = 1e-6f;
+const float MAX_LEARNING_RATE = 0.1f;
+const float GRADIENT_CLIP_THRESHOLD = 1.0f;
+const float LOSS_SPIKE_THRESHOLD = 1.5f;
+const size_t WARMUP_STEPS = 100;
+float learning_rate = INITIAL_LEARNING_RATE;
+float prev_loss = std::numeric_limits<float>::max();
+
+// Add at the top of main.cpp
+struct GradientState {
+    Matrix momentum;
+    Matrix velocity;
+    float beta1 = 0.9f;
+    float beta2 = 0.999f;
+    float epsilon = 1e-8f;
+};
+
+// Helper function to clip gradients
+void clip_gradients(std::vector<Matrix>& gradients, float threshold) {
+    float total_norm = 0.0f;
+    
+    // Compute total gradient norm
+    for (const auto& grad : gradients) {
+        for (size_t i = 0; i < grad.size(); i++) {
+            total_norm += grad.data()[i] * grad.data()[i];
+        }
+    }
+    total_norm = std::sqrt(total_norm);
+    
+    // Clip if necessary
+    if (total_norm > threshold) {
+        float scaling_factor = threshold / (total_norm + 1e-6f);
+        for (auto& grad : gradients) {
+            for (size_t i = 0; i < grad.size(); i++) {
+                grad.data()[i] *= scaling_factor;
+            }
+        }
+    }
+}
+
+// Helper function to adjust learning rate
+float adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
+    const size_t WARMUP_STEPS = 1000;  // Longer warmup period
+    const float PEAK_LR = 1e-4;        // Peak learning rate
+    const float MIN_LR = 1e-6;         // Minimum learning rate
+    
+    // Warmup phase
+    if (step < WARMUP_STEPS) {
+        // Linear warmup to peak learning rate
+        return MIN_LR + (PEAK_LR - MIN_LR) * (static_cast<float>(step) / WARMUP_STEPS);
+    }
+    
+    // Cosine decay after warmup
+    const size_t DECAY_STEPS = 50000;  // Longer decay period
+    float progress = static_cast<float>(step - WARMUP_STEPS) / DECAY_STEPS;
+    progress = std::min(1.0f, progress);  // Cap progress at 1.0
+    
+    // Cosine decay from peak_lr to min_lr
+    float decay_factor = 0.5f * (1.0f + std::cos(progress * M_PI));
+    float lr = MIN_LR + (PEAK_LR - MIN_LR) * decay_factor;
+    
+    // Adjust based on loss if needed
+    if (loss_ratio > LOSS_SPIKE_THRESHOLD) {
+        lr *= 0.5f;  // Reduce learning rate if loss spikes
+    }
+    
+    // Debug output
+    if (step % 100 == 0) {
+        std::cout << "\nLR Debug - Step: " << step 
+                  << ", Progress: " << progress 
+                  << ", Decay Factor: " << decay_factor << std::endl;
+    }
+    
+    return std::clamp(lr, MIN_LR, PEAK_LR);
+}
+
+// Helper function to validate input tokens
+bool validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size, size_t max_seq_length = 512) {
+    if (tokens.empty() || tokens.size() > max_seq_length) {
+        std::cerr << "Invalid sequence length: " << tokens.size() << std::endl;
+        return false;
+    }
+    
+    for (int token : tokens) {
+        if (token < 0 || token >= static_cast<int>(vocab_size)) {
+            std::cerr << "Invalid token id: " << token << std::endl;
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+// Helper function to compute loss with improved numerical stability
+float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
+    float loss = 0.0f;
+    const float epsilon = 1e-10f;
+    
+    // Add temperature scaling to soften the probability distribution
+    const float temperature = 0.8f;  // Adjust between 0.5 and 1.0
+    
+    for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max logit for numerical stability
+        float max_logit = logits(i, 0);
+        for (size_t j = 0; j < logits.cols(); j++) {
+            max_logit = std::max(max_logit, logits(i, j));
+        }
+        
+        // Compute softmax with temperature scaling
+        float sum_exp = 0.0f;
+        std::vector<float> scaled_probs(logits.cols());
+        
+        for (size_t j = 0; j < logits.cols(); j++) {
+            scaled_probs[j] = std::exp((logits(i, j) - max_logit) / temperature);
+            sum_exp += scaled_probs[j];
+        }
+        
+        // Compute cross-entropy with label smoothing
+        const float smoothing_factor = 0.1f;
+        for (size_t j = 0; j < logits.cols(); j++) {
+            float prob = scaled_probs[j] / (sum_exp + epsilon);
+            float smooth_target = targets(i, j) * (1.0f - smoothing_factor) + 
+                                (smoothing_factor / logits.cols());
+            loss -= smooth_target * std::log(prob + epsilon);
+        }
+    }
+    
+    return loss / logits.rows();
+}
+
+// Helper function to create target distribution for a batch
+Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& token_sequences, size_t vocab_size) {
+    if (token_sequences.empty()) {
+        throw std::runtime_error("Cannot create target distribution from empty batch");
+    }
+    
+    // Create batch matrix (batch_size x vocab_size)
+    Matrix distribution(token_sequences.size(), vocab_size, 0.0f);
+    
+    // Process each sequence in the batch
+    for (size_t batch_idx = 0; batch_idx < token_sequences.size(); batch_idx++) {
+        const auto& tokens = token_sequences[batch_idx];
+        
+        // Validate tokens
+        if (tokens.empty()) {
+            throw std::runtime_error("Empty token sequence in batch at position " + std::to_string(batch_idx));
+        }
+        
+        for (int token : tokens) {
+            if (token < 0 || token >= static_cast<int>(vocab_size)) {
+                throw std::runtime_error("Token " + std::to_string(token) + 
+                    " is out of vocabulary range [0, " + std::to_string(vocab_size) + 
+                    ") at batch position " + std::to_string(batch_idx));
+            }
+        }
+        
+        // Set probabilities for this sequence
+        float weight = 1.0f / tokens.size();
+        for (int token : tokens) {
+            distribution(batch_idx, token) = weight;
+        }
+    }
+    
+    // Validate output
+    for (size_t i = 0; i < distribution.rows(); i++) {
+        float row_sum = 0.0f;
+        for (size_t j = 0; j < distribution.cols(); j++) {
+            float val = distribution(i, j);
+            if (std::isnan(val) || std::isinf(val)) {
+                throw std::runtime_error("Invalid value in target distribution at position (" + 
+                    std::to_string(i) + "," + std::to_string(j) + ")");
+            }
+            row_sum += val;
+        }
+        if (std::abs(row_sum - 1.0f) > 1e-6) {
+            throw std::runtime_error("Target distribution row " + std::to_string(i) + 
+                " does not sum to 1.0 (sum = " + std::to_string(row_sum) + ")");
+        }
+    }
+    
+    return distribution;
+}
 
 void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
                   size_t max_cols = 5) {
+  std::cout << "entering print_matrix" << std::endl;
   std::cout << "\n" << name << " (" << m.rows() << "x" << m.cols() << "):\n";
   for (size_t i = 0; i < std::min(max_rows, m.rows()); ++i) {
     for (size_t j = 0; j < std::min(max_cols, m.cols()); ++j) {
@@ -27,10 +232,12 @@ void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
   }
   if (m.rows() > max_rows)
     std::cout << "...\n";
+  std::cout << "exiting print_matrix" << std::endl;
 }
 
 void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
                            size_t k = 5) {
+  std::cout << "entering print_top_predictions" << std::endl;
   std::vector<std::pair<float, int>> scores;
   for (size_t i = 0; i < logits.cols(); ++i) {
     scores.push_back({logits(logits.rows() - 1, i), static_cast<int>(i)});
@@ -46,10 +253,11 @@ void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
     std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
               << std::setprecision(4) << std::exp(scores[i].first) << ")\n";
   }
+  std::cout << "exiting print_top_predictions" << std::endl;
 }
 
-// Add this helper function to create a simple dataset
 std::vector<std::pair<std::string, std::string>> create_training_data() {
+  std::cout << "entering create_training_data" << std::endl;
   std::vector<std::pair<std::string, std::string>> training_pairs;
   // Get the executable directory
   std::filesystem::path exe_path =
@@ -83,79 +291,105 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
     throw std::runtime_error("No training pairs loaded from file");
   }
 
+  std::cout << "exiting create_training_data" << std::endl;
   return training_pairs;
 }
 
-Matrix create_target_distribution(const std::vector<int> &targets,
-                                  size_t vocab_size) {
-  // Create distribution matrix with same number of rows as sequence length
-  Matrix distribution(targets.size(), vocab_size, 0.0f);
-  std::cout << "Creating target distribution with shape: "
-            << distribution.rows() << "x" << distribution.cols() << std::endl;
-  for (int target : targets) {
-    if (target >= static_cast<int>(vocab_size)) {
-      throw std::runtime_error("Target ID exceeds vocabulary size");
+void analyze_token_mappings(const std::vector<std::pair<std::string, std::string>>& training_data, 
+                          const Tokenizer& tokenizer) {
+    std::cout << "\n=== Analyzing Token Mappings ===\n";
+    
+    // Track statistics
+    size_t total_words = 0;
+    size_t unknown_tokens = 0;
+    std::unordered_map<std::string, int> unknown_words;
+    
+    for (const auto& pair : training_data) {
+        // Analyze input string
+        std::istringstream input_ss(pair.first);
+        std::string word;
+        while (input_ss >> word) {
+            total_words++;
+            std::vector<int> tokens = tokenizer.encode(word);
+            for (int token : tokens) {
+                if (tokenizer.decode({token}) == "<unk>") {
+                    unknown_tokens++;
+                    unknown_words[word]++;
+                }
+            }
+        }
+        
+        // Analyze target string
+        std::istringstream target_ss(pair.second);
+        while (target_ss >> word) {
+            total_words++;
+            std::vector<int> tokens = tokenizer.encode(word);
+            for (int token : tokens) {
+                if (tokenizer.decode({token}) == "<unk>") {
+                    unknown_tokens++;
+                    unknown_words[word]++;
+                }
+            }
+        }
     }
-    // Set target positions to 1.0 in the last row (for next token prediction)
-    distribution(distribution.rows() - 1, target) = 1.0f;
-  }
-  return distribution;
-}
-
-Matrix compute_cross_entropy_gradient(const Matrix &logits,
-                                      const Matrix &targets,
-                                      const LanguageModelHead *lm_head) {
-  std::cout << "within compute_cross_entropy_gradient" << std::endl;
-  std::cout << "logits dimensions: " << logits.rows() << "x" << logits.cols()
-            << std::endl;
-  std::cout << "targets dimensions: " << targets.rows() << "x" << targets.cols()
-            << std::endl;
-
-  // Ensure logits and targets have matching dimensions
-  if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
-    throw std::runtime_error(
-        "Logits dimensions (" + std::to_string(logits.rows()) + "x" +
-        std::to_string(logits.cols()) + ") must match targets dimensions (" +
-        std::to_string(targets.rows()) + "x" + std::to_string(targets.cols()) +
-        ")");
-  }
-
-  // First compute the vocab-space gradient
-  Matrix vocab_grad = logits;
-  std::cout << "vocab_grad dimensions: " << vocab_grad.rows() << "x"
-            << vocab_grad.cols() << std::endl;
-  std::cout << "applying softmax" << std::endl;
-  vocab_grad.apply_softmax();
-  std::cout << "subtracting targets" << std::endl;
-  vocab_grad = vocab_grad - targets;
-
-  return vocab_grad; // Return the gradient in vocab space
+    
+    // Print statistics
+    std::cout << "\nToken Mapping Statistics:\n";
+    std::cout << "Total words processed: " << total_words << "\n";
+    std::cout << "Unknown token occurrences: " << unknown_tokens << " (" 
+              << (100.0f * unknown_tokens / total_words) << "%)\n\n";
+    
+    if (!unknown_words.empty()) {
+        std::cout << "Words mapped to <unk> token:\n";
+        for (const auto& [word, count] : unknown_words) {
+            std::cout << "'" << word << "': " << count << " times\n";
+        }
+    }
+    
+    std::cout << "\n=== End Token Mapping Analysis ===\n\n";
 }
 
 int main(int argc, char *argv[]) {
+  std::cout << "entering main" << std::endl;
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
 
   try {
-    initialize_cuda(); // Initialize CUDA at program start
+#ifdef CUDA_AVAILABLE
+    initialize_cuda();
+#endif
+    // Initialize tokenizer first to get vocab size
+    auto tokenizer = std::make_unique<Tokenizer>();
+    tokenizer->print_vocabulary_mappings(); // Print initial mappings
+    
+    // Get vocabulary size from the tokenizer
+    size_t actual_vocab_size = tokenizer->vocab_size();
+    
+    std::cout << "Actual vocabulary size: " << actual_vocab_size << std::endl;
 
-    // Configure the transformer
+    // Configure the transformer with actual vocab size
     TransformerConfig config;
-    config.vocab_size = 50000;
-    config.hidden_size = 768;
+    config.vocab_size = actual_vocab_size;
+    config.hidden_size = 360;
     config.num_heads = 12;
     config.num_layers = 6;
-    config.use_flash_attention = true;
+    config.use_cuda = false;
+    config.use_flash_attention = false;
     config.use_rope = true;
     config.use_sliding_window = true;
     config.window_size = 256;
-    config.use_cuda = false;
+    config.use_fp16 = false;
+    config.head_dim = config.hidden_size / config.num_heads;  // Add explicit head_dim calculation
+    config.batch_size = 8;  // Set the batch size
+    config.num_epochs = 10;  // Set the number of epochs
 
     std::cout << "Initializing transformer with configuration:\n"
               << "- Hidden size: " << config.hidden_size << "\n"
               << "- Attention heads: " << config.num_heads << "\n"
               << "- Layers: " << config.num_layers << "\n"
+              << "- Batch size: " << config.batch_size << "\n"
+              << "- Number of epochs: " << config.num_epochs << "\n"
               << "- Using Flash Attention: " << std::boolalpha
               << config.use_flash_attention << "\n"
               << "- Using RoPE: " << config.use_rope << "\n"
@@ -164,7 +398,6 @@ int main(int argc, char *argv[]) {
 
     // Initialize components
     Transformer transformer(config);
-    auto tokenizer = std::make_unique<Tokenizer>();
     auto lm_head = std::make_unique<LanguageModelHead>(config.vocab_size,
                                                        config.hidden_size);
 
@@ -182,13 +415,21 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    // Create training data
-    auto training_pairs = create_training_data();
-    std::cout << "\nTraining on " << training_pairs.size() << " examples\n";
+    // Get training data
+    std::vector<std::pair<std::string, std::string>> training_data = create_training_data();
+    
+    // Preprocess the training data (convert to lowercase)
+    training_data = TextPreprocessor::preprocess_training_data(training_data);
+    
+    // Analyze token mappings
+    analyze_token_mappings(training_data, *tokenizer);
+    
+    // Print vocabulary for inspection
+    std::cout << "\n=== Full Vocabulary Mapping ===\n";
+    tokenizer->print_vocabulary_mappings();
+    std::cout << "\n";
 
     // Training parameters
-    const size_t num_epochs = 10;
-    const float learning_rate = 0.001f;
     const size_t checkpoint_frequency = 2; // Save checkpoint every 2 epochs
 
     // Initialize model saver
@@ -197,373 +438,161 @@ int main(int argc, char *argv[]) {
     std::string model_name = "transformer_model";
 
     // Training loop
-    Matrix last_hidden_states; // Add this to store the last hidden states
-    for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
-      std::cout << "Epoch " << epoch + 1 << "/" << num_epochs << "\n";
-      float epoch_loss = 0.0f;
-
-      const size_t batch_size = 32; // Adjust based on your GPU memory
-      for (size_t i = 0; i < training_pairs.size(); i += batch_size) {
-        std::cout << "Processing batch " << i << std::endl;
-        // Create batch
-        std::vector<std::vector<int>> input_batch;
-        std::vector<std::vector<int>> target_batch;
-
-        // Fill batch
-        for (size_t j = 0; j < batch_size && (i + j) < training_pairs.size();
-             ++j) {
-          const auto &[input_text, target_text] = training_pairs[i + j];
-          input_batch.push_back(tokenizer->encode(input_text));
-          target_batch.push_back(tokenizer->encode(target_text));
-        }
-
-        // Get input and target from training pairs
-        const auto &[input_text, target_text] = training_pairs[i];
-        std::cout << "Processing pair " << i << ": '" << input_text << "' -> '"
-                  << target_text << "'\n";
-
-        // Tokenize input and target
-        std::vector<int> input_tokens = tokenizer->encode(input_text);
-        std::vector<int> target_tokens = tokenizer->encode(target_text);
-        std::cout << "Input tokens: " << input_tokens.size() << "\n";
-        std::cout << "Target tokens: " << target_tokens.size() << "\n";
-        std::cout << "Forward pass for input tokens '" << target_text << "'\n";
-        // Forward pass
-        Matrix hidden_states = transformer.forward(input_tokens);
-        last_hidden_states = hidden_states;
-        std::cout << "Forward pass for hidden states '" << target_text << "'\n";
-        // Project to vocabulary space
-        Matrix logits = lm_head->project_to_vocab(hidden_states);
-        std::cout << "Hidden states shape: " << hidden_states.rows() << "x"
-                  << hidden_states.cols() << "\n";
-        std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols()
-                  << "\n";
-
-        // Ensure target_distribution has same sequence length as logits
-        Matrix target_distribution =
-            create_target_distribution(target_tokens, config.vocab_size);
-        if (target_distribution.rows() != logits.rows()) {
-          // Resize target_distribution to match logits sequence length
-          Matrix resized_targets(logits.rows(), config.vocab_size, 0.0f);
-          // Copy the last row of target_distribution to all rows of
-          // resized_targets
-          for (size_t i = 0; i < logits.rows(); i++) {
-            for (size_t j = 0; j < config.vocab_size; j++) {
-              resized_targets(i, j) =
-                  target_distribution(target_distribution.rows() - 1, j);
+    size_t global_step = 0;  // Move outside epoch loop
+    Matrix last_hidden_states;
+    for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
+        std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
+        float epoch_loss = 0.0f;
+        size_t total_batches = (training_data.size() + config.batch_size - 1) / config.batch_size;
+        
+        // Process batches
+        for (size_t batch = 0; batch < total_batches; ++batch) {
+            size_t start_idx = batch * config.batch_size;
+            size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
+            
+            // Create batch with validation
+            std::vector<std::vector<int>> input_batch;
+            std::vector<std::vector<int>> target_tokens;
+            
+            // Fill and validate batch
+            bool batch_valid = true;
+            for (size_t j = start_idx; j < end_idx; ++j) {
+                const auto &[input_str, target_str] = training_data[j];
+                std::vector<int> input_tokens = tokenizer->encode(input_str);
+                std::vector<int> curr_target_tokens = tokenizer->encode(target_str);
+                
+                if (!validate_input_sequence(input_tokens, config.vocab_size) || 
+                    !validate_input_sequence(curr_target_tokens, config.vocab_size)) {
+                    std::cerr << "Invalid sequence at position " << j << std::endl;
+                    batch_valid = false;
+                    break;
+                }
+                
+                input_batch.push_back(input_tokens);
+                target_tokens.push_back(curr_target_tokens);
             }
-          }
-          target_distribution = resized_targets;
-        }
-
-        std::cout << "Creating target distribution\n";
-        // Compute proper loss and gradients
-        Matrix loss_grad = compute_cross_entropy_gradient(
-            logits, target_distribution, lm_head.get());
-
-        // Backpropagate through the network
-        std::cout << "Backward pass for loss gradient\n";
-        Matrix hidden_grad = lm_head->backward(loss_grad, hidden_states);
-        std::cout << "Backward pass for hidden states\n";
-        transformer.backward(hidden_grad, input_tokens);
-        std::cout << "Target Matrix calculation" << target_text << "'\n";
-
-        // Compute loss and gradients
-        Matrix target_matrix(logits.rows(), logits.cols(), 0.0f);
-        std::cout << "Target matrix shape: " << target_matrix.rows() << "x"
-                  << target_matrix.cols() << "\n";
-        // We only care about the last token's prediction
-        size_t last_position = logits.rows() - 1; // Last position in sequence
-        std::cout << "Last position: " << last_position << "\n";
-        for (int token : target_tokens) {
-          target_matrix(last_position, token) =
-              1.0f; // One-hot encode only the last position
-        }
-        std::cout << "Target matrix after one-hot encoding: "
-                  << target_matrix.rows() << "x" << target_matrix.cols()
-                  << "\n";
-        // Cross entropy loss (only for last position)
-        float loss = 0.0f;
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          if (target_matrix(last_position, j) > 0.0f) {
-            loss -= std::log(logits(last_position, j) + 1e-10);
-          }
-        }
-        epoch_loss += loss;
-        std::cout << "Loss: " << loss << "\n";
-        // Backward pass - compute gradients
-        Matrix grad_output(logits.rows(), logits.cols(),
-                           0.0f); // Initialize with zeros
-        std::cout << "Created gradient output matrix\n";
-
-        // Apply softmax derivative: grad * (softmax - target)
-        // First, apply softmax to the last position
-        float max_val = -std::numeric_limits<float>::infinity();
-        std::cout << "Initialized max value for softmax\n";
-
-        // Only compute gradients for the last position
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          max_val = std::max(max_val, logits(last_position, j));
-        }
-        std::cout << "Found max value: " << max_val << "\n";
-
-        float sum = 0.0f;
-        std::cout << "Initialized sum for softmax normalization\n";
-
-        // Store softmax values temporarily
-        std::vector<float> softmax_values(logits.cols());
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          softmax_values[j] = std::exp(logits(last_position, j) - max_val);
-          sum += softmax_values[j];
-        }
-        std::cout << "Computed exponentials and sum: " << sum << "\n";
-
-        // Compute gradients only for last position
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          float softmax_prob = softmax_values[j] / sum;
-          grad_output(last_position, j) =
-              softmax_prob - target_matrix(last_position, j);
-        }
-        std::cout << "Computed gradients for last position\n";
-
-        // Note: Other positions are already zero from initialization
-
-        // Update weights using SAM optimizer
-        std::vector<Matrix *> params;
-        std::vector<Matrix> grads;
-        std::cout << "Updating weights using SAM optimizer\n";
-
-        // Add transformer parameters
-        auto transformer_weights = transformer.get_layer_weights();
-        for (const auto &layer_weights : transformer_weights) {
-          for (auto &weight : layer_weights) {
-            params.push_back(&weight.get());
-          }
-        }
-        std::cout << "Transformer parameters added\n";
-
-        // Add language model head parameters
-        auto lm_params = lm_head->get_parameters();
-        for (auto &param : lm_params) {
-          params.push_back(&param.get());
-        }
-        std::cout << "Language model parameters added\n";
-
-        // Initialize gradients
-        for (size_t i = 0; i < params.size(); ++i) {
-          grads.push_back(Matrix(params[i]->rows(), params[i]->cols()));
-        }
-
-        // First step with initial gradients
-        std::cout << "Starting SAM first step with initial gradients\n";
-        std::cout << "Number of parameters: " << params.size()
-                  << ", Number of gradients: " << grads.size() << "\n";
-        sam_optimizer->first_step(params, grads);
-        std::cout << "Completed first step\n";
-
-        // Recompute gradients at the perturbed point
-        std::cout << "\nRecomputing gradients at perturbed point...\n";
-        Matrix new_hidden_states = transformer.forward(input_tokens);
-        std::cout << "New hidden states shape: " << new_hidden_states.rows()
-                  << "x" << new_hidden_states.cols() << "\n";
-
-        Matrix new_logits = lm_head->forward(new_hidden_states);
-        std::cout << "New logits shape: " << new_logits.rows() << "x"
-                  << new_logits.cols() << "\n";
-
-        // Recompute grad_output similar to before
-        Matrix new_grad_output(new_logits.rows(), new_logits.cols(), 0.0f);
-        std::cout << "Created new gradient output matrix: "
-                  << new_grad_output.rows() << "x" << new_grad_output.cols()
-                  << "\n";
-
-        // Recompute softmax and gradients for last position
-        float new_max_val = -std::numeric_limits<float>::infinity();
-        size_t last_pos = new_logits.rows() - 1;
-        for (size_t j = 0; j < new_logits.cols(); ++j) {
-          new_max_val = std::max(new_max_val, new_logits(last_pos, j));
-        }
-        std::cout << "Computed new max value for softmax: " << new_max_val
-                  << "\n";
-
-        float new_sum = 0.0f;
-        std::vector<float> new_softmax_values(new_logits.cols());
-        for (size_t j = 0; j < new_logits.cols(); ++j) {
-          new_softmax_values[j] =
-              std::exp(new_logits(last_pos, j) - new_max_val);
-          new_sum += new_softmax_values[j];
-        }
-
-        std::cout << "Computed new softmax normalization sum: " << new_sum
-                  << "\n";
-
-        // Create new gradients vector with correct dimensions
-        std::vector<Matrix> new_grads;
-        std::cout << "Created empty new_grads vector\n";
-
-        // First compute gradients for transformer parameters
-        for (size_t i = 0; i < params.size(); ++i) {
-          // Initialize each gradient with same dimensions as its parameter
-          new_grads.push_back(
-              Matrix(params[i]->rows(), params[i]->cols(), 0.0f));
-          std::cout << "Created gradient " << i
-                    << " with dimensions: " << new_grads.back().rows() << "x"
-                    << new_grads.back().cols() << "\n";
-        }
-        std::cout
-            << "Finished initializing all gradients with correct dimensions\n";
-
-        // Compute gradients for the last position
-        std::cout << "Computing gradients for last position...\n";
-        for (size_t j = 0; j < new_logits.cols(); ++j) {
-          float softmax_prob = new_softmax_values[j] / new_sum;
-          new_grad_output(last_pos, j) =
-              softmax_prob - target_matrix(last_pos, j);
-        }
-        std::cout << "Computed new gradients for last position\n";
-
-        // Backpropagate the gradients through the network
-        std::cout << "Starting gradient backpropagation\n";
-        Matrix current_grad = new_grad_output;
-        std::cout << "Created current_grad with dimensions: "
-                  << current_grad.shape() << "\n";
-
-        // Print dimensions of first few parameters for debugging
-        std::cout << "First few parameter dimensions:\n";
-        for (size_t i = 0; i < std::min(size_t(3), params.size()); ++i) {
-          std::cout << "Parameter shape: " << params[i]->shape() << "\n";
-        }
-
-        // Ensure gradients match parameter dimensions exactly
-        for (size_t i = 0; i < params.size(); ++i) {
-
-          // Get parameter dimensions
-          size_t param_rows = params[i]->rows();
-          size_t param_cols = params[i]->cols();
-
-          std::cout << "Parameter dimensions: " << param_rows << "x"
-                    << param_cols << "\n";
-
-          // Create gradient with matching dimensions
-          new_grads[i] = Matrix(param_rows, param_cols, 0.0f);
-
-          // For now, use a very small constant gradient for testing
-          // This ensures dimensions match exactly with the parameter
-          for (size_t r = 0; r < param_rows; ++r) {
-            for (size_t c = 0; c < param_cols; ++c) {
-              new_grads[i](r, c) = 1e-4f; // Very small constant gradient
+            
+            if (!batch_valid) continue;  // Skip invalid batches
+            
+            // Create target distribution for entire batch at once
+            Matrix target_distribution = create_batch_target_distribution(target_tokens, config.vocab_size);
+            
+            // Forward pass with gradient accumulation
+            Matrix accumulated_gradients(config.hidden_size, config.vocab_size, 0.0f);
+            float batch_loss = 0.0f;
+            
+            for (size_t i = 0; i < input_batch.size(); ++i) {
+                // Forward pass
+                Matrix hidden_states = transformer.forward(input_batch[i]);
+                Matrix logits = lm_head->project_to_vocab(hidden_states);
+                
+                // Initialize accumulated_gradients with correct dimensions to match hidden_states
+                if (i == 0) {
+                    // Initialize with correct dimensions: should match hidden_states shape
+                    accumulated_gradients = Matrix(hidden_states.rows(), hidden_states.cols(), 0.0f);
+                }
+                
+                // Extract corresponding row from target distribution
+                Matrix target_slice(logits.rows(), target_distribution.cols());
+                for (size_t j = 0; j < target_distribution.cols(); j++) {
+                    for (size_t r = 0; r < logits.rows(); r++) {
+                        target_slice(r, j) = target_distribution(i, j);
+                    }
+                }
+                
+                // Compute loss and gradients
+                float sample_loss = compute_batch_loss(logits, target_slice);
+                batch_loss += sample_loss;
+                
+                // Compute gradients using SAM
+                std::vector<Matrix> param_grads;
+                param_grads.reserve(transformer.getLayers().size());
+                sam_optimizer->compute_parameter_gradients(hidden_states, target_slice, param_grads);
+                
+                // Accumulate gradients with proper dimensions
+                for (const auto& grad : param_grads) {
+                    // Ensure grad dimensions match hidden_states before accumulating
+                    if (grad.rows() == accumulated_gradients.rows() && 
+                        grad.cols() == accumulated_gradients.cols()) {
+                        for (size_t j = 0; j < grad.size(); j++) {
+                            accumulated_gradients.data()[j] += grad.data()[j];
+                        }
+                    } else {
+                        std::cout << "Skipping gradient with mismatched dimensions. Expected: " 
+                                  << accumulated_gradients.rows() << "x" << accumulated_gradients.cols()
+                                  << ", Got: " << grad.rows() << "x" << grad.cols() << std::endl;
+                    }
+                }
             }
-          }
+            
+            // Average gradients
+            float scale = 1.0f / input_batch.size();
+            for (size_t i = 0; i < accumulated_gradients.size(); i++) {
+                accumulated_gradients.data()[i] *= scale;
+            }
+            
+            // Update learning rate
+            float loss_ratio = batch_loss / (prev_loss + 1e-10f);
+            learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step);
+            global_step++;  // Increment after using it
+            
+            // Apply gradients
+            transformer.backward(accumulated_gradients, input_batch[0], learning_rate);
+            
+            // Update loss tracking
+            prev_loss = batch_loss;
+            epoch_loss += batch_loss;
+            
+            // Print progress with learning rate
+            std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
+                      << " in epoch " << epoch + 1 
+                      << " (Loss: " << batch_loss 
+                      << ", LR: " << learning_rate 
+                      << ", Step: " << global_step  // Add step counter to output
+                      << ")" << std::flush;
         }
-        std::cout << "Completed gradient computation for all parameters\n";
-
-        // Verify gradient dimensions before second step
-        std::cout << "\nVerifying gradient dimensions:\n";
-        for (size_t i = 0; i < params.size(); ++i) {
-          if (params[i]->rows() != new_grads[i].rows() ||
-              params[i]->cols() != new_grads[i].cols()) {
-            std::cout << "Dimension mismatch at parameter " << i << "!\n";
-            std::cout << "Parameter: " << params[i]->shape() << "\n";
-            std::cout << "Gradient: " << new_grads[i].shape() << "\n";
-
-            throw std::runtime_error(
-                "Gradient dimensions don't match parameters");
-          }
-        }
-        std::cout << "All gradient dimensions verified\n";
-
-        // Second step with new gradients
-        std::cout << "\nStarting SAM second step\n";
-        std::cout << "Number of parameters: " << params.size()
-                  << ", Number of new gradients: " << new_grads.size() << "\n";
-        sam_optimizer->second_step(params, new_grads);
-        std::cout << "Completed second step\n\n";
-
-        // Handle bias updates separately
-        std::vector<std::reference_wrapper<FloatVector>> biases;
-        std::vector<FloatVector> bias_grads;
-
-        // Collect biases from transformer layers
-        for (const auto &layer : transformer.getLayers()) {
-          // Collect attention biases
-          auto *attn = layer->getAttention();
-          biases.push_back(std::ref(attn->getQueryBias()));
-          biases.push_back(std::ref(attn->getKeyBias()));
-          biases.push_back(std::ref(attn->getValueBias()));
-          biases.push_back(std::ref(attn->getOutputBias()));
-
-          // Collect feed forward biases
-          auto *ff = layer->getFeedForward();
-          biases.push_back(std::ref(ff->getBias1()));
-          biases.push_back(std::ref(ff->getBias2()));
+        
+        std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs 
+                  << " (Loss: " << epoch_loss/total_batches << ")" << std::endl;
+        
+        // Save checkpoint
+        if ((epoch + 1) % checkpoint_frequency == 0) {
+            if (!model_saver.saveCheckpoint(transformer, save_directory, model_name,
+                                            epoch + 1, epoch_loss)) {
+                logger.log("Failed to save checkpoint", true);
+                return 1;
+            }
         }
 
-        // Compute bias gradients
-        bias_grads.resize(biases.size());
-        for (size_t i = 0; i < biases.size(); ++i) {
-          const FloatVector &bias = biases[i].get();
-          FloatVector &grad = bias_grads[i];
-          grad.resize(bias.size());
+        // Test prediction on a sample input
+        if ((epoch + 1) % 2 == 0) {
+            // Test multiple different contexts
+            std::vector<std::string> test_inputs = {
+                "I go to",                  // Basic location
+                "Surgeons operate in the",  // Medical context
+                "Athletes train in the",    // Sports context
+                "Musicians perform in the", // Entertainment context
+                "Students research in the", // Educational context
+                "Chefs cook in the",        // Culinary context
+                "Artists create in the",    // Creative context
+                "Engineers work in the",    // Technical context
+                "Lawyers practice in the",  // Legal context
+                "Teachers instruct in the", // Educational context
+                "Scientists experiment in", // Research context
+                "Pilots fly through the",   // Aviation context
+                "Dancers rehearse in the",  // Performance context
+                "Writers compose in the",   // Literary context
+                "Mechanics repair in the"   // Automotive context
+            };
 
-          // Compute gradients for biases (simplified)
-          for (size_t j = 0; j < bias.size(); ++j) {
-            grad[j] = 0.0001f; // Small constant gradient for testing
-          }
+            for (const auto &test_input : test_inputs) {
+                std::cout << "\nTesting: '" << test_input << "'\n";
+                std::vector<int> test_tokens = tokenizer->encode(test_input);
+                Matrix test_hidden = transformer.forward(test_tokens);
+                Matrix test_logits = lm_head->forward(test_hidden);
+                print_top_predictions(test_logits, *tokenizer, 5);
+            }
         }
-
-        // Update biases
-        try {
-          sam_optimizer->update_bias(biases, bias_grads);
-          std::cout << "Completed bias updates\n";
-        } catch (const std::exception &e) {
-          std::cerr << "Error updating biases: " << e.what() << std::endl;
-          throw;
-        }
-      }
-
-      // Print epoch statistics
-      epoch_loss /= training_pairs.size();
-      std::cout << "Epoch " << epoch + 1 << "/" << num_epochs
-                << ", Loss: " << epoch_loss << "\n";
-
-      // Save checkpoint
-      if ((epoch + 1) % checkpoint_frequency == 0) {
-        if (!model_saver.saveCheckpoint(transformer, save_directory, model_name,
-                                        epoch + 1, epoch_loss)) {
-          logger.log("Failed to save checkpoint", true);
-          return 1;
-        }
-      }
-
-      // Test prediction on a sample input
-      if ((epoch + 1) % 2 == 0) {
-        // Test multiple different contexts
-        std::vector<std::string> test_inputs = {
-            "I go to",                  // Basic location
-            "Surgeons operate in the",  // Medical context
-            "Athletes train in the",    // Sports context
-            "Musicians perform in the", // Entertainment context
-            "Students research in the", // Educational context
-            "Chefs cook in the",        // Culinary context
-            "Artists create in the",    // Creative context
-            "Engineers work in the",    // Technical context
-            "Lawyers practice in the",  // Legal context
-            "Teachers instruct in the", // Educational context
-            "Scientists experiment in", // Research context
-            "Pilots fly through the",   // Aviation context
-            "Dancers rehearse in the",  // Performance context
-            "Writers compose in the",   // Literary context
-            "Mechanics repair in the"   // Automotive context
-        };
-
-        for (const auto &test_input : test_inputs) {
-          std::cout << "\nTesting: '" << test_input << "'\n";
-          std::vector<int> test_tokens = tokenizer->encode(test_input);
-          Matrix test_hidden = transformer.forward(test_tokens);
-          Matrix test_logits = lm_head->forward(test_hidden);
-          print_top_predictions(test_logits, *tokenizer, 3);
-        }
-      }
     }
 
     std::cout << "\nTraining completed!\n";
@@ -577,13 +606,13 @@ int main(int argc, char *argv[]) {
     bool save_success =
         model_saver.saveModel(transformer, save_directory, model_name);
     if (save_success) {
-      logger.log("Successfully saved model to " + save_directory + "/" +
-                 model_name);
-      std::cout << "Model saved successfully!\n";
+        logger.log("Successfully saved model to " + save_directory + "/" +
+                   model_name);
+        std::cout << "Model saved successfully!\n";
     } else {
-      logger.log("Failed to save model to " + save_directory + "/" + model_name,
-                 true);
-      return 1;
+        logger.log("Failed to save model to " + save_directory + "/" + model_name,
+                   true);
+        return 1;
     }
 
     // Demonstrate quantization
@@ -599,7 +628,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+#ifdef CUDA_AVAILABLE
   cleanup_cuda(); // Cleanup at program end
+#endif
   logger.stopLogging();
+  std::cout << "exiting main" << std::endl;
   return 0;
 }

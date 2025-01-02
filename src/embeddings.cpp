@@ -1,4 +1,5 @@
 #include "../include/embeddings.hpp"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -7,17 +8,79 @@
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),
       embedding_dim_(embedding_dim) {
-  // Initialize weights with Xavier/Glorot initialization
-  weights_.randomize(-0.1f, 0.1f);
+  // Current initialization is good, but let's add bounds checking
+  float scale = std::sqrt(0.2f / embedding_dim_);
+  weights_.randomize(-scale, scale);
+  
+  // Add validation
+  bool all_zero = true;
+  for(size_t i = 0; i < std::min(size_t(10), weights_.size()); i++) {
+    if(weights_.data()[i] != 0.0f) {
+      all_zero = false;
+      break;
+    }
+  }
+  if(all_zero) {
+    throw std::runtime_error("Embedding weights initialization failed - all values are zero");
+  }
 }
 
 Matrix TokenEmbedding::forward(const std::vector<int> &tokens) {
-  Matrix output(tokens.size(), embedding_dim_);
-  for (size_t i = 0; i < tokens.size(); ++i) {
-    for (size_t j = 0; j < embedding_dim_; ++j) {
-      output(i, j) = weights_(tokens[i], j);
+  // Input validation
+  if (tokens.empty()) {
+    throw std::runtime_error("Empty token sequence");
+  }
+  for (int token : tokens) {
+    if (token < 0 || static_cast<size_t>(token) >= vocab_size_) {
+      throw std::runtime_error("Token id " + std::to_string(token) + " out of range [0, " + std::to_string(vocab_size_) + ")");
     }
   }
+
+  Matrix output(tokens.size(), embedding_dim_);
+  
+  // Copy embeddings
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    for (size_t j = 0; j < embedding_dim_; ++j) {
+      float val = weights_(tokens[i], j);
+      if (std::isnan(val) || std::isinf(val)) {
+        throw std::runtime_error("Invalid embedding value at position (" + 
+                               std::to_string(tokens[i]) + "," + 
+                               std::to_string(j) + "): " + 
+                               std::to_string(val));
+      }
+      output(i, j) = val;
+    }
+  }
+
+  // Normalize output embeddings with better numerical stability
+  const float eps = 1e-6f;  // Increased epsilon for stability
+  for (size_t i = 0; i < tokens.size(); i++) {
+    float row_norm = 0.0f;
+    // Compute norm for this embedding
+    for (size_t j = 0; j < embedding_dim_; j++) {
+      float val = output(i, j);
+      row_norm += val * val;
+    }
+    row_norm = std::sqrt(row_norm + eps);
+    
+    // Clamp the norm to prevent division by very small values
+    row_norm = std::max(row_norm, 1e-3f);
+    
+    // Scale this embedding
+    float scale = std::min(1.0f, 1.0f / row_norm);
+    for (size_t j = 0; j < embedding_dim_; j++) {
+      output(i, j) *= scale;
+    }
+  }
+
+  // Validate output
+  for (size_t i = 0; i < output.size(); i++) {
+    if (std::isnan(output.data()[i]) || std::isinf(output.data()[i])) {
+      throw std::runtime_error("Invalid value in output embeddings at position " + 
+                             std::to_string(i));
+    }
+  }
+
   return output;
 }
 
@@ -29,6 +92,8 @@ Matrix TokenEmbedding::project_to_vocab(const Matrix &hidden_states) {
       for (size_t h = 0; h < embedding_dim_; ++h) {
         sum += hidden_states(i, h) * weights_(v, h);
       }
+      // Prevent extreme values in logits
+      sum = std::clamp(sum, -100.0f, 100.0f);
       logits(i, v) = sum;
     }
   }
@@ -69,13 +134,22 @@ void TokenEmbedding::backward(const Matrix &grad_output,
                              std::to_string(embedding_dim_) + ")");
   }
 
+  // Add check for input_tokens size matching grad_output rows
+  if (input_tokens.size() != grad_output.rows()) {
+    std::cout << "Warning: Input tokens size (" << input_tokens.size() 
+              << ") doesn't match gradient rows (" << grad_output.rows() 
+              << "). Using minimum of the two." << std::endl;
+  }
+
   // Initialize gradient accumulator matrix with same dimensions as weights
   Matrix weight_grads(weights_.rows(), weights_.cols(), 0.0f);
-  std::cout << "Weight grads dimensions: " << weight_grads.rows() << "x"
-            << weight_grads.cols() << "\n";
+  std::cout << "Weight grads dimensions: " << weight_grads.shape() << std::endl;
+
+  // Use the minimum of input_tokens size and grad_output rows to prevent out of bounds
+  size_t seq_length = std::min(input_tokens.size(), grad_output.rows());
 
   // For each token in the input sequence
-  for (size_t i = 0; i < input_tokens.size(); i++) {
+  for (size_t i = 0; i < seq_length; i++) {
     int token_id = input_tokens[i];
     if (token_id >= static_cast<int>(weights_.rows())) {
       throw std::runtime_error("Token ID " + std::to_string(token_id) +
@@ -85,9 +159,6 @@ void TokenEmbedding::backward(const Matrix &grad_output,
 
     // Accumulate gradients
     for (size_t j = 0; j < embedding_dim_; j++) {
-      if (j >= grad_output.cols()) {
-        throw std::runtime_error("Embedding dimension index out of bounds");
-      }
       weight_grads(token_id, j) += grad_output(i, j);
     }
   }
@@ -123,15 +194,22 @@ PositionalEncoding::PositionalEncoding(size_t max_seq_length,
   }
 }
 
-Matrix PositionalEncoding::forward(const Matrix &position_ids) {
-  Matrix output(position_ids.rows(), encoding_matrix_.cols());
-  for (size_t i = 0; i < position_ids.rows(); ++i) {
-    for (size_t j = 0; j < encoding_matrix_.cols(); ++j) {
-      size_t pos = static_cast<size_t>(position_ids(i, 0));
-      output(i, j) = encoding_matrix_(pos, j);
+Matrix PositionalEncoding::forward(const Matrix& position_ids) {
+    size_t seq_length = position_ids.rows();
+    Matrix encodings(seq_length, hidden_size_);
+    
+    // Generate positional encodings
+    for (size_t pos = 0; pos < seq_length; ++pos) {
+        for (size_t i = 0; i < hidden_size_; i += 2) {
+            float angle = position_ids(pos, 0) / std::pow(10000.0f, (2.0f * i) / hidden_size_);
+            encodings(pos, i) = std::sin(angle);
+            if (i + 1 < hidden_size_) {
+                encodings(pos, i + 1) = std::cos(angle);
+            }
+        }
     }
-  }
-  return output;
+    
+    return encodings;
 }
 
 void PositionalEncoding::save(std::ostream &os) const {

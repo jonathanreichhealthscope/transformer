@@ -4,35 +4,162 @@
 #include <random>
 #include <string>
 // Constructor implementations
-Matrix::Matrix() : rows_(0), cols_(0) {}
+Matrix::Matrix() : rows_(0), cols_(0), shape_(std::make_tuple(0, 0)) {}
 
-Matrix::Matrix(size_t rows, size_t cols, float init_val)
-    : data_(rows * cols, init_val), rows_(rows), cols_(cols) {}
-
-Matrix::Matrix(size_t rows, size_t cols, float *external_data)
-    : rows_(rows), cols_(cols) {
-  data_.assign(external_data, external_data + (rows * cols));
+Matrix::Matrix(size_t rows, size_t cols, float init_val) {
+  // Check for zero dimensions
+  if (rows == 0 || cols == 0) {
+    throw std::runtime_error("Matrix dimensions cannot be zero");
+  }
+  
+  // Check for overflow in size calculation
+  if (rows > SIZE_MAX / cols) {
+    throw std::runtime_error("Matrix dimensions too large - would cause overflow");
+  }
+  
+  // Check total size is reasonable
+  size_t total_size = rows * cols;
+  if (total_size > 1000000000) { // 1 billion elements max
+    throw std::runtime_error("Matrix dimensions too large - exceeds maximum allowed size");
+  }
+  
+  try {
+    data_.resize(total_size, init_val);
+  } catch (const std::bad_alloc& e) {
+    throw std::runtime_error("Failed to allocate memory for matrix: " + std::string(e.what()));
+  } catch (const std::length_error& e) {
+    throw std::runtime_error("Matrix dimensions too large: " + std::string(e.what()));
+  }
+  
+  rows_ = rows;
+  cols_ = cols;
+  shape_ = std::make_tuple(rows, cols);
+  owns_data_ = true;
 }
 
-Matrix::Matrix(size_t rows, size_t cols, float* external_data, bool is_owner) 
-    : rows_(rows), cols_(cols), shape_(std::make_tuple(rows, cols)), owns_data_(is_owner) {
-    if (is_owner) {
-        // If we own the data, copy it to our vector
-        data_.assign(external_data, external_data + (rows * cols));
-    } else {
-        // If we don't own the data, just point to it
-        data_ = std::vector<float>(external_data, external_data + (rows * cols));
+Matrix::Matrix(size_t rows, size_t cols, float *external_data)
+    : data_(external_data, external_data + rows * cols),
+      rows_(rows),
+      cols_(cols),
+      shape_(std::make_tuple(rows, cols)),
+      owns_data_(false) {}
+
+Matrix::Matrix(size_t rows, size_t cols, float* external_data, bool is_owner)
+    : data_(external_data, external_data + rows * cols),
+      rows_(rows),
+      cols_(cols),
+      shape_(std::make_tuple(rows, cols)),
+      owns_data_(is_owner) {}
+
+Matrix::Matrix(const Matrix& other) {
+  if (other.empty()) {
+    rows_ = 0;
+    cols_ = 0;
+    shape_ = std::make_tuple(0, 0);
+    owns_data_ = true;
+    return;
+  }
+  
+  try {
+    data_ = other.data_;
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    shape_ = other.shape_;
+    owns_data_ = true;
+  } catch (const std::exception& e) {
+    throw std::runtime_error("Failed to copy matrix: " + std::string(e.what()));
+  }
+}
+
+Matrix::Matrix(Matrix&& other) noexcept
+    : data_(std::move(other.data_)), 
+      rows_(other.rows_), 
+      cols_(other.cols_),
+      shape_(std::make_tuple(other.rows_, other.cols_)),
+      owns_data_(other.owns_data_) {
+      other.rows_ = 0;
+      other.cols_ = 0;
+      other.shape_ = std::make_tuple(0, 0);
+      other.owns_data_ = false;
+}
+
+Matrix& Matrix::operator=(const Matrix& other) {
+  if (this != &other) {
+    if (other.empty()) {
+      data_.clear();
+      rows_ = 0;
+      cols_ = 0;
+      shape_ = std::make_tuple(0, 0);
+      owns_data_ = true;
+      return *this;
     }
-} 
+    
+    try {
+      data_ = other.data_;
+      rows_ = other.rows_;
+      cols_ = other.cols_;
+      shape_ = other.shape_;
+      owns_data_ = true;
+    } catch (const std::exception& e) {
+      throw std::runtime_error("Failed to assign matrix: " + std::string(e.what()));
+    }
+  }
+  return *this;
+}
+
+Matrix& Matrix::operator=(Matrix&& other) noexcept {
+  if (this != &other) {
+    data_ = std::move(other.data_);
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    shape_ = std::make_tuple(other.rows_, other.cols_);
+    owns_data_ = other.owns_data_;
+    
+    other.rows_ = 0;
+    other.cols_ = 0;
+    other.shape_ = std::make_tuple(0, 0);
+    other.owns_data_ = false;
+  }
+  return *this;
+}
 
 // Basic operations
 void Matrix::resize(size_t new_rows, size_t new_cols) {
-  if (new_rows == rows_ && new_cols == cols_) {
-    return;
-  }
-  data_.resize(new_rows * new_cols);
-  rows_ = new_rows;
-  cols_ = new_cols;
+    // Check for no-op resize
+    if (new_rows == rows_ && new_cols == cols_) {
+        return;
+    }
+    
+    // Check for overflow
+    if (new_rows > SIZE_MAX / new_cols) {
+        throw std::runtime_error("Matrix dimensions would cause overflow");
+    }
+    
+    size_t new_size = new_rows * new_cols;
+    
+    try {
+        // Create new vector with new size
+        std::vector<float> new_data(new_size, 0.0f);
+        
+        // Copy existing data if possible
+        size_t min_rows = std::min(rows_, new_rows);
+        size_t min_cols = std::min(cols_, new_cols);
+        
+        for (size_t i = 0; i < min_rows; ++i) {
+            for (size_t j = 0; j < min_cols; ++j) {
+                new_data[i * new_cols + j] = data_[i * cols_ + j];
+            }
+        }
+        
+        // Swap the new data into place
+        data_.swap(new_data);
+        rows_ = new_rows;
+        cols_ = new_cols;
+        shape_ = std::make_tuple(new_rows, new_cols);
+        
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to resize matrix: " + std::string(e.what()));
+    }
 }
 
 float &Matrix::operator()(size_t row, size_t col) {
@@ -97,6 +224,37 @@ void Matrix::apply_gelu() {
                                          (val + 0.044715f * val * val * val)));
     val *= cdf;
   }
+}
+
+void Matrix::apply_gelu_derivative(const Matrix& x) {
+    constexpr float sqrt_2_over_pi = 0.7978845608028654f;
+    if (size() != x.size()) {
+        throw std::runtime_error("Matrix dimensions must match for GELU derivative");
+    }
+    
+    // Ensure both matrices have valid data
+    if (data_.empty() || x.data_.empty()) {
+        throw std::runtime_error("Empty matrix in GELU derivative");
+    }
+    
+    for (size_t i = 0; i < size(); i++) {
+        // Bounds checking
+        if (i >= x.data_.size() || i >= data_.size()) {
+            throw std::runtime_error("Index out of bounds in GELU derivative");
+        }
+        
+        float val = x.data_[i];
+        // Prevent numerical instability
+        val = std::clamp(val, -10.0f, 10.0f);
+        
+        float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * 
+                                            (val + 0.044715f * val * val * val)));
+        float pdf = sqrt_2_over_pi * (1.0f + 3.0f * 0.044715f * val * val);
+        float derivative = cdf + val * pdf * (1.0f - std::tanh(val) * std::tanh(val));
+        // Prevent numerical overflow
+        derivative = std::clamp(derivative, -10.0f, 10.0f);
+        data_[i] *= derivative;
+    }
 }
 
 void Matrix::apply_softmax() {
@@ -258,9 +416,9 @@ Matrix operator*(const Matrix &a, const Matrix &b) {
 }
 
 Matrix matmul(const Matrix &a, const Matrix &b) {
-  std::cout << "Matrix multiplication dimensions:" << std::endl;
+  /*std::cout << "Matrix multiplication dimensions:" << std::endl;
   std::cout << "A: " << a.rows() << "x" << a.cols() << std::endl;
-  std::cout << "B: " << b.rows() << "x" << b.cols() << std::endl;
+  std::cout << "B: " << b.rows() << "x" << b.cols() << std::endl;*/
 
   if (a.cols() != b.rows()) {
     throw std::runtime_error("Invalid matrix dimensions for multiplication: " +
@@ -280,7 +438,5 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
     }
   }
 
-  std::cout << "Result dimensions: " << result.rows() << "x" << result.cols()
-            << std::endl;
   return result;
 }

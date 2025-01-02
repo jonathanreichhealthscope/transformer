@@ -18,7 +18,17 @@ endif()
 include(FetchContent)
 
 # Find required packages
-find_package(CUDAToolkit REQUIRED)
+find_package(CUDAToolkit)
+
+# Set CUDA availability flag
+if(CUDAToolkit_FOUND)
+    message(STATUS "CUDA found - enabling CUDA support")
+    add_definitions(-DCUDA_AVAILABLE)
+else()
+    message(STATUS "CUDA not found - building without CUDA support")
+endif()
+
+# Find required packages
 find_package(OpenMP)
 
 # Download and build sentencepiece
@@ -38,7 +48,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(json)
 
 # Include directories
-include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+if(CUDAToolkit_FOUND)
+    include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+endif()
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${sentencepiece_SOURCE_DIR}/src)
 
@@ -52,6 +64,7 @@ set(CORE_SOURCES
     src/memory_pool.cpp
     src/half_precision.cpp
     src/gradient_checkpoint.cpp
+    src/utils.cpp
 )
 
 # Neural network components
@@ -92,6 +105,18 @@ set(OPTIMIZER_SOURCES
     src/optimizer/sam.cpp
 )
 
+# Add the tensor source file to the sources list
+set(SOURCES
+    ${SOURCES}
+    src/tensor.cpp
+)
+
+# Add the tensor header to the includes
+set(HEADERS
+    ${HEADERS}
+    include/tensor.hpp
+)
+
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}
@@ -115,11 +140,17 @@ add_executable(transformer src/main.cpp)
 target_link_libraries(transformer_lib
     PUBLIC
     sentencepiece
-    CUDA::cudart
-    CUDA::cublas
-    CUDA::curand
     nlohmann_json::nlohmann_json
 )
+
+if(CUDAToolkit_FOUND)
+    target_link_libraries(transformer_lib
+        PUBLIC
+        CUDA::cudart
+        CUDA::cublas
+        CUDA::curand
+    )
+endif()
 
 target_link_libraries(transformer
     PRIVATE
@@ -170,36 +201,43 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
-# Add CUDA kernels library
-add_library(cuda_kernels STATIC
-    src/cuda/feed_forward_kernels.cu
-    src/cuda/half_precision_kernels.cu
-    src/cuda/cuda_utils.cu
-    src/cuda/cuda_init.cu
-    src/cuda/token_embedding_cuda.cu
-    src/cuda/layernorm_cuda.cu
-)
+# Add CUDA kernels library only if CUDA is found
+if(CUDAToolkit_FOUND)
+    add_library(cuda_kernels STATIC
+        src/cuda/feed_forward_kernels.cu
+        src/cuda/half_precision_kernels.cu
+        src/cuda/cuda_utils.cu
+        src/cuda/cuda_init.cu
+        src/cuda/token_embedding_cuda.cu
+        src/cuda/layernorm_cuda.cu
+    )
 
-# Set CUDA properties for the kernels library
-set_target_properties(cuda_kernels PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    POSITION_INDEPENDENT_CODE ON
-)
+    # Set CUDA properties for the kernels library
+    set_target_properties(cuda_kernels PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        POSITION_INDEPENDENT_CODE ON
+    )
 
-# Link CUDA libraries to cuda_kernels
-target_link_libraries(cuda_kernels
-    PUBLIC
-    CUDA::cudart
-    CUDA::cublas
-)
+    # Link CUDA libraries to cuda_kernels
+    target_link_libraries(cuda_kernels
+        PUBLIC
+        CUDA::cudart
+        CUDA::cublas
+    )
 
-# Link cuda_kernels to transformer_lib
-target_link_libraries(transformer_lib
-    PUBLIC
-    cuda_kernels
-)
+    # Link cuda_kernels to transformer_lib
+    target_link_libraries(transformer_lib
+        PUBLIC
+        cuda_kernels
+    )
 
-target_link_libraries(transformer_lib
-    PUBLIC ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
-    PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
+    target_link_libraries(transformer_lib
+        PUBLIC ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
+        PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
+    )
+endif()
+
+# Add to your sources list:
+target_sources(transformer_lib PRIVATE
+    src/tensor.cpp
 )

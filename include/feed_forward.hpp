@@ -8,16 +8,17 @@ using FloatVector = Vector;
 
 class FeedForward {
 private:
-  Matrix w1, w2;
-  FloatVector b1, b2;
+  Matrix w1;
+  Matrix w2;
+  Vector b1;
+  Vector b2;
   float dropout_prob;
   Matrix intermediate_cache;
 
 public:
   virtual ~FeedForward() = default;
   FeedForward() = default;
-  FeedForward(size_t hidden_size, size_t intermediate_size,
-              float dropout = 0.1);
+  FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1f);  // Declaration only
   Matrix forward(const Matrix &x);
   Matrix backward(const Matrix &grad_output, const Matrix &input);
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
@@ -36,7 +37,8 @@ public:
 
   FeedForward(const FeedForward &other)
       : w1(other.w1), w2(other.w2), b1(other.b1), b2(other.b2),
-        dropout_prob(other.dropout_prob) {}
+        dropout_prob(other.dropout_prob),
+        intermediate_cache(other.intermediate_cache) {}
 
   FeedForward &operator=(const FeedForward &other) {
     if (this != &other) {
@@ -45,6 +47,7 @@ public:
       b1 = other.b1;
       b2 = other.b2;
       dropout_prob = other.dropout_prob;
+      intermediate_cache = other.intermediate_cache;
     }
     return *this;
   }

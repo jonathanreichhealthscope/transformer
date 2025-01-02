@@ -4,7 +4,7 @@
 std::unique_ptr<Logger> Logger::instance = nullptr;
 
 Logger::Logger() {
-  log_file.open("transformer.log", std::ios::out | std::ios::app);
+  // Don't open the file in constructor - wait for startLogging()
   cout_buffer = nullptr;
   cerr_buffer = nullptr;
 }
@@ -24,7 +24,15 @@ Logger &Logger::getInstance() {
 }
 
 void Logger::startLogging() {
-  // Open the file in truncation mode to clear previous contents
+  // Close the file if it's already open
+  if (log_file.is_open()) {
+    log_file.close();
+  }
+
+  // Delete the existing log file if it exists
+  std::remove("transformer.log");
+
+  // Open a new file, truncating any existing content
   log_file.open("transformer.log", std::ios::out | std::ios::trunc);
   if (!log_file.is_open()) {
     std::cerr << "Failed to open log file" << std::endl;

@@ -38,10 +38,13 @@ public:
   bool use_fp16;
   bool use_gradient_checkpointing;
   size_t memory_pool_size;
+  size_t batch_size;
+  size_t num_epochs;
 
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
-                    size_t num_heads = 12);
+                    size_t num_heads = 12, size_t batch_size = 1,
+                    size_t num_epochs = 10);
 
   friend bool operator!=(const TransformerConfig &lhs,
                          const TransformerConfig &rhs) {
@@ -52,7 +55,9 @@ public:
            lhs.use_flash_attention != rhs.use_flash_attention ||
            lhs.use_rope != rhs.use_rope ||
            lhs.use_sliding_window != rhs.use_sliding_window ||
-           lhs.window_size != rhs.window_size;
+           lhs.window_size != rhs.window_size ||
+           lhs.batch_size != rhs.batch_size ||
+           lhs.num_epochs != rhs.num_epochs;
   }
 };
 
@@ -60,16 +65,18 @@ class TransformerLayer {
 private:
   std::unique_ptr<MultiHeadAttention> self_attention;
   std::unique_ptr<LayerNorm> attention_ln;
-  std::unique_ptr<FeedForward> feed_forward;
   std::unique_ptr<LayerNorm> ffn_ln;
+  std::unique_ptr<FeedForward> feed_forward;
   KVCache kv_cache;
   TransformerConfig config;
+  size_t layer_idx;
 
 public:
   virtual ~TransformerLayer() = default;
   TransformerLayer() = default;
-  explicit TransformerLayer(const TransformerConfig &config);
-  Matrix forward(const Matrix &x, const AttentionMask &mask = {});
+  TransformerLayer(const TransformerConfig &config, size_t idx);
+  Matrix forward(const Matrix &input, const AttentionMask &mask,
+                 const std::optional<KVCache> &kv_cache = std::nullopt);
   void clear_cache();
   void save(std::ostream &os) const {
     self_attention->save(os);
@@ -78,8 +85,8 @@ public:
     ffn_ln->save(os);
   }
   static std::unique_ptr<TransformerLayer>
-  create(const TransformerConfig &config) {
-    return std::make_unique<TransformerLayer>(config);
+  create(const TransformerConfig &config, size_t idx) {
+    return std::make_unique<TransformerLayer>(config, idx);
   }
   void load(std::istream &is) {
     self_attention->load(is);
@@ -87,7 +94,8 @@ public:
     feed_forward->load(is);
     ffn_ln->load(is);
   }
-  Matrix backward(const Matrix &grad, const Matrix &input) const;
+  Matrix backward(const Matrix &grad_output, const Matrix &input,
+                 const Matrix &target_distribution = Matrix());
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   std::vector<std::reference_wrapper<Matrix>> get_weights() {
     std::vector<std::reference_wrapper<Matrix>> weights;
@@ -164,6 +172,26 @@ private:
                      const Matrix &loss_grad);
   void update_parameters(float learning_rate);
 
+  std::vector<Matrix> momentum_buffers;
+  std::vector<Matrix> velocity_buffers;
+  size_t update_step = 0;
+  
+  // Add method to get parameter gradients
+  std::vector<Matrix>& parameter_gradients() {
+    if (!parameter_grads.has_value()) {
+      parameter_grads = std::vector<Matrix>();
+      // Initialize gradients for all parameters
+      auto& params = parameters();
+      parameter_grads->reserve(params.size());
+      for (const auto& param : params) {
+        parameter_grads->emplace_back(param.rows(), param.cols(), 0.0f);
+      }
+    }
+    return parameter_grads.value();
+  }
+  
+  std::optional<std::vector<Matrix>> parameter_grads;
+
 public:
   Transformer() = default;
   explicit Transformer(const TransformerConfig &config);
@@ -211,6 +239,8 @@ public:
   Transformer(Transformer &&other) noexcept = default;
   Transformer &operator=(Transformer &&other) noexcept = default;
 
-  void backward(const Matrix &grad_output,
-                const std::vector<int> &input_tokens);
+  void backward(const Matrix &grad_output, const std::vector<int> &input_tokens, float learning_rate);
+
+  const Matrix& get_hidden_states() const { return hidden_states; }
+  LanguageModelHead* get_lm_head() { return lm_head.get(); }
 };
