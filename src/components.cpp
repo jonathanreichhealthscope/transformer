@@ -99,6 +99,22 @@ void Matrix::apply_gelu() {
   }
 }
 
+void Matrix::apply_gelu_derivative(const Matrix& x) {
+    constexpr float sqrt_2_over_pi = 0.7978845608028654f;
+    if (size() != x.size()) {
+        throw std::runtime_error("Matrix dimensions must match for GELU derivative");
+    }
+    
+    for (size_t i = 0; i < size(); i++) {
+        float val = x.data_[i];
+        float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * 
+                                            (val + 0.044715f * val * val * val)));
+        float pdf = sqrt_2_over_pi * (1.0f + 3.0f * 0.044715f * val * val);
+        float derivative = cdf + val * pdf * (1.0f - std::tanh(val) * std::tanh(val));
+        data_[i] *= derivative;
+    }
+}
+
 void Matrix::apply_softmax() {
   for (size_t i = 0; i < rows_; ++i) {
     float max_val = -std::numeric_limits<float>::infinity();
