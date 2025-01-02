@@ -4,7 +4,7 @@ This is a simple example of a transformer model in C++. It is based on the paper
 
 ## Dependencies
 
-- SentencePiece: https://github.com/google/sentencepiece
+- SentencePiece: <https://github.com/google/sentencepiece>
 
 ## Building
 

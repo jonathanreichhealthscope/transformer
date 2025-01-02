@@ -49,6 +49,12 @@ private:
 
   Matrix reshape_from_attention(const Tensor &x, size_t batch_size, size_t seq_len, size_t hidden_size) const;
 
+
+Tensor compute_attention(const Matrix& Q, const Matrix& K, 
+                      const Matrix& V, const AttentionMask& mask, 
+                      size_t batch_size, size_t num_heads, 
+                      size_t seq_len, size_t head_size);
+
   void validate_dimensions(const Matrix& grad_output, 
                          const Matrix& input,
                          const Matrix& target_dist) const {

@@ -698,10 +698,11 @@ Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
     }
     
     // Apply softmax
-    apply_stable_softmax(scores.to_matrix());
+    Matrix scores_matrix = scores.to_matrix();
+    apply_stable_softmax(scores_matrix);
     
     // Compute weighted sum
-    Tensor attention = Tensor(scores.to_matrix(), {batch_size, num_heads, seq_len, seq_len})
+    Tensor attention = Tensor(scores_matrix, {batch_size, num_heads, seq_len, seq_len})
                           .tensormul(V_4d);
     // Reshape back to matrix
     Matrix result = reshape_from_attention(attention, batch_size, seq_len, head_size * num_heads);
