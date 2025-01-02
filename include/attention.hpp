@@ -112,7 +112,19 @@ private:
        
        // Compute attention scores with bounds checking
        Matrix scores = safe_matmul(Q_reshaped, K_reshaped.transpose());
-       scores *= (1.0f / std::sqrt(static_cast<float>(head_size)));
+       // Scale attention scores with temperature scaling
+       const float temperature = std::sqrt(static_cast<float>(head_size));
+       const float scale = 1.0f / temperature;
+       const float MAX_SCORE = 10.0f;
+       
+       for(size_t i = 0; i < scores.size(); i++) {
+           // Apply scaling with better numerical stability
+           float val = scores.data()[i];
+           if (std::abs(val) > 1e-6f) {  // Only scale non-zero values
+               val *= scale;
+               scores.data()[i] = std::clamp(val, -MAX_SCORE, MAX_SCORE);
+           }
+       }
        
        // Apply mask if provided
        if (!mask.mask.empty()) {
@@ -131,13 +143,19 @@ private:
        std::cout << "Attention scores shape after mask: " 
                  << scores.rows() << "x" << scores.cols() << std::endl;
        
-       // Apply softmax
-       apply_softmax(scores);
+       // Apply softmax with improved numerical stability
+       apply_stable_softmax(scores);
        
-       // Compute weighted sum
+       // Compute weighted sum with scaling
        Matrix attention = safe_matmul(scores, V_reshaped);
+       // Add small epsilon to prevent exactly zero gradients
+       const float EPSILON = 1e-6f;
+       for(size_t i = 0; i < attention.size(); i++) {
+           if (std::abs(attention.data()[i]) < EPSILON) {
+               attention.data()[i] = attention.data()[i] < 0 ? -EPSILON : EPSILON;
+           }
+       }
        
-       // Reshape back to [batch_size, seq_len, hidden_size]
        return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
    }
 
@@ -214,24 +232,52 @@ private:
        }
    }
    
-   void apply_softmax(Matrix& x) const {
+   void apply_stable_softmax(Matrix& x) const {
+       const float EPSILON = 1e-8f;  // Smaller epsilon for better precision
+       const float MIN_SCORE = -1e4f;  // Lower minimum for better dynamic range
+       
        for (size_t i = 0; i < x.rows(); i++) {
-           // Find max for numerical stability
-           float max_val = x(i,0);
-           for (size_t j = 1; j < x.cols(); j++) {
-               max_val = std::max(max_val, x(i,j));
+           // Find max excluding extreme negative values
+           float max_val = MIN_SCORE;
+           for (size_t j = 0; j < x.cols(); j++) {
+               if (x(i,j) > MIN_SCORE) {
+                   max_val = std::max(max_val, x(i,j));
+               }
            }
            
-           // Compute exp and sum
+           // Skip if all values are extremely negative
+           if (max_val <= MIN_SCORE) {
+               for (size_t j = 0; j < x.cols(); j++) {
+                   x(i,j) = 1.0f / x.cols();  // Uniform distribution
+               }
+               continue;
+           }
+           
+           // Compute exp and sum with numerical stability
            float sum = 0.0f;
            for (size_t j = 0; j < x.cols(); j++) {
-               x(i,j) = std::exp(x(i,j) - max_val);
-               sum += x(i,j);
+               if (x(i,j) <= MIN_SCORE) {
+                   x(i,j) = 0.0f;
+               } else {
+                   x(i,j) = std::exp(x(i,j) - max_val);
+                   sum += x(i,j);
+               }
            }
            
-           // Normalize
-           for (size_t j = 0; j < x.cols(); j++) {
-               x(i,j) /= sum;
+           // Normalize with epsilon to prevent zeros
+           if (sum < EPSILON) {
+               // If sum is too small, use uniform distribution
+               for (size_t j = 0; j < x.cols(); j++) {
+                   x(i,j) = 1.0f / x.cols();
+               }
+           } else {
+               for (size_t j = 0; j < x.cols(); j++) {
+                   x(i,j) = x(i,j) / sum;
+                   // Add small noise to prevent exact zeros
+                   if (x(i,j) > 0 && x(i,j) < EPSILON) {
+                       x(i,j) += EPSILON * (1.0f + std::cos(static_cast<float>(j)));
+                   }
+               }
            }
        }
    }

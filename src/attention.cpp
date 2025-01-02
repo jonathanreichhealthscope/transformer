@@ -217,12 +217,22 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
   value_proj = Matrix(hidden_size, num_heads * head_dim);
   output_proj = Matrix(num_heads * head_dim, hidden_size);
 
-  // Use smaller scale for attention projections
-  float scale = sqrt(1.0f / (hidden_size + head_dim * num_heads));
-  query_proj.randomize(-scale, scale);
-  key_proj.randomize(-scale, scale);
-  value_proj.randomize(-scale, scale);
-  output_proj.randomize(-scale, scale);
+  // Use Xavier/Glorot initialization with proper scaling
+  float q_scale = std::sqrt(2.0f / (hidden_size + head_dim * num_heads));
+  float kv_scale = std::sqrt(2.0f / (hidden_size + head_dim));
+  float out_scale = std::sqrt(2.0f / (hidden_size * 2));
+
+  query_proj.randomize(-q_scale, q_scale);
+  key_proj.randomize(-kv_scale, kv_scale);
+  value_proj.randomize(-kv_scale, kv_scale);
+  output_proj.randomize(-out_scale, out_scale);
+
+  // Initialize biases to small positive values to prevent dead neurons
+  const float BIAS_INIT = 0.01f;
+  for(size_t i = 0; i < query_bias.size(); i++) query_bias[i] = BIAS_INIT;
+  for(size_t i = 0; i < key_bias.size(); i++) key_bias[i] = BIAS_INIT;
+  for(size_t i = 0; i < value_bias.size(); i++) value_bias[i] = BIAS_INIT;
+  for(size_t i = 0; i < output_bias.size(); i++) output_bias[i] = BIAS_INIT;
 
   // Validate initialization
   if(query_proj.max() == 0.0f || key_proj.max() == 0.0f || value_proj.max() == 0.0f) {
@@ -317,22 +327,52 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output,
         std::cout << "Num heads: " << num_heads << std::endl;
         std::cout << "Head dim: " << head_dim << std::endl;
         
+        // Create local copy of gradient that we can modify
+        Matrix grad = grad_output;
+        
+        // Add gradient norm check with adaptive scaling
+        float grad_norm = 0.0f;
+        for(size_t i = 0; i < grad.size(); i++) {
+            grad_norm += grad.data()[i] * grad.data()[i];
+        }
+        grad_norm = std::sqrt(grad_norm);
+        
+        const float MIN_GRAD_NORM = 1e-4f;  // Increased minimum gradient norm
+        if (grad_norm < MIN_GRAD_NORM) {
+            std::cout << "Warning: Small gradient norm: " << grad_norm << std::endl;
+            // Scale up gradients to prevent vanishing
+            float scale = MIN_GRAD_NORM / (grad_norm + 1e-8f);
+            for(size_t i = 0; i < grad.size(); i++) {
+                grad.data()[i] *= scale;
+            }
+        }
+
         // Validate dimensions
-        validate_dimensions(grad_output, input, target_distribution);
+        validate_dimensions(grad, input, target_distribution);
         
-        // Compute query, key, value gradients
-        Matrix dQ = compute_query_gradients(grad_output, input);
-        std::cout << "Query gradients computed" << std::endl;
+        // Compute gradients with numerical stability
+        Matrix dQ = compute_query_gradients(grad, input);
+        Matrix dK = compute_key_gradients(grad, input);
+        Matrix dV = compute_value_gradients(grad, input);
         
-        Matrix dK = compute_key_gradients(grad_output, input);
-        std::cout << "Key gradients computed" << std::endl;
+        // Stabilize gradients
+        auto stabilize_gradients = [](Matrix& grad) {
+            const float MAX_GRAD = 1.0f;
+            const float EPSILON = 1e-6f;
+            for(size_t i = 0; i < grad.size(); i++) {
+                grad.data()[i] = std::clamp(grad.data()[i], -MAX_GRAD, MAX_GRAD);
+                if (std::abs(grad.data()[i]) < EPSILON) {
+                    grad.data()[i] = grad.data()[i] < 0 ? -EPSILON : EPSILON;
+                }
+            }
+        };
         
-        Matrix dV = compute_value_gradients(grad_output, input);
-        std::cout << "Value gradients computed" << std::endl;
-        
+        stabilize_gradients(dQ);
+        stabilize_gradients(dK);
+        stabilize_gradients(dV);
+
         // Combine gradients
         Matrix combined = combine_gradients(dQ, dK, dV);
-        std::cout << "Gradients combined" << std::endl;
         
         return combined;
     } catch (const std::exception& e) {
