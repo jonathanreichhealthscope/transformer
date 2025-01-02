@@ -134,13 +134,22 @@ void TokenEmbedding::backward(const Matrix &grad_output,
                              std::to_string(embedding_dim_) + ")");
   }
 
+  // Add check for input_tokens size matching grad_output rows
+  if (input_tokens.size() != grad_output.rows()) {
+    std::cout << "Warning: Input tokens size (" << input_tokens.size() 
+              << ") doesn't match gradient rows (" << grad_output.rows() 
+              << "). Using minimum of the two." << std::endl;
+  }
+
   // Initialize gradient accumulator matrix with same dimensions as weights
   Matrix weight_grads(weights_.rows(), weights_.cols(), 0.0f);
-  std::cout << "Weight grads dimensions: " << weight_grads.rows() << "x"
-            << weight_grads.cols() << "\n";
+  std::cout << "Weight grads dimensions: " << weight_grads.shape() << std::endl;
+
+  // Use the minimum of input_tokens size and grad_output rows to prevent out of bounds
+  size_t seq_length = std::min(input_tokens.size(), grad_output.rows());
 
   // For each token in the input sequence
-  for (size_t i = 0; i < input_tokens.size(); i++) {
+  for (size_t i = 0; i < seq_length; i++) {
     int token_id = input_tokens[i];
     if (token_id >= static_cast<int>(weights_.rows())) {
       throw std::runtime_error("Token ID " + std::to_string(token_id) +
@@ -150,9 +159,6 @@ void TokenEmbedding::backward(const Matrix &grad_output,
 
     // Accumulate gradients
     for (size_t j = 0; j < embedding_dim_; j++) {
-      if (j >= grad_output.cols()) {
-        throw std::runtime_error("Embedding dimension index out of bounds");
-      }
       weight_grads(token_id, j) += grad_output(i, j);
     }
   }
