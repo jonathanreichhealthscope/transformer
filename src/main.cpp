@@ -42,17 +42,20 @@ float prev_loss = std::numeric_limits<float>::max();
 
 // Helper function to create target distribution
 Matrix create_target_distribution(const std::vector<int>& tokens, size_t vocab_size) {
+    std::cout << "entering create_target_distribution" << std::endl;
     Matrix distribution(1, vocab_size, 0.0f);
     for (int token : tokens) {
         if (token < static_cast<int>(vocab_size)) {
             distribution(0, token) = 1.0f;
         }
     }
+    std::cout << "exiting create_target_distribution" << std::endl;
     return distribution;
 }
 
 void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
                   size_t max_cols = 5) {
+  std::cout << "entering print_matrix" << std::endl;
   std::cout << "\n" << name << " (" << m.rows() << "x" << m.cols() << "):\n";
   for (size_t i = 0; i < std::min(max_rows, m.rows()); ++i) {
     for (size_t j = 0; j < std::min(max_cols, m.cols()); ++j) {
@@ -62,10 +65,12 @@ void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
   }
   if (m.rows() > max_rows)
     std::cout << "...\n";
+  std::cout << "exiting print_matrix" << std::endl;
 }
 
 void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
                            size_t k = 5) {
+  std::cout << "entering print_top_predictions" << std::endl;
   std::vector<std::pair<float, int>> scores;
   for (size_t i = 0; i < logits.cols(); ++i) {
     scores.push_back({logits(logits.rows() - 1, i), static_cast<int>(i)});
@@ -81,9 +86,11 @@ void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
     std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
               << std::setprecision(4) << std::exp(scores[i].first) << ")\n";
   }
+  std::cout << "exiting print_top_predictions" << std::endl;
 }
 
 std::vector<std::pair<std::string, std::string>> create_training_data() {
+  std::cout << "entering create_training_data" << std::endl;
   std::vector<std::pair<std::string, std::string>> training_pairs;
   // Get the executable directory
   std::filesystem::path exe_path =
@@ -117,10 +124,12 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
     throw std::runtime_error("No training pairs loaded from file");
   }
 
+  std::cout << "exiting create_training_data" << std::endl;
   return training_pairs;
 }
 
 int main(int argc, char *argv[]) {
+  std::cout << "entering main" << std::endl;
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
@@ -369,5 +378,6 @@ int main(int argc, char *argv[]) {
   cleanup_cuda(); // Cleanup at program end
 #endif
   logger.stopLogging();
+  std::cout << "exiting main" << std::endl;
   return 0;
 }
