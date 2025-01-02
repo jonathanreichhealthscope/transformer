@@ -209,7 +209,6 @@ Matrix PositionalEncoding::forward(const Matrix& position_ids) {
         }
     }
     
-    std::cout << "Created positional encodings with shape: " << encodings.rows() << "x" << encodings.cols() << std::endl;
     return encodings;
 }
 

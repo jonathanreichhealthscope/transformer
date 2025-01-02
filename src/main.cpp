@@ -79,28 +79,38 @@ void clip_gradients(std::vector<Matrix>& gradients, float threshold) {
 
 // Helper function to adjust learning rate
 float adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
-    // More aggressive warmup
-    const size_t EXTENDED_WARMUP_STEPS = 200;  // Extended warmup period
-    const float WARMUP_FACTOR = 3.0f;  // More aggressive initial learning rate
+    const size_t WARMUP_STEPS = 1000;  // Longer warmup period
+    const float PEAK_LR = 1e-4;        // Peak learning rate
+    const float MIN_LR = 1e-6;         // Minimum learning rate
     
-    if (step < EXTENDED_WARMUP_STEPS) {
-        float warmup_progress = static_cast<float>(step) / EXTENDED_WARMUP_STEPS;
-        // Cosine warmup schedule
-        float warmup_lr = INITIAL_LEARNING_RATE * WARMUP_FACTOR * 
-                         (1.0f - std::cos(warmup_progress * M_PI / 2.0f));
-        return std::min(warmup_lr, MAX_LEARNING_RATE);
+    // Warmup phase
+    if (step < WARMUP_STEPS) {
+        // Linear warmup to peak learning rate
+        return MIN_LR + (PEAK_LR - MIN_LR) * (static_cast<float>(step) / WARMUP_STEPS);
     }
     
-    // More aggressive learning rate adjustment based on loss
+    // Cosine decay after warmup
+    const size_t DECAY_STEPS = 50000;  // Longer decay period
+    float progress = static_cast<float>(step - WARMUP_STEPS) / DECAY_STEPS;
+    progress = std::min(1.0f, progress);  // Cap progress at 1.0
+    
+    // Cosine decay from peak_lr to min_lr
+    float decay_factor = 0.5f * (1.0f + std::cos(progress * M_PI));
+    float lr = MIN_LR + (PEAK_LR - MIN_LR) * decay_factor;
+    
+    // Adjust based on loss if needed
     if (loss_ratio > LOSS_SPIKE_THRESHOLD) {
-        current_lr *= 0.3f;  // More aggressive decrease
-    } else if (loss_ratio < 0.8f) {
-        current_lr *= 1.2f;  // More aggressive increase
+        lr *= 0.5f;  // Reduce learning rate if loss spikes
     }
     
-    // Add minimum learning rate threshold to prevent vanishing updates
-    const float MIN_EFFECTIVE_LR = 1e-5f;
-    return std::clamp(current_lr, MIN_EFFECTIVE_LR, MAX_LEARNING_RATE);
+    // Debug output
+    if (step % 100 == 0) {
+        std::cout << "\nLR Debug - Step: " << step 
+                  << ", Progress: " << progress 
+                  << ", Decay Factor: " << decay_factor << std::endl;
+    }
+    
+    return std::clamp(lr, MIN_LR, PEAK_LR);
 }
 
 // Helper function to validate input tokens
@@ -428,13 +438,14 @@ int main(int argc, char *argv[]) {
     std::string model_name = "transformer_model";
 
     // Training loop
-    size_t global_step = 0;
+    size_t global_step = 0;  // Move outside epoch loop
     Matrix last_hidden_states;
     for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
         std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
         float epoch_loss = 0.0f;
         size_t total_batches = (training_data.size() + config.batch_size - 1) / config.batch_size;
         
+        // Process batches
         for (size_t batch = 0; batch < total_batches; ++batch) {
             size_t start_idx = batch * config.batch_size;
             size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
@@ -522,7 +533,8 @@ int main(int argc, char *argv[]) {
             
             // Update learning rate
             float loss_ratio = batch_loss / (prev_loss + 1e-10f);
-            learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step++);
+            learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step);
+            global_step++;  // Increment after using it
             
             // Apply gradients
             transformer.backward(accumulated_gradients, input_batch[0], learning_rate);
@@ -535,7 +547,9 @@ int main(int argc, char *argv[]) {
             std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
                       << " in epoch " << epoch + 1 
                       << " (Loss: " << batch_loss 
-                      << ", LR: " << learning_rate << ")" << std::flush;
+                      << ", LR: " << learning_rate 
+                      << ", Step: " << global_step  // Add step counter to output
+                      << ")" << std::flush;
         }
         
         std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs 

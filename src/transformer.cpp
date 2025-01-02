@@ -1134,9 +1134,6 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
 
         // Backward through embeddings
         token_embedding->backward(current_grad, input_tokens);
-        // Note: PositionalEncoding doesn't need backward pass since it's fixed
-        // The gradients are automatically propagated through the addition
-        // operation in the forward pass
 
         update_parameters(learning_rate);
 
