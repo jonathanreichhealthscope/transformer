@@ -89,6 +89,32 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                    const std::optional<KVCache> &kv_cache) {
   std::cout << "entering MultiHeadAttention::forward" << std::endl;
   
+  // Validate input matrix
+  if (x.empty()) {
+    throw std::runtime_error("Input matrix is empty");
+  }
+  
+  // Print input stats
+  std::cout << "Input matrix stats: min=" << x.min() << " max=" << x.max() << std::endl;
+  
+  // Validate projection matrices
+  if (query_proj.empty() || key_proj.empty() || value_proj.empty()) {
+    throw std::runtime_error("Projection matrices not initialized");
+  }
+  
+  // Print projection matrix stats
+  std::cout << "Query proj stats: min=" << query_proj.min() << " max=" << query_proj.max() << std::endl;
+  std::cout << "Key proj stats: min=" << key_proj.min() << " max=" << key_proj.max() << std::endl;
+  std::cout << "Value proj stats: min=" << value_proj.min() << " max=" << value_proj.max() << std::endl;
+  
+  // Validate dimensions
+  if (x.cols() != query_proj.rows()) {
+    throw std::runtime_error("Input/query dimension mismatch: x.cols=" + 
+                            std::to_string(x.cols()) + 
+                            ", query_proj.rows=" + 
+                            std::to_string(query_proj.rows()));
+  }
+  
   // Add detailed dimension logging
   std::cout << "Input dimensions: " << x.rows() << "x" << x.cols() << std::endl;
   std::cout << "Query proj dimensions: " << query_proj.rows() << "x" << query_proj.cols() << std::endl;
@@ -248,42 +274,56 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
       use_sliding_window(use_sliding_window_),
       window_size(window_size_),
       use_gqa(use_gqa_),
-      num_kv_heads(num_kv_heads_) {
-  std::cout << "entering MultiHeadAttention constructor" << std::endl;
-  
-  // Validate input dimensions
-  if (hidden_size == 0 || num_heads == 0 || head_dim == 0) {
-    throw std::runtime_error("Invalid dimensions: hidden_size=" + std::to_string(hidden_size) +
-                           ", num_heads=" + std::to_string(num_heads) +
-                           ", head_dim=" + std::to_string(head_dim));
-  }
-  
-  if (hidden_size % num_heads != 0) {
-    throw std::runtime_error("hidden_size must be divisible by num_heads");
-  }
+      num_kv_heads(num_kv_heads_),
+      // Initialize matrices in initializer list
+      query_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
+      key_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
+      value_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
+      output_proj(Matrix(num_heads_ * head_dim_, hidden_size_)),
+      // Initialize bias vectors
+      query_bias(FloatVector(num_heads_ * head_dim_)),
+      key_bias(FloatVector(num_heads_ * head_dim_)),
+      value_bias(FloatVector(num_heads_ * head_dim_)),
+      output_bias(FloatVector(hidden_size_)) {
+    
+    std::cout << "entering MultiHeadAttention constructor" << std::endl;
+    
+    // Validate input dimensions
+    if (hidden_size == 0 || num_heads == 0 || head_dim == 0) {
+        throw std::runtime_error("Invalid dimensions: hidden_size=" + std::to_string(hidden_size) +
+                               ", num_heads=" + std::to_string(num_heads) +
+                               ", head_dim=" + std::to_string(head_dim));
+    }
+    
+    if (hidden_size % num_heads != 0) {
+        throw std::runtime_error("hidden_size must be divisible by num_heads");
+    }
 
-  // Initialize projection matrices with correct dimensions
-  std::cout << "Initializing projection matrices..." << std::endl;
-  query_proj = Matrix(hidden_size, num_heads * head_dim);
-  key_proj = Matrix(hidden_size, num_heads * head_dim);
-  value_proj = Matrix(hidden_size, num_heads * head_dim);
-  output_proj = Matrix(num_heads * head_dim, hidden_size);
+    // Initialize weights with Xavier/Glorot initialization
+    float q_scale = std::sqrt(2.0f / (hidden_size + head_dim * num_heads));
+    float kv_scale = std::sqrt(2.0f / (hidden_size + head_dim));
+    float out_scale = std::sqrt(2.0f / (hidden_size * 2));
 
-  // Initialize bias vectors
-  query_bias = FloatVector(num_heads * head_dim);
-  key_bias = FloatVector(num_heads * head_dim);
-  value_bias = FloatVector(num_heads * head_dim);
-  output_bias = FloatVector(hidden_size);
+    query_proj.randomize(-q_scale, q_scale);
+    key_proj.randomize(-kv_scale, kv_scale);
+    value_proj.randomize(-kv_scale, kv_scale);
+    output_proj.randomize(-out_scale, out_scale);
 
-  // Print dimensions for debugging
-  std::cout << "Projection matrix dimensions:" << std::endl;
-  std::cout << "Query: " << query_proj.rows() << "x" << query_proj.cols() << std::endl;
-  std::cout << "Key: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
-  std::cout << "Value: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
-  std::cout << "Output: " << output_proj.rows() << "x" << output_proj.cols() << std::endl;
+    // Initialize biases
+    const float BIAS_INIT = 0.01f;
+    for(size_t i = 0; i < query_bias.size(); i++) query_bias[i] = BIAS_INIT;
+    for(size_t i = 0; i < key_bias.size(); i++) key_bias[i] = BIAS_INIT;
+    for(size_t i = 0; i < value_bias.size(); i++) value_bias[i] = BIAS_INIT;
+    for(size_t i = 0; i < output_bias.size(); i++) output_bias[i] = BIAS_INIT;
 
-  // Rest of the initialization...
-  std::cout << "exiting MultiHeadAttention constructor" << std::endl;
+    // Print dimensions for debugging
+    std::cout << "Projection matrix dimensions:" << std::endl;
+    std::cout << "Query: " << query_proj.rows() << "x" << query_proj.cols() << std::endl;
+    std::cout << "Key: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
+    std::cout << "Value: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
+    std::cout << "Output: " << output_proj.rows() << "x" << output_proj.cols() << std::endl;
+
+    std::cout << "exiting MultiHeadAttention constructor" << std::endl;
 }
 
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,

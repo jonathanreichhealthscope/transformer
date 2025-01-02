@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <iostream>
+#include <string>
 
 Vector Matrix::row(size_t row_idx) const {
   Vector result(cols_);
@@ -93,27 +94,53 @@ Matrix operator-(const Matrix &a, const Matrix &b) { return a + (b * -1.0f); }
 Matrix operator/(const Matrix &m, float scalar) { return m * (1.0f / scalar); }
 
 Matrix matmul(const Matrix &a, const Matrix &b) {
+  // Validate input matrices
+  if (a.empty() || b.empty()) {
+    throw std::runtime_error("Cannot multiply empty matrices");
+  }
+  
   if (a.cols() != b.rows()) {
     throw std::runtime_error(
-        "Matrix dimensions don't match for multiplication");
+        "Matrix dimensions don't match for multiplication: a.cols=" + 
+        std::to_string(a.cols()) + ", b.rows=" + std::to_string(b.rows()));
   }
+  
+  // Print input matrix stats
+  std::cout << "Matrix A stats: min=" << a.min() << " max=" << a.max() << std::endl;
+  std::cout << "Matrix B stats: min=" << b.min() << " max=" << b.max() << std::endl;
+  
   float max_val = 0.0f;
   Matrix result(a.rows(), b.cols(), 0.0f);
+  
+  // Check for potential overflow
+  const float MAX_SAFE_VAL = 1e6f;
+  
   for (size_t i = 0; i < a.rows(); ++i) {
     for (size_t j = 0; j < b.cols(); ++j) {
+      float sum = 0.0f;
       for (size_t k = 0; k < a.cols(); ++k) {
-        result(i, j) += a(i, k) * b(k, j);
-        max_val = std::max(max_val, std::abs(result(i, j)));
+        float prod = a(i, k) * b(k, j);
+        if (std::isnan(prod) || std::isinf(prod)) {
+          throw std::runtime_error("NaN/Inf detected during matrix multiplication");
+        }
+        if (std::abs(prod) > MAX_SAFE_VAL) {
+          std::cerr << "Warning: Large value in matrix multiplication: " << prod << std::endl;
+        }
+        sum += prod;
       }
+      result(i, j) = sum;
+      max_val = std::max(max_val, std::abs(sum));
     }
   }
-  // Validate result is non-zero
-  if(max_val == 0.0f) {
+  
+  // Validate result
+  if (max_val == 0.0f) {
     std::cerr << "Warning: Matrix multiplication resulted in all zeros\n";
-    std::cerr << "Input matrix A stats: min=" << a.min() << " max=" << a.max() << "\n";
-    std::cerr << "Input matrix B stats: min=" << b.min() << " max=" << b.max() << "\n";
   }
-
+  
+  std::cout << "Matrix multiplication result stats: min=" << result.min() 
+            << " max=" << result.max() << std::endl;
+  
   return result;
 }
 

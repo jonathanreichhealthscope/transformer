@@ -60,7 +60,6 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
   GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
   std::cout << "exiting GradientCheckpoint::cache_activation" << std::endl;
   // Self attention
-  // THIS IS WHERE THE ERROR OCCURS
   Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
   std::cout << "attention output shape: " << attention_output.shape() << std::endl;
   Matrix residual1 = attention_output + input;
@@ -73,6 +72,7 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
   GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
   std::cout << "exiting GradientCheckpoint::cache_activation" << std::endl;
   // Feed forward
+  // THIS IS WHERE THE ERROR OCCURS
   std::cout << "feed forward" << std::endl;
   Matrix ffn_output = feed_forward->forward(ffn_normalized);
   std::cout << "ffn_output shape: " << ffn_output.shape() << std::endl;
