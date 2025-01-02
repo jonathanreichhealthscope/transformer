@@ -43,6 +43,9 @@ private:
                          const AttentionMask &mask) const;
   Matrix standard_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
                             const AttentionMask &mask);
+  Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
+                                size_t num_heads, size_t head_size) const;
+
   void validate_dimensions(const Matrix& grad_output, 
                          const Matrix& input,
                          const Matrix& target_dist) const {
@@ -86,6 +89,8 @@ private:
       combined += dV;
       return combined;
   }
+
+
 
   // Add compute_attention declaration
   Matrix compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V, 
@@ -177,7 +182,7 @@ private:
    }
 
    // Helper methods for attention computation
-   Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
+   /*Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
                               size_t num_heads, size_t head_size) const {
        // Reshape from [batch_size, seq_len, hidden_size] to 
        // [batch_size * num_heads, seq_len, head_size]
@@ -195,7 +200,8 @@ private:
            }
        }
        return reshaped;
-   }
+   }*/
+
    
    Matrix reshape_from_attention(const Matrix& x, size_t batch_size, 
                                size_t seq_len, size_t hidden_size) const {

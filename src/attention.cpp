@@ -638,20 +638,72 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
     std::cout << "\n=== MultiHeadAttention::reshape_for_attention START ===" << std::endl;
     
     try {
-        // Validate input dimensions
-        std::cout << "Validating input dimensions..." << std::endl;
-        std::cout << "Input matrix: " << x.rows() << "x" << x.cols() << std::endl;
+        // Validate input matrix
+        std::cout << "Validating input matrix..." << std::endl;
+        if (x.empty()) {
+            throw std::runtime_error("Input matrix is empty");
+        }
+        if (x.data() == nullptr) {
+            throw std::runtime_error("Input matrix has null data pointer");
+        }
+        
+        // Print input dimensions and stats
+        std::cout << "Input matrix statistics:" << std::endl;
+        std::cout << "- Shape: " << x.rows() << "x" << x.cols() << std::endl;
+        std::cout << "- Size: " << x.size() << " elements" << std::endl;
+        std::cout << "- Range: [" << x.min() << ", " << x.max() << "]" << std::endl;
+        
+        // Check for NaN or inf in input
+        std::cout << "Checking for NaN/inf values in input..." << std::endl;
+        size_t nan_count = 0, inf_count = 0;
+        for(size_t i = 0; i < x.size(); i++) {
+            if(std::isnan(x.data()[i])) nan_count++;
+            if(std::isinf(x.data()[i])) inf_count++;
+        }
+        if(nan_count > 0 || inf_count > 0) {
+            throw std::runtime_error(
+                "Invalid values in input matrix: " + 
+                std::to_string(nan_count) + " NaN, " + 
+                std::to_string(inf_count) + " inf"
+            );
+        }
+        std::cout << "Input values valid" << std::endl;
+        
+        // Validate reshape parameters
+        std::cout << "\nValidating reshape parameters..." << std::endl;
         std::cout << "Requested dimensions:" << std::endl;
         std::cout << "- Batch size: " << batch_size << std::endl;
         std::cout << "- Sequence length: " << seq_length << std::endl;
         std::cout << "- Head size: " << head_size << std::endl;
+        std::cout << "- Number of heads: " << num_heads << std::endl;
         
-        // Check for invalid dimensions
-        if (batch_size == 0 || seq_length == 0 || head_size == 0) {
-            throw std::runtime_error("Invalid dimensions: dimensions cannot be zero");
+        // Check for zero dimensions
+        if (batch_size == 0) {
+            throw std::runtime_error("Batch size cannot be zero");
+        }
+        if (seq_length == 0) {
+            throw std::runtime_error("Sequence length cannot be zero");
+        }
+        if (head_size == 0) {
+            throw std::runtime_error("Head size cannot be zero");
+        }
+        if (num_heads == 0) {
+            throw std::runtime_error("Number of heads cannot be zero");
         }
         
-        // Check if total size matches
+        // Check reasonable limits
+        const size_t MAX_REASONABLE_DIM = 1000000;  // 1M, adjust as needed
+        if (batch_size > MAX_REASONABLE_DIM) {
+            throw std::runtime_error("Batch size " + std::to_string(batch_size) + " exceeds reasonable limit");
+        }
+        if (seq_length > MAX_REASONABLE_DIM) {
+            throw std::runtime_error("Sequence length " + std::to_string(seq_length) + " exceeds reasonable limit");
+        }
+        if (head_size > MAX_REASONABLE_DIM) {
+            throw std::runtime_error("Head size " + std::to_string(head_size) + " exceeds reasonable limit");
+        }
+        
+        // Validate total size matches
         size_t total_elements = batch_size * seq_length * head_size;
         if (total_elements != x.size()) {
             throw std::runtime_error(
@@ -661,26 +713,118 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
             );
         }
         
-        // Check for potential overflow
+        // Check for multiplication overflow
+        if (batch_size > std::numeric_limits<size_t>::max() / num_heads) {
+            throw std::runtime_error("Overflow in batch_size * num_heads calculation");
+        }
+        if (seq_length > std::numeric_limits<size_t>::max() / head_size) {
+            throw std::runtime_error("Overflow in seq_length * head_size calculation");
+        }
+        
+        // Check final matrix dimensions
+        size_t final_rows = batch_size * num_heads;
+        size_t final_cols = seq_length * head_size;
+        if (final_rows > std::numeric_limits<size_t>::max() / final_cols) {
+            throw std::runtime_error("Overflow in final matrix size calculation");
+        }
+        
+        // Check memory allocation size
         const size_t max_size = std::numeric_limits<size_t>::max() / sizeof(float);
-        if (total_elements > max_size) {
+        if (final_rows * final_cols > max_size) {
             throw std::runtime_error(
-                "Dimension overflow: total elements (" + std::to_string(total_elements) + 
-                ") exceeds maximum safe size (" + std::to_string(max_size) + ")"
+                "Memory allocation would exceed maximum safe size: " +
+                std::to_string(final_rows * final_cols) + " elements"
             );
         }
         
-        std::cout << "Dimension validation passed" << std::endl;
+        std::cout << "All dimension checks passed" << std::endl;
         
         // Create reshaped matrix
-        std::cout << "Creating reshaped matrix..." << std::endl;
-        Matrix reshaped(batch_size * num_heads, seq_length, head_size);
+        std::cout << "\nCreating reshaped matrix..." << std::endl;
+        Matrix reshaped(batch_size * num_heads, seq_length * head_size, 0.0f);
         std::cout << "Reshaped matrix created: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
         
-        // Copy data
-        std::cout << "Copying data..." << std::endl;
-        std::memcpy(reshaped.data(), x.data(), x.size() * sizeof(float));
-        std::cout << "Data copied successfully" << std::endl;
+        // Verify reshaped matrix
+        if (reshaped.empty()) {
+            throw std::runtime_error("Failed to allocate reshaped matrix");
+        }
+        if (reshaped.data() == nullptr) {
+            throw std::runtime_error("Reshaped matrix has null data pointer");
+        }
+        if (reshaped.size() != x.size()) {
+            throw std::runtime_error(
+                "Size mismatch after reshape: reshaped size (" + std::to_string(reshaped.size()) + 
+                ") != input size (" + std::to_string(x.size()) + ")"
+            );
+        }
+        
+        // Perform actual reshaping
+        std::cout << "Performing reshape operation..." << std::endl;
+        // Original shape: [batch_size, seq_length, num_heads * head_size]
+        // Target shape: [batch_size * num_heads, seq_length * head_size]
+        
+        // For each batch
+        for (size_t b = 0; b < batch_size; b++) {
+            // For each sequence position
+            for (size_t s = 0; s < seq_length; s++) {
+                // For each head
+                for (size_t h = 0; h < num_heads; h++) {
+                    // For each element in head
+                    for (size_t d = 0; d < head_size; d++) {
+                        // Calculate source and target indices
+                        size_t src_idx = b * (seq_length * num_heads * head_size) + // batch offset
+                                       s * (num_heads * head_size) +                // sequence offset
+                                       h * head_size +                              // head offset
+                                       d;                                           // element offset
+                        
+                        size_t tgt_idx = (b * num_heads + h) * (seq_length * head_size) + // batch-head offset
+                                       s * head_size +                                     // sequence offset
+                                       d;                                                  // element offset
+                        
+                        if (src_idx >= x.size() || tgt_idx >= reshaped.size()) {
+                            throw std::runtime_error(
+                                "Index out of bounds during reshape: src_idx=" + std::to_string(src_idx) +
+                                ", tgt_idx=" + std::to_string(tgt_idx)
+                            );
+                        }
+                        
+                        reshaped.data()[tgt_idx] = x.data()[src_idx];
+                    }
+                }
+            }
+        }
+        std::cout << "Reshape operation complete" << std::endl;
+        
+        // Verify reshape was successful
+        std::cout << "Verifying reshape..." << std::endl;
+        bool all_zeros = true;
+        bool has_nan = false;
+        bool has_inf = false;
+        float min_val = std::numeric_limits<float>::max();
+        float max_val = std::numeric_limits<float>::lowest();
+        
+        for(size_t i = 0; i < reshaped.size(); i++) {
+            float val = reshaped.data()[i];
+            if(val != 0.0f) all_zeros = false;
+            if(std::isnan(val)) has_nan = true;
+            if(std::isinf(val)) has_inf = true;
+            min_val = std::min(min_val, val);
+            max_val = std::max(max_val, val);
+        }
+        
+        if(all_zeros) {
+            throw std::runtime_error("Reshaped matrix contains all zeros");
+        }
+        if(has_nan) {
+            throw std::runtime_error("Reshaped matrix contains NaN values");
+        }
+        if(has_inf) {
+            throw std::runtime_error("Reshaped matrix contains infinite values");
+        }
+        
+        std::cout << "Reshape verification results:" << std::endl;
+        std::cout << "- Contains non-zero values: " << std::boolalpha << !all_zeros << std::endl;
+        std::cout << "- Value range: [" << min_val << ", " << max_val << "]" << std::endl;
         
         std::cout << "=== MultiHeadAttention::reshape_for_attention END ===\n" << std::endl;
         return reshaped;
