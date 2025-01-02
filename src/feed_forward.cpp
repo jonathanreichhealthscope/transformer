@@ -149,6 +149,7 @@ Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
     std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
     std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
     std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
+    std::cout << "intermediate_cache: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
     
     // Validate dimensions
     if (grad_output.cols() != w2.cols()) {
@@ -162,15 +163,25 @@ Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
                                 ") != w1.rows (" + std::to_string(w1.rows()) + ")");
     }
     
-    std::cout << "Feed forward cache dimensions: " << intermediate_cache.rows() 
-              << "x" << intermediate_cache.cols() << std::endl;
-    
     // Create local copy of cache to prevent it being moved/destroyed
     Matrix cache_copy = intermediate_cache;
     
     std::cout << "Computing d_intermediate..." << std::endl;
     Matrix d_intermediate = matmul(grad_output, w2.transpose());
     std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
+    
+    // Ensure d_intermediate matches cache dimensions before GELU derivative
+    if (d_intermediate.rows() != cache_copy.rows() || d_intermediate.cols() != cache_copy.cols()) {
+        std::cout << "Reshaping d_intermediate to match cache dimensions..." << std::endl;
+        Matrix reshaped_d_intermediate(cache_copy.rows(), cache_copy.cols());
+        for (size_t i = 0; i < cache_copy.rows(); ++i) {
+            for (size_t j = 0; j < cache_copy.cols(); ++j) {
+                reshaped_d_intermediate(i, j) = d_intermediate(i % d_intermediate.rows(), 
+                                                             j % d_intermediate.cols());
+            }
+        }
+        d_intermediate = std::move(reshaped_d_intermediate);
+    }
     
     std::cout << "Applying GELU derivative..." << std::endl;
     d_intermediate.apply_gelu_derivative(cache_copy);
