@@ -1,5 +1,7 @@
 #include "../include/attention.hpp"
+#ifdef CUDA_AVAILABLE
 #include "../include/cuda/cuda_init.cuh"
+#endif
 #include "../include/lm_head.hpp"
 #include "../include/logger.hpp"
 #include "../include/model_saver.hpp"
@@ -19,6 +21,35 @@
 #include <random>
 #include <vector>
 #include <cmath>
+#include <limits>
+
+// Add necessary forward declarations and structures
+class Tokenizer;
+std::unique_ptr<Tokenizer> tokenizer;
+size_t vocab_size;
+
+// Define training example structure
+struct TrainingExample {
+    std::vector<int> input_tokens;
+    Matrix target;
+};
+
+// Configuration constants
+const size_t BATCH_SIZE = 32;
+const size_t num_epochs = 10;
+float learning_rate = 0.001f;
+float prev_loss = std::numeric_limits<float>::max();
+
+// Helper function to create target distribution
+Matrix create_target_distribution(const std::vector<int>& tokens, size_t vocab_size) {
+    Matrix distribution(1, vocab_size, 0.0f);
+    for (int token : tokens) {
+        if (token < static_cast<int>(vocab_size)) {
+            distribution(0, token) = 1.0f;
+        }
+    }
+    return distribution;
+}
 
 void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
                   size_t max_cols = 5) {
@@ -52,7 +83,6 @@ void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
   }
 }
 
-// Add this helper function to create a simple dataset
 std::vector<std::pair<std::string, std::string>> create_training_data() {
   std::vector<std::pair<std::string, std::string>> training_pairs;
   // Get the executable directory
@@ -90,133 +120,15 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
   return training_pairs;
 }
 
-Matrix create_target_distribution(const std::vector<int> &targets,
-                                  size_t vocab_size) {
-  // Create distribution matrix with same number of rows as sequence length
-  Matrix distribution(targets.size(), vocab_size, 0.0f);
-  std::cout << "Creating target distribution with shape: "
-            << distribution.rows() << "x" << distribution.cols() << std::endl;
-  for (int target : targets) {
-    if (target >= static_cast<int>(vocab_size)) {
-      throw std::runtime_error("Target ID exceeds vocabulary size");
-    }
-    // Set target positions to 1.0 in the last row (for next token prediction)
-    distribution(distribution.rows() - 1, target) = 1.0f;
-  }
-  return distribution;
-}
-
-Matrix compute_cross_entropy_gradient(const Matrix &logits,
-                                      const Matrix &targets,
-                                      const LanguageModelHead *lm_head) {
-
-  // Ensure logits and targets have matching dimensions
-  if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
-    throw std::runtime_error(
-        "Logits dimensions (" + std::to_string(logits.rows()) + "x" +
-        std::to_string(logits.cols()) + ") must match targets dimensions (" +
-        std::to_string(targets.rows()) + "x" + std::to_string(targets.cols()) +
-        ")");
-  }
-
-  // First compute the vocab-space gradient
-  Matrix vocab_grad = logits;
-  std::cout << "vocab_grad dimensions: " << vocab_grad.rows() << "x"
-            << vocab_grad.cols() << std::endl;
-  std::cout << "applying softmax" << std::endl;
-  vocab_grad.apply_softmax();
-  std::cout << "subtracting targets" << std::endl;
-  vocab_grad = vocab_grad - targets;
-
-  return vocab_grad; // Return the gradient in vocab space
-}
-
-void compute_parameter_gradients(const Matrix& logits, 
-                               const Matrix& target_matrix,
-                               const std::vector<Matrix*>& params,
-                               std::vector<Matrix>& param_grads,
-                               const Matrix& hidden_states,
-                               const std::vector<Matrix>& activations) {
-    
-    // Initialize gradient tape to track operations
-    GradientTape tape;
-    
-    // Compute loss gradient with respect to logits
-    Matrix loss_grad(logits.rows(), logits.cols());
-    for(size_t i = 0; i < logits.size(); i++) {
-        // Use target distribution from create_target_distribution
-        if (target_matrix.data()[i] > 0.0f) {
-            loss_grad.data()[i] = logits.data()[i] - target_matrix.data()[i];
-        }
-    }
-    
-    // 2. For each parameter, compute gradients through the computation graph
-    for(size_t param_idx = 0; param_idx < params.size(); param_idx++) {
-        Matrix& param = *params[param_idx];
-        Matrix& param_grad = param_grads[param_idx];
-        param_grad = Matrix(param.rows(), param.cols(), 0.0f);
-        
-        // 3. Compute gradient contribution from each path in computation graph
-        if(param_idx < activations.size()) {  // For weight matrices
-            const Matrix& activation = activations[param_idx];
-            
-            // Compute gradient using chain rule
-            for(size_t i = 0; i < param.rows(); i++) {
-                for(size_t j = 0; j < param.cols(); j++) {
-                    float grad = 0.0f;
-                    
-                    // Sum gradients from all outputs that depend on this parameter
-                    for(size_t k = 0; k < loss_grad.size(); k++) {
-                        float d_loss = loss_grad.data()[k];
-                        float d_activation = activation.data()[k] * (1.0f - activation.data()[k]);
-                        float d_input = hidden_states.data()[k];
-                        grad += d_loss * d_activation * d_input;
-                    }
-                    
-                    // Add L2 regularization
-                    const float reg_strength = 0.01f;
-                    grad += reg_strength * param(i, j);
-                    
-                    param_grad(i, j) = grad;
-                }
-            }
-        }
-    }
-    
-    // 4. Apply gradient clipping
-    for(Matrix& grad : param_grads) {
-        float grad_norm = 0.0f;
-        for(size_t i = 0; i < grad.size(); i++) {
-            grad_norm += grad.data()[i] * grad.data()[i];
-        }
-        grad_norm = std::sqrt(grad_norm);
-        
-        // Clip if gradient norm is too large
-        const float max_norm = 1.0f;
-        if(grad_norm > max_norm) {
-            float scale = max_norm / grad_norm;
-            for(size_t i = 0; i < grad.size(); i++) {
-                grad.data()[i] *= scale;
-            }
-        }
-        
-        // Check for numerical stability
-        for(size_t i = 0; i < grad.size(); i++) {
-            if(std::isnan(grad.data()[i]) || std::isinf(grad.data()[i])) {
-                std::cerr << "Warning: Invalid gradient detected!" << std::endl;
-                grad.data()[i] = 0.0f;
-            }
-        }
-    }
-}
-
 int main(int argc, char *argv[]) {
   // Initialize logger
   Logger &logger = Logger::getInstance();
   logger.startLogging();
 
   try {
+#ifdef CUDA_AVAILABLE
     initialize_cuda(); // Initialize CUDA at program start
+#endif
 
     // Configure the transformer
     TransformerConfig config;
@@ -224,11 +136,18 @@ int main(int argc, char *argv[]) {
     config.hidden_size = 768;
     config.num_heads = 12;
     config.num_layers = 6;
+    config.use_cuda = false;
+    config.use_flash_attention = false;
+/*#ifdef CUDA_AVAILABLE
     config.use_flash_attention = true;
+    config.use_cuda = true;
+#else
+    config.use_flash_attention = false;
+    config.use_cuda = false;
+#endif*/
     config.use_rope = true;
     config.use_sliding_window = true;
     config.window_size = 256;
-    config.use_cuda = false;
 
     std::cout << "Initializing transformer with configuration:\n"
               << "- Hidden size: " << config.hidden_size << "\n"
@@ -260,13 +179,10 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    // Create training data
-    auto training_pairs = create_training_data();
-    std::cout << "\nTraining on " << training_pairs.size() << " examples\n";
+    // Get training data
+    auto training_data = create_training_data();
 
     // Training parameters
-    const size_t num_epochs = 10;
-    const float learning_rate = 0.001f;
     const size_t checkpoint_frequency = 2; // Save checkpoint every 2 epochs
 
     // Initialize model saver
@@ -280,40 +196,54 @@ int main(int argc, char *argv[]) {
       std::cout << "Epoch " << epoch + 1 << "/" << num_epochs << "\n";
       float epoch_loss = 0.0f;
 
-      const size_t batch_size = 32; // Adjust based on your GPU memory
-      size_t total_batches = (training_pairs.size() + batch_size - 1) / batch_size;
+      size_t total_batches = (training_data.size() + BATCH_SIZE - 1) / BATCH_SIZE;
       
       // Process each batch sequentially to avoid thread issues
       for (size_t batch = 0; batch < total_batches; ++batch) {
-        size_t start_idx = batch * batch_size;
-        size_t end_idx = std::min(start_idx + batch_size, training_pairs.size());
+        size_t start_idx = batch * BATCH_SIZE;
+        size_t end_idx = std::min(start_idx + BATCH_SIZE, training_data.size());
         
         // Create batch
         std::vector<std::vector<int>> input_batch;
-        std::vector<std::vector<int>> target_batch;
+        std::vector<Matrix> target_batch;  // Store Matrix targets
 
         // Fill batch
         for (size_t j = start_idx; j < end_idx; ++j) {
-          const auto &[input_text, target_text] = training_pairs[j];
-          input_batch.push_back(tokenizer->encode(input_text));
-          target_batch.push_back(tokenizer->encode(target_text));
+            const auto &[input_str, target_str] = training_data[j];
+            std::vector<int> input_tokens = tokenizer->encode(input_str);
+            Matrix target = create_target_distribution(tokenizer->encode(target_str), config.vocab_size);
+            
+            input_batch.push_back(input_tokens);
+            target_batch.push_back(target);
+            
+            std::cout << "Processing batch item " << j - start_idx + 1 
+                      << "/" << end_idx - start_idx << "\n";
+            std::cout << "Target: '" << target_str << "'\n";
         }
 
         // Get input and target from training pairs
-        const auto &[input_text, target_text] = training_pairs[start_idx];
-        std::cout << "Processing pair " << start_idx << ": '" << input_text << "' -> '"
-                  << target_text << "'\n";
+        const auto &[input_str, target_str] = training_data[start_idx];
+        std::vector<int> current_input_tokens = tokenizer->encode(input_str);
+        Matrix current_target = create_target_distribution(tokenizer->encode(target_str), config.vocab_size);
+        
+        std::cout << "Processing pair " << start_idx << ": '" << input_str << "' -> '"
+                  << target_str << "'\n";
 
         // Tokenize input and target
-        std::vector<int> input_tokens = tokenizer->encode(input_text);
-        std::vector<int> target_tokens = tokenizer->encode(target_text);
-        std::cout << "Input tokens: " << input_tokens.size() << "\n";
-        std::cout << "Target tokens: " << target_tokens.size() << "\n";
-        std::cout << "Forward pass for input tokens '" << target_text << "'\n";
+        std::vector<int> display_tokens;
+        for (size_t i = 0; i < current_target.cols(); i++) {
+            if (current_target(0, i) > 0.5f) {
+                display_tokens.push_back(i);
+            }
+        }
+
+        std::cout << "Input tokens: " << current_input_tokens.size() << "\n";
+        std::cout << "Target tokens: " << display_tokens.size() << "\n";
+        std::cout << "Forward pass for input tokens '" << tokenizer->decode(display_tokens) << "'\n";
         // Forward pass
-        Matrix hidden_states = transformer.forward(input_tokens);
+        Matrix hidden_states = transformer.forward(current_input_tokens);
         last_hidden_states = hidden_states;
-        std::cout << "Forward pass for hidden states '" << target_text << "'\n";
+        std::cout << "Forward pass for hidden states '" << tokenizer->decode(display_tokens) << "'\n";
         // Project to vocabulary space
         Matrix logits = lm_head->project_to_vocab(hidden_states);
         std::cout << "Hidden states shape: " << hidden_states.rows() << "x"
@@ -321,324 +251,39 @@ int main(int argc, char *argv[]) {
         std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols()
                   << "\n";
 
-        // Ensure target_distribution has same sequence length as logits
-        Matrix target_distribution =
-            create_target_distribution(target_tokens, config.vocab_size);
-        if (target_distribution.rows() != logits.rows()) {
-          // Resize target_distribution to match logits sequence length
-          Matrix resized_targets(logits.rows(), config.vocab_size, 0.0f);
-          // Copy the last row of target_distribution to all rows of
-          // resized_targets
-          for (size_t i = 0; i < logits.rows(); i++) {
-            for (size_t j = 0; j < config.vocab_size; j++) {
-              resized_targets(i, j) =
-                  target_distribution(target_distribution.rows() - 1, j);
+        // Compute gradients using SAM
+        std::vector<Matrix> param_grads;
+        param_grads.reserve(transformer.getLayers().size());
+        
+        // Create target distribution matrix
+        Matrix target_distribution = create_target_distribution(tokenizer->encode(target_str), 
+            transformer.getConfig().vocab_size);
+        
+        // Compute parameter gradients
+        sam_optimizer->compute_parameter_gradients(hidden_states, target_distribution, param_grads);
+        
+        // Compute loss from gradients
+        float batch_loss = 0.0f;
+        for (const auto& grad : param_grads) {
+            for (size_t i = 0; i < grad.size(); i++) {
+                batch_loss += grad.data()[i] * grad.data()[i];
             }
-          }
-          target_distribution = resized_targets;
         }
-
-        std::cout << "Creating target distribution\n";
-        // Compute proper loss and gradients
-        Matrix loss_grad = compute_cross_entropy_gradient(
-            logits, target_distribution, lm_head.get());
-
-        // Backpropagate through the network
-        std::cout << "Backward pass for loss gradient\n";
-        Matrix hidden_grad = lm_head->backward_pass(loss_grad, hidden_states);
-        std::cout << "Backward pass for hidden states\n";
-        transformer.backward(hidden_grad, input_tokens);
-        std::cout << "Target Matrix calculation" << target_text << "'\n";
-
-        // Compute loss and gradients
-        Matrix target_matrix(logits.rows(), logits.cols(), 0.0f);
-        std::cout << "Target matrix shape: " << target_matrix.rows() << "x"
-                  << target_matrix.cols() << "\n";
-        // We only care about the last token's prediction
-        size_t last_position = logits.rows() - 1; // Last position in sequence
-        std::cout << "Last position: " << last_position << "\n";
-        for (int token : target_tokens) {
-          target_matrix(last_position, token) =
-              1.0f; // One-hot encode only the last position
+        batch_loss = std::sqrt(batch_loss) / (param_grads.size() * hidden_states.size());
+        
+        // Adjust learning rate if needed
+        if (batch_loss > prev_loss * 1.5f) {
+            learning_rate *= 0.5f;
         }
-        std::cout << "Target matrix after one-hot encoding: "
-                  << target_matrix.rows() << "x" << target_matrix.cols()
-                  << "\n";
-        // Cross entropy loss (only for last position)
-        float loss = 0.0f;
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          if (target_matrix(last_position, j) > 0.0f) {
-            // Clamp logits to prevent log(negative)
-            float logit = std::max(logits(last_position, j), 1e-10f);
-            // Prevent extremely small values
-            if (logit < 1e-7f) {
-              std::cerr << "Warning: Very small logit value: " << logit << std::endl;
-              logit = 1e-7f;
-            }
-            loss -= std::log(logit);
-          }
-        }
-        epoch_loss += loss;
-        std::cout << "Loss: " << loss << "\n";
-        // Backward pass - compute gradients
-        Matrix grad_output(logits.rows(), logits.cols(),
-                           0.0f); // Initialize with zeros
-        std::cout << "Created gradient output matrix\n";
-
-        // Apply softmax derivative: grad * (softmax - target)
-        // First, apply softmax to the last position
-        float max_val = 0.0001f;
-        std::cout << "Initialized max value for softmax\n";
-
-        // Only compute gradients for the last position
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          max_val = std::max(max_val, logits(last_position, j));
-        }
-        std::cout << "Found max value: " << max_val << "\n";
-
-        float sum = 0.0f;
-        std::cout << "Initialized sum for softmax normalization\n";
-
-        // Store softmax values temporarily
-        std::vector<float> softmax_values(logits.cols());
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          softmax_values[j] = std::exp(logits(last_position, j) - max_val);
-          sum += softmax_values[j];
-        }
-        std::cout << "Computed exponentials and sum: " << sum << "\n";
-
-        // Compute gradients only for last position
-        for (size_t j = 0; j < logits.cols(); ++j) {
-          float softmax_prob = softmax_values[j] / sum;
-          grad_output(last_position, j) =
-              softmax_prob - target_matrix(last_position, j);
-        }
-        std::cout << "Computed gradients for last position\n";
-
-        // Note: Other positions are already zero from initialization
-
-        // Update weights using SAM optimizer
-        std::vector<Matrix *> params;
-        std::vector<Matrix> grads;
-        std::cout << "Updating weights using SAM optimizer\n";
-
-        // Add transformer parameters
-        auto transformer_weights = transformer.get_layer_weights();
-        for (const auto &layer_weights : transformer_weights) {
-          for (auto &weight : layer_weights) {
-            params.push_back(&weight.get());
-          }
-        }
-        std::cout << "Transformer parameters added\n";
-
-        // Add language model head parameters
-        auto lm_params = lm_head->get_parameters();
-        for (auto &param : lm_params) {
-          params.push_back(&param.get());
-        }
-        std::cout << "Language model parameters added\n";
-
-        // Initialize gradients
-        for (size_t i = 0; i < params.size(); ++i) {
-          grads.push_back(Matrix(params[i]->rows(), params[i]->cols()));
-        }
-
-        // First step with initial gradients
-        std::cout << "Starting SAM first step with initial gradients\n";
-        std::cout << "Number of parameters: " << params.size()
-                  << ", Number of gradients: " << grads.size() << "\n";
-        sam_optimizer->first_step(params, grads);
-        std::cout << "Completed first step\n";
-
-        // Recompute gradients at the perturbed point
-        std::cout << "\nRecomputing gradients at perturbed point...\n";
-        Matrix new_hidden_states = transformer.forward(input_tokens);
-        std::cout << "New hidden states shape: " << new_hidden_states.rows()
-                  << "x" << new_hidden_states.cols() << "\n";
-
-        Matrix new_logits = lm_head->forward(new_hidden_states);
-        std::cout << "New logits shape: " << new_logits.rows() << "x"
-                  << new_logits.cols() << "\n";
-
-        // Recompute grad_output similar to before
-        Matrix new_grad_output(new_logits.rows(), new_logits.cols(), 0.0f);
-        std::cout << "Created new gradient output matrix: "
-                  << new_grad_output.rows() << "x" << new_grad_output.cols()
-                  << "\n";
-
-        // Recompute softmax and gradients for last position
-        float new_max_val = 0.0001f;
-        size_t last_pos = new_logits.rows() - 1;
-        for (size_t j = 0; j < new_logits.cols(); ++j) {
-          new_max_val = std::max(new_max_val, new_logits(last_pos, j));
-        }
-        std::cout << "Computed new max value for softmax: " << new_max_val
-                  << "\n";
-
-        float new_sum = 0.0f;
-        std::vector<float> new_softmax_values(new_logits.cols());
-        for (size_t j = 0; j < new_logits.cols(); ++j) {
-          new_softmax_values[j] =
-              std::exp(new_logits(last_pos, j) - new_max_val);
-          new_sum += new_softmax_values[j];
-        }
-
-        std::cout << "Computed new softmax normalization sum: " << new_sum
-                  << "\n";
-
-        // Create new gradients vector with correct dimensions
-        std::vector<Matrix> new_grads;
-        std::cout << "Created empty new_grads vector\n";
-
-        // First compute gradients for transformer parameters
-        for (size_t i = 0; i < params.size(); ++i) {
-          // Initialize each gradient with same dimensions as its parameter
-          new_grads.push_back(
-              Matrix(params[i]->rows(), params[i]->cols(), 0.0f));
-          std::cout << "Created gradient " << i
-                    << " with dimensions: " << new_grads.back().rows() << "x"
-                    << new_grads.back().cols() << "\n";
-        }
-        std::cout
-            << "Finished initializing all gradients with correct dimensions\n";
-
-        // Compute gradients for the last position
-        std::cout << "Computing gradients for last position...\n";
-        for (size_t j = 0; j < new_logits.cols(); ++j) {
-          float softmax_prob = new_softmax_values[j] / new_sum;
-          new_grad_output(last_pos, j) =
-              softmax_prob - target_matrix(last_pos, j);
-        }
-        std::cout << "Computed new gradients for last position\n";
-
-        // Backpropagate the gradients through the network
-        std::cout << "Starting gradient backpropagation\n";
-        Matrix current_grad = new_grad_output;
-        std::cout << "Created current_grad with dimensions: "
-                  << current_grad.shape() << "\n";
-
-
-        // Ensure gradients match parameter dimensions exactly
-        for (size_t i = 0; i < params.size(); ++i) {
-
-          // Get parameter dimensions
-          size_t param_rows = params[i]->rows();
-          size_t param_cols = params[i]->cols();
-
-          // Create gradient with matching dimensions
-          new_grads[i] = Matrix(param_rows, param_cols, 0.0f);
-
-          // Compute actual gradients based on loss
-          Matrix &param = *params[i];
-          for(size_t r = 0; r < param_rows; r++) {
-              for(size_t c = 0; c < param_cols; c++) {
-                  // Compute gradient using chain rule
-                  float grad = 0.0f;
-                  
-                  // For each output that depends on this parameter
-                  for(size_t k = 0; k < logits.size(); k++) {
-                      // Compute partial derivative of loss with respect to output
-                      float d_loss = (logits.data()[k] - target_distribution.data()[k]);
-                      
-                      // Get cached activation for this layer
-                      auto cached_activation_opt = activation_cache.get(i);
-                      if (!cached_activation_opt) {
-                          throw std::runtime_error("No cached activation found for layer " + std::to_string(i));
-                      }
-                      const Matrix& cached_activation = *cached_activation_opt;
-                      
-                      // Multiply by partial derivative of output with respect to parameter
-                      grad += d_loss * cached_activation.data()[k] * hidden_states.data()[k];
-                  }
-                  
-                  // Add regularization if needed
-                  const float reg_strength = 0.01f;
-                  grad += reg_strength * param(r,c);  // L2 regularization
-                  
-                  // Store computed gradient
-                  new_grads[i](r,c) = grad;
-              }
-          }
-          
-          // Clip gradients to prevent instability
-          float grad_norm = 0.0f;
-          for(size_t j = 0; j < new_grads[i].size(); j++) {
-              grad_norm += new_grads[i].data()[j] * new_grads[i].data()[j];
-          }
-          grad_norm = std::sqrt(grad_norm);
-          
-          if(grad_norm > 1.0f) {
-              float scale = 1.0f / grad_norm;
-              for(size_t j = 0; j < new_grads[i].size(); j++) {
-                  new_grads[i].data()[j] *= scale;
-              }
-          }
-        }
-        std::cout << "Completed gradient computation for all parameters\n";
-
-        // Verify gradient dimensions before second step
-        std::cout << "\nVerifying gradient dimensions:\n";
-        for (size_t i = 0; i < params.size(); ++i) {
-          if (params[i]->rows() != new_grads[i].rows() ||
-              params[i]->cols() != new_grads[i].cols()) {
-            std::cout << "Dimension mismatch at parameter " << i << "!\n";
-            std::cout << "Parameter: " << params[i]->shape() << "\n";
-            std::cout << "Gradient: " << new_grads[i].shape() << "\n";
-
-            throw std::runtime_error(
-                "Gradient dimensions don't match parameters");
-          }
-        }
-        std::cout << "All gradient dimensions verified\n";
-
-        // Second step with new gradients
-        std::cout << "\nStarting SAM second step\n";
-        std::cout << "Number of parameters: " << params.size()
-                  << ", Number of new gradients: " << new_grads.size() << "\n";
-        sam_optimizer->second_step(params, new_grads);
-        std::cout << "Completed second step\n\n";
-
-        // Handle bias updates separately
-        std::vector<std::reference_wrapper<FloatVector>> biases;
-        std::vector<FloatVector> bias_grads;
-
-        // Collect biases from transformer layers
-        for (const auto &layer : transformer.getLayers()) {
-          // Collect attention biases
-          auto *attn = layer->getAttention();
-          biases.push_back(std::ref(attn->getQueryBias()));
-          biases.push_back(std::ref(attn->getKeyBias()));
-          biases.push_back(std::ref(attn->getValueBias()));
-          biases.push_back(std::ref(attn->getOutputBias()));
-
-          // Collect feed forward biases
-          auto *ff = layer->getFeedForward();
-          biases.push_back(std::ref(ff->getBias1()));
-          biases.push_back(std::ref(ff->getBias2()));
-        }
-
-        // Compute bias gradients
-        bias_grads.resize(biases.size());
-        for (size_t i = 0; i < biases.size(); ++i) {
-          const FloatVector &bias = biases[i].get();
-          FloatVector &grad = bias_grads[i];
-          grad.resize(bias.size());
-
-          // Compute gradients for biases (simplified)
-          for (size_t j = 0; j < bias.size(); ++j) {
-            grad[j] = 0.0001f; // Small constant gradient for testing
-          }
-        }
-
-        // Update biases
-        try {
-          sam_optimizer->update_bias(biases, bias_grads);
-          std::cout << "Completed bias updates\n";
-        } catch (const std::exception &e) {
-          std::cerr << "Error updating biases: " << e.what() << std::endl;
-          throw;
-        }
-
+        prev_loss = batch_loss;
+        epoch_loss += batch_loss;
+        
+        // Backward pass
+        Matrix grad = sam_optimizer->compute_gradients(hidden_states,
+            transformer.get_hidden_states(),
+            transformer.get_lm_head());
+        transformer.backward(grad, current_input_tokens);
+        
         // Print progress
         std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
                   << " in epoch " << epoch + 1 << std::flush;
@@ -720,7 +365,9 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+#ifdef CUDA_AVAILABLE
   cleanup_cuda(); // Cleanup at program end
+#endif
   logger.stopLogging();
   return 0;
 }

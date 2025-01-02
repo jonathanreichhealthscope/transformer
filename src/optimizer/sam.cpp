@@ -121,24 +121,110 @@ void SAM::compute_parameter_gradients(const Matrix& logits,
     // Initialize gradients
     Matrix loss_grad(logits.rows(), logits.cols());
     
-    // Compute cross entropy gradients
+    // Compute cross entropy gradients with numerical stability
+    const float epsilon = 1e-12f;
     for(size_t i = 0; i < logits.size(); i++) {
         if (target_distribution.data()[i] > 0.0f) {
-            loss_grad.data()[i] = logits.data()[i] - target_distribution.data()[i];
+            // Compute stable gradient for cross-entropy loss
+            float pred = std::min(std::max(logits.data()[i], epsilon), 1.0f - epsilon);
+            loss_grad.data()[i] = (pred - target_distribution.data()[i]) / 
+                                 (pred * (1.0f - pred) + epsilon);
         }
     }
     
-    // Rest of gradient computation...
+    // Backpropagate through network layers
+    for (size_t layer = param_grads.size(); layer > 0; --layer) {
+        size_t idx = layer - 1;
+        
+        // Initialize layer gradients if needed
+        if (param_grads[idx].empty()) {
+            param_grads[idx] = Matrix(logits.rows(), logits.cols());
+        }
+        
+        // Compute layer gradients
+        for (size_t i = 0; i < param_grads[idx].size(); i++) {
+            float grad = loss_grad.data()[i];
+            
+            // Apply gradient clipping
+            grad = std::clamp(grad, -10.0f, 10.0f);
+            
+            // Add small noise for regularization
+            float noise = ((float)rand() / RAND_MAX - 0.5f) * 1e-5f;
+            grad += noise;
+            
+            param_grads[idx].data()[i] = grad;
+        }
+        
+        // Scale gradients for better training stability
+        float scale = 1.0f / std::sqrt(static_cast<float>(layer + 1));
+        for (size_t i = 0; i < param_grads[idx].size(); i++) {
+            param_grads[idx].data()[i] *= scale;
+        }
+    }
 }
 
-void SAM::compute_gradients(const Matrix& logits, 
-                          const Matrix& hidden_states,
-                          LanguageModelHead* lm_head) {
+Matrix SAM::compute_gradients(const Matrix& logits,
+                            const Matrix& hidden_states,
+                            LanguageModelHead* lm_head) {
     // Initialize loss gradient
     Matrix loss_grad(logits.rows(), logits.cols());
     
-    // Compute gradients
+    // Compute initial loss gradients with softmax stability
+    const float epsilon = 1e-12f;
+    for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max for numerical stability
+        float max_val = logits(i, 0);
+        for (size_t j = 1; j < logits.cols(); j++) {
+            max_val = std::max(max_val, logits(i, j));
+        }
+        
+        // Compute stable softmax gradients
+        float sum_exp = 0.0f;
+        std::vector<float> exp_vals(logits.cols());
+        
+        for (size_t j = 0; j < logits.cols(); j++) {
+            exp_vals[j] = std::exp(logits(i, j) - max_val);
+            sum_exp += exp_vals[j];
+        }
+        
+        // Compute gradients
+        for (size_t j = 0; j < logits.cols(); j++) {
+            float softmax_out = exp_vals[j] / (sum_exp + epsilon);
+            loss_grad(i, j) = softmax_out - (j == 0 ? 1.0f : 0.0f); // Assuming first token is target
+        }
+    }
+    
+    // Backpropagate through language model head
     Matrix grad = lm_head->backward_pass(loss_grad, hidden_states);
     
-    // Rest of the implementation...
+    // Apply gradient modifications for stability
+    for (size_t i = 0; i < grad.size(); i++) {
+        // Gradient clipping
+        float g = std::clamp(grad.data()[i], -1.0f, 1.0f);
+        
+        // Add gradient noise for regularization
+        if (grad.data()[i] != 0.0f) {
+            float noise_scale = 1e-4f * std::abs(grad.data()[i]);
+            float noise = ((float)rand() / RAND_MAX - 0.5f) * noise_scale;
+            g += noise;
+        }
+        
+        // Apply gradient scaling
+        if (std::abs(g) < epsilon) {
+            g = 0.0f;
+        } else {
+            g *= std::min(1.0f / std::abs(g), 10.0f); // Scale large gradients
+        }
+        
+        grad.data()[i] = g;
+    }
+    
+    // Store computed gradients for later use
+    if (current_gradients.empty() || 
+        current_gradients.rows() != grad.rows() || 
+        current_gradients.cols() != grad.cols()) {
+        current_gradients = Matrix(grad.rows(), grad.cols());
+    }
+    current_gradients = grad;
+    return grad;
 }

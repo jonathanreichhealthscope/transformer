@@ -20,10 +20,12 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
       dropout_prob(0.1f), use_flash_attention(true), use_rope(true),
       use_sliding_window(false), window_size(512), use_gqa(false),
       num_kv_heads(num_heads), use_cuda(true) {
+  std::cout << "entering TransformerConfig constructor" << std::endl;
   if (hidden_size % num_heads != 0) {
     throw std::invalid_argument(
         "Hidden size must be divisible by number of heads");
   }
+  std::cout << "exiting TransformerConfig constructor" << std::endl;
 }
 
 // TransformerLayer implementation
@@ -31,6 +33,7 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
     : kv_cache(config.max_seq_length), 
       config(config),
       layer_idx(idx) {
+  std::cout << "entering TransformerLayer constructor" << std::endl;
   // Initialize attention layer
   self_attention = std::make_unique<MultiHeadAttention>(
       config.hidden_size, config.num_heads, config.head_dim,
@@ -45,10 +48,12 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
   // Initialize feed-forward network
   feed_forward = std::make_unique<FeedForward>(
       config.hidden_size, config.intermediate_size, config.dropout_prob);
+  std::cout << "exiting TransformerLayer constructor" << std::endl;
 }
 
 Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
                                const std::optional<KVCache> &kv_cache) {
+  std::cout << "entering TransformerLayer::forward" << std::endl;
   // Layer norm before attention
   Matrix normalized = attention_ln->forward(input);
   // Cache the normalized input for backward pass
@@ -67,12 +72,18 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
   Matrix ffn_output = feed_forward->forward(ffn_normalized);
   Matrix residual2 = ffn_output + residual1;
 
+  std::cout << "exiting TransformerLayer::forward" << std::endl;
   return residual2;
 }
 
-void TransformerLayer::clear_cache() { kv_cache.clear(); }
+void TransformerLayer::clear_cache() { 
+  std::cout << "entering TransformerLayer::clear_cache" << std::endl;
+  kv_cache.clear(); 
+  std::cout << "exiting TransformerLayer::clear_cache" << std::endl;
+}
 
 void TransformerLayer::convert_to_fp16() {
+  std::cout << "entering TransformerLayer::convert_to_fp16" << std::endl;
 #ifdef USE_CUDA
   if (self_attention) {
     auto weights = self_attention->get_weights();
@@ -87,10 +98,12 @@ void TransformerLayer::convert_to_fp16() {
     }
   }
 #endif
+  std::cout << "exiting TransformerLayer::convert_to_fp16" << std::endl;
 }
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
+  std::cout << "entering Transformer constructor" << std::endl;
   if (config.use_cuda) {
     initialize_cuda();
     cuda_initialized = true;
@@ -119,10 +132,12 @@ Transformer::Transformer(const TransformerConfig &config) : config(config) {
       layer->convert_to_fp16();
     }
   }
+  std::cout << "exiting Transformer constructor" << std::endl;
 }
 
 Matrix Transformer::forward(const std::vector<int> &input_tokens,
                             bool use_cache) {
+  std::cout << "entering Transformer::forward" << std::endl;
   if (config.use_cuda) {
     std::cout << "Using CUDA for forward pass" << std::endl;
     return forward_cuda(input_tokens);
@@ -198,12 +213,14 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
   // Free memory pool allocation
   MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
 
+  std::cout << "exiting Transformer::forward" << std::endl;
   return hidden_states;
 }
 
 void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
                         const std::vector<std::vector<int>> &target_tokens,
                         size_t num_epochs, float learning_rate) {
+  std::cout << "entering Transformer::train" << std::endl;
   const size_t batch_size = 32; // Fixed batch size
 
   for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
@@ -232,10 +249,12 @@ void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
       update_parameters(learning_rate);
     }
   }
+  std::cout << "exiting Transformer::train" << std::endl;
 }
 
 Matrix Transformer::compute_loss_gradients(const Matrix &logits,
                                            const std::vector<int> &targets) {
+  std::cout << "entering Transformer::compute_loss_gradients" << std::endl;
   const size_t batch_size = logits.rows();
   const size_t vocab_size = logits.cols();
   Matrix gradients(batch_size, vocab_size);
@@ -273,6 +292,7 @@ Matrix Transformer::compute_loss_gradients(const Matrix &logits,
     gradients(i, targets[i]) -= 1.0f; // Subtract 1 from target class
   }
 
+  std::cout << "exiting Transformer::compute_loss_gradients" << std::endl;
   return gradients;
 }
 

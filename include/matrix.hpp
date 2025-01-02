@@ -123,6 +123,11 @@ public:
   }
 };
 
+// Make to_vector inline to allow multiple definitions
+inline std::vector<int> to_vector(const Matrix &m) {
+  return std::vector<int>(m.data(), m.data() + m.size());
+}
+
 class Vector {
 private:
   std::vector<float> data_;

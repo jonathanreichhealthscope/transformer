@@ -216,4 +216,7 @@ public:
 
   void backward(const Matrix &grad_output,
                 const std::vector<int> &input_tokens);
+
+  const Matrix& get_hidden_states() const { return hidden_states; }
+  LanguageModelHead* get_lm_head() { return lm_head.get(); }
 };
