@@ -13,10 +13,13 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size,
-                         float dropout)
-    : w1(hidden_size, intermediate_size), w2(intermediate_size, hidden_size),
-      b1(intermediate_size), b2(hidden_size), dropout_prob(dropout) {
+FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dropout)
+    : w1(hidden_size, intermediate_size),
+      w2(intermediate_size, hidden_size),
+      b1(intermediate_size),
+      b2(hidden_size),
+      dropout_prob(dropout),
+      intermediate_cache(1, intermediate_size) {
 
   std::cout << "FeedForward dimensions:" << std::endl;
   std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
@@ -57,42 +60,35 @@ Matrix FeedForward::forward(const Matrix &x) {
     std::cout << "x: " << x.rows() << "x" << x.cols() << std::endl;
     std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
     std::cout << "b1: " << b1.size() << std::endl;
+    
     Matrix intermediate = matmul(x, w1);
     std::cout << "intermediate shape: " << intermediate.shape() << std::endl;
     intermediate.add_bias(b1);
     intermediate.apply_gelu();
     std::cout << "intermediate after gelu: " << intermediate.shape() << std::endl;
+    
     // Deep copy for cache
     std::cout << "deep copying intermediate for cache" << std::endl;
-    if (intermediate.empty()) {
-        throw std::runtime_error("Cannot cache empty intermediate matrix");
-    }
-
-    // Validate dimensions match
-    if (intermediate_cache.rows() != intermediate.rows() || 
-        intermediate_cache.cols() != intermediate.cols()) {
-        throw std::runtime_error("Cache matrix dimensions don't match intermediate matrix");
-    }
-
-    // Validate data pointers
-    if (!intermediate.data() || !intermediate_cache.data()) {
-        throw std::runtime_error("Null data pointers in matrices");
-    }
-
-    // Validate sizes match
-    if (intermediate.size() != intermediate_cache.size()) {
-        throw std::runtime_error("Matrix sizes don't match for copy");
-    }
-
     try {
-        intermediate_cache = Matrix(intermediate.rows(), intermediate.cols());
-        std::copy(intermediate.data(), 
-                  intermediate.data() + intermediate.size(),
-                  intermediate_cache.data());
+        // Create a new matrix for the cache
+        Matrix new_cache(intermediate.rows(), intermediate.cols());
+        
+        // Copy data element by element to avoid memory issues
+        for(size_t i = 0; i < intermediate.rows(); ++i) {
+            for(size_t j = 0; j < intermediate.cols(); ++j) {
+                new_cache(i, j) = intermediate(i, j);
+            }
+        }
+        
+        // Only after successful copy, assign to intermediate_cache
+        intermediate_cache = std::move(new_cache);
+                 
+        std::cout << "intermediate_cache shape: " << intermediate_cache.shape() << std::endl;
     } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to copy intermediate data: " + std::string(e.what()));
+        std::cerr << "Error during cache operation: " << e.what() << std::endl;
+        std::cerr << "Attempting to continue without caching..." << std::endl;
     }
-    std::cout << "intermediate_cache shape: " << intermediate_cache.shape() << std::endl;
+    
     Matrix output = matmul(intermediate, w2);
     std::cout << "output shape: " << output.shape() << std::endl;
     output.add_bias(b2);

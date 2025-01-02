@@ -125,12 +125,41 @@ Matrix& Matrix::operator=(Matrix&& other) noexcept {
 
 // Basic operations
 void Matrix::resize(size_t new_rows, size_t new_cols) {
-  if (new_rows == rows_ && new_cols == cols_) {
-    return;
-  }
-  data_.resize(new_rows * new_cols);
-  rows_ = new_rows;
-  cols_ = new_cols;
+    // Check for no-op resize
+    if (new_rows == rows_ && new_cols == cols_) {
+        return;
+    }
+    
+    // Check for overflow
+    if (new_rows > SIZE_MAX / new_cols) {
+        throw std::runtime_error("Matrix dimensions would cause overflow");
+    }
+    
+    size_t new_size = new_rows * new_cols;
+    
+    try {
+        // Create new vector with new size
+        std::vector<float> new_data(new_size, 0.0f);
+        
+        // Copy existing data if possible
+        size_t min_rows = std::min(rows_, new_rows);
+        size_t min_cols = std::min(cols_, new_cols);
+        
+        for (size_t i = 0; i < min_rows; ++i) {
+            for (size_t j = 0; j < min_cols; ++j) {
+                new_data[i * new_cols + j] = data_[i * cols_ + j];
+            }
+        }
+        
+        // Swap the new data into place
+        data_.swap(new_data);
+        rows_ = new_rows;
+        cols_ = new_cols;
+        shape_ = std::make_tuple(new_rows, new_cols);
+        
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to resize matrix: " + std::string(e.what()));
+    }
 }
 
 float &Matrix::operator()(size_t row, size_t col) {
