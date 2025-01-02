@@ -1011,35 +1011,77 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
     std::cout << "\n=== Transformer::backward START ===" << std::endl;
     
     try {
-        // Print input information
-        std::cout << "Input:" << std::endl;
-        std::cout << "- Gradient output shape: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cout << "- Number of input tokens: " << input_tokens.size() << std::endl;
-        std::cout << "- Hidden states shape: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+        // Print dimensions for debugging
+        std::cout << "Initial dimensions:" << std::endl;
+        std::cout << "- Gradient output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+        std::cout << "- Input tokens size: " << input_tokens.size() << std::endl;
         
+        // Add gradient clipping
+        const float max_grad_norm = 1.0f;
+        Matrix clipped_grad = grad_output;
+        
+        // Calculate gradient norm
+        float grad_norm = 0.0f;
+        for (size_t i = 0; i < clipped_grad.size(); ++i) {
+            grad_norm += clipped_grad.data()[i] * clipped_grad.data()[i];
+        }
+        grad_norm = std::sqrt(grad_norm);
+        
+        // Clip gradients if norm is too large
+        if (grad_norm > max_grad_norm) {
+            float scaling_factor = max_grad_norm / (grad_norm + 1e-6f);
+            std::cout << "Clipping gradients with scaling factor: " << scaling_factor << std::endl;
+            for (size_t i = 0; i < clipped_grad.size(); ++i) {
+                clipped_grad.data()[i] *= scaling_factor;
+            }
+        }
+
         // Verify and adjust gradient dimensions if needed
         Matrix adjusted_grad;
-        if (grad_output.rows() != input_tokens.size()) {
-            std::cout << "Adjusting gradient dimensions to match sequence length..." << std::endl;
-            adjusted_grad = Matrix(input_tokens.size(), grad_output.cols());
+        if (clipped_grad.rows() != input_tokens.size()) {
+            std::cout << "Adjusting gradient dimensions from " << clipped_grad.rows() 
+                     << " to " << input_tokens.size() << " rows..." << std::endl;
+                     
+            // Create new matrix with correct dimensions
+            adjusted_grad = Matrix(input_tokens.size(), clipped_grad.cols());
             
-            // Copy values with proper dimension handling
+            // Safely copy values with bounds checking
             for (size_t i = 0; i < input_tokens.size(); ++i) {
-                for (size_t j = 0; j < grad_output.cols(); ++j) {
-                    adjusted_grad(i, j) = grad_output(i % grad_output.rows(), j);
+                for (size_t j = 0; j < clipped_grad.cols(); ++j) {
+                    if (i < clipped_grad.rows()) {
+                        adjusted_grad(i, j) = clipped_grad(i, j);
+                    } else {
+                        // For extra rows, copy from the last row of original gradients
+                        adjusted_grad(i, j) = clipped_grad(clipped_grad.rows() - 1, j);
+                    }
                 }
             }
+            
+            // Normalize each row to ensure distribution sums to 1
+            for (size_t i = 0; i < adjusted_grad.rows(); ++i) {
+                float row_sum = 0.0f;
+                for (size_t j = 0; j < adjusted_grad.cols(); ++j) {
+                    row_sum += std::abs(adjusted_grad(i, j));
+                }
+                
+                if (row_sum > 1e-6f) {  // Avoid division by zero
+                    float scaling = 1.0f / row_sum;
+                    for (size_t j = 0; j < adjusted_grad.cols(); ++j) {
+                        adjusted_grad(i, j) *= scaling;
+                    }
+                }
+            }
+            
             std::cout << "Adjusted gradient shape: " << adjusted_grad.rows() << "x" << adjusted_grad.cols() << std::endl;
         } else {
-            adjusted_grad = grad_output;
+            adjusted_grad = clipped_grad;
         }
-        
-        // Verify dimensions after adjustment
-        if (adjusted_grad.cols() != config.hidden_size) {
-            throw std::runtime_error("Gradient output dimension (" +
-                                   std::to_string(adjusted_grad.cols()) +
-                                   ") must match hidden size (" +
-                                   std::to_string(config.hidden_size) + ")");
+
+        // Verify dimensions match hidden states
+        if (adjusted_grad.cols() != hidden_states.cols()) {
+            throw std::runtime_error("Gradient columns (" + std::to_string(adjusted_grad.cols()) + 
+                                   ") don't match hidden states columns (" + 
+                                   std::to_string(hidden_states.cols()) + ")");
         }
 
         Matrix current_grad = final_ln->backward(adjusted_grad, hidden_states);
@@ -1048,41 +1090,76 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
         for (int i = layers.size() - 1; i >= 0; --i) {
             std::cout << "\nProcessing layer " << i << "..." << std::endl;
             
-            // Get cached activation
             Matrix cached_activation = GradientCheckpoint::get_activation(i);
-            std::cout << "Cached activation shape: " << cached_activation.rows() << "x" << cached_activation.cols() << std::endl;
             
             // Ensure gradient dimensions match cached activation
             if (current_grad.rows() != cached_activation.rows()) {
                 std::cout << "Adjusting layer gradient dimensions..." << std::endl;
                 Matrix resized_grad(cached_activation.rows(), current_grad.cols());
+                
+                // Safe copying with bounds checking
                 for (size_t r = 0; r < cached_activation.rows(); ++r) {
                     for (size_t c = 0; c < current_grad.cols(); ++c) {
-                        resized_grad(r, c) = current_grad(r % current_grad.rows(), c);
+                        if (r < current_grad.rows()) {
+                            resized_grad(r, c) = current_grad(r, c);
+                        } else {
+                            resized_grad(r, c) = current_grad(current_grad.rows() - 1, c);
+                        }
                     }
                 }
                 current_grad = std::move(resized_grad);
             }
             
-            // Process layer gradients
+            // Add gradient stabilization
+            float layer_grad_norm = 0.0f;
+            for (size_t j = 0; j < current_grad.size(); ++j) {
+                layer_grad_norm += current_grad.data()[j] * current_grad.data()[j];
+            }
+            layer_grad_norm = std::sqrt(layer_grad_norm);
+            
+            if (layer_grad_norm > max_grad_norm) {
+                float scaling = max_grad_norm / (layer_grad_norm + 1e-6f);
+                for (size_t j = 0; j < current_grad.size(); ++j) {
+                    current_grad.data()[j] *= scaling;
+                }
+            }
+            
             current_grad = layers[i]->backward(current_grad, cached_activation);
-            std::cout << "Layer " << i << " gradients shape: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
         }
 
-        // Final adjustment to match input sequence length
+        // Verify dimensions before token embedding update
         if (current_grad.rows() != input_tokens.size()) {
-            std::cout << "Final gradient dimension adjustment..." << std::endl;
+            std::cout << "Adjusting final gradient dimensions for token embedding update..." << std::endl;
             Matrix final_grad(input_tokens.size(), current_grad.cols());
+            
+            // Safe copying with bounds checking
             for (size_t i = 0; i < input_tokens.size(); ++i) {
                 for (size_t j = 0; j < current_grad.cols(); ++j) {
-                    final_grad(i, j) = current_grad(i % current_grad.rows(), j);
+                    if (i < current_grad.rows()) {
+                        final_grad(i, j) = current_grad(i, j);
+                    } else {
+                        final_grad(i, j) = current_grad(current_grad.rows() - 1, j);
+                    }
                 }
             }
             current_grad = std::move(final_grad);
         }
 
-        // Update token embeddings
-        std::cout << "\nUpdating token embeddings..." << std::endl;
+        // Normalize final gradients before updating embeddings
+        float final_grad_norm = 0.0f;
+        for (size_t i = 0; i < current_grad.size(); ++i) {
+            final_grad_norm += current_grad.data()[i] * current_grad.data()[i];
+        }
+        final_grad_norm = std::sqrt(final_grad_norm);
+        
+        if (final_grad_norm > max_grad_norm) {
+            float scaling = max_grad_norm / (final_grad_norm + 1e-6f);
+            for (size_t i = 0; i < current_grad.size(); ++i) {
+                current_grad.data()[i] *= scaling;
+            }
+        }
+        
+        std::cout << "Final gradient dimensions: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
         token_embedding->backward(current_grad, input_tokens);
         std::cout << "Token embeddings updated" << std::endl;
 
