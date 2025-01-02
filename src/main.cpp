@@ -26,7 +26,6 @@
 // Add necessary forward declarations and structures
 class Tokenizer;
 std::unique_ptr<Tokenizer> tokenizer;
-size_t vocab_size;
 
 // Define training example structure
 struct TrainingExample {
@@ -42,14 +41,41 @@ float prev_loss = std::numeric_limits<float>::max();
 
 // Helper function to create target distribution
 Matrix create_target_distribution(const std::vector<int>& tokens, size_t vocab_size) {
-    std::cout << "entering create_target_distribution" << std::endl;
-    Matrix distribution(1, vocab_size, 0.0f);
+    std::cout << "Creating target distribution for " << tokens.size() << " tokens with vocab size " << vocab_size << std::endl;
+    
+    // Validate input
+    if (tokens.empty()) {
+        throw std::runtime_error("Cannot create target distribution from empty token sequence");
+    }
+    
     for (int token : tokens) {
-        if (token < static_cast<int>(vocab_size)) {
-            distribution(0, token) = 1.0f;
+        if (token < 0 || token >= static_cast<int>(vocab_size)) {
+            throw std::runtime_error("Token " + std::to_string(token) + " is out of vocabulary range [0, " + std::to_string(vocab_size) + ")");
         }
     }
-    std::cout << "exiting create_target_distribution" << std::endl;
+    
+    // Create one-hot distribution
+    Matrix distribution(1, vocab_size, 0.0f);
+    float weight = 1.0f / tokens.size(); // Normalize by sequence length
+    
+    for (int token : tokens) {
+        distribution(0, token) = weight;
+    }
+    
+    // Validate output
+    float total = 0.0f;
+    for (size_t i = 0; i < distribution.size(); i++) {
+        if (std::isnan(distribution.data()[i]) || std::isinf(distribution.data()[i])) {
+            throw std::runtime_error("Invalid value in target distribution at position " + std::to_string(i));
+        }
+        total += distribution.data()[i];
+    }
+    
+    // Check if distribution sums to approximately 1
+    if (std::abs(total - 1.0f) > 1e-6) {
+        throw std::runtime_error("Target distribution does not sum to 1.0 (sum = " + std::to_string(total) + ")");
+    }
+    
     return distribution;
 }
 
@@ -136,24 +162,25 @@ int main(int argc, char *argv[]) {
 
   try {
 #ifdef CUDA_AVAILABLE
-    initialize_cuda(); // Initialize CUDA at program start
+    initialize_cuda();
 #endif
+    // Initialize tokenizer first to get vocab size
+    auto tokenizer = std::make_unique<Tokenizer>();
+    tokenizer->print_vocabulary_mappings(); // Print initial mappings
+    
+    // Get vocabulary size from the tokenizer
+    size_t actual_vocab_size = tokenizer->vocab_size();
+    
+    std::cout << "Actual vocabulary size: " << actual_vocab_size << std::endl;
 
-    // Configure the transformer
+    // Configure the transformer with actual vocab size
     TransformerConfig config;
-    config.vocab_size = 50000;
+    config.vocab_size = actual_vocab_size;
     config.hidden_size = 360;
-    config.num_heads = 12;
+    config.num_heads = 6;
     config.num_layers = 6;
     config.use_cuda = false;
     config.use_flash_attention = false;
-/*#ifdef CUDA_AVAILABLE
-    config.use_flash_attention = true;
-    config.use_cuda = true;
-#else
-    config.use_flash_attention = false;
-    config.use_cuda = false;
-#endif*/
     config.use_rope = true;
     config.use_sliding_window = true;
     config.window_size = 256;
@@ -171,7 +198,6 @@ int main(int argc, char *argv[]) {
 
     // Initialize components
     Transformer transformer(config);
-    auto tokenizer = std::make_unique<Tokenizer>();
     auto lm_head = std::make_unique<LanguageModelHead>(config.vocab_size,
                                                        config.hidden_size);
 

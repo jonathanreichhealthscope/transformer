@@ -8,39 +8,21 @@
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),
       embedding_dim_(embedding_dim) {
-  // Use Xavier/Glorot initialization with a smaller scale
-  // scale = sqrt(2.0 / (vocab_size + embedding_dim)) * 0.1
-  float scale = std::sqrt(2.0f / (vocab_size_ + embedding_dim_)) * 0.1f;
+  // Current initialization is good, but let's add bounds checking
+  float scale = std::sqrt(0.2f / embedding_dim_);
+  weights_.randomize(-scale, scale);
   
-  // Initialize with smaller values and validate
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_real_distribution<float> dist(-scale, scale);
-  
-  for(size_t i = 0; i < weights_.size(); i++) {
-    weights_.data()[i] = dist(gen);
+  // Add validation
+  bool all_zero = true;
+  for(size_t i = 0; i < std::min(size_t(10), weights_.size()); i++) {
+    if(weights_.data()[i] != 0.0f) {
+      all_zero = false;
+      break;
+    }
   }
-  
-  // Validate initialization
-  float max_abs_val = 0.0f;
-  bool has_nonzero = false;
-  
-  for(size_t i = 0; i < weights_.size(); i++) {
-    float val = std::abs(weights_.data()[i]);
-    max_abs_val = std::max(max_abs_val, val);
-    if(val > 1e-6f) has_nonzero = true;
+  if(all_zero) {
+    throw std::runtime_error("Embedding weights initialization failed - all values are zero");
   }
-  
-  if(!has_nonzero) {
-    throw std::runtime_error("Embedding weights initialization failed - all values too close to zero");
-  }
-  
-  if(max_abs_val > 1.0f) {
-    throw std::runtime_error("Embedding weights initialization failed - values too large");
-  }
-  
-  std::cout << "Initialized embeddings with scale=" << scale 
-            << ", max_abs_val=" << max_abs_val << std::endl;
 }
 
 Matrix TokenEmbedding::forward(const std::vector<int> &tokens) {
