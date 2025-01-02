@@ -37,6 +37,34 @@ void Vocabulary::add_special_token(const std::string &token, int id) {
 }
 
 void Vocabulary::initialize_basic_vocabulary() {
+  // Add articles and determiners first (before pronouns)
+  std::vector<std::string> articles = {
+      // Articles
+      "a", "an", "the",
+      
+      // Demonstrative determiners
+      "this", "that", "these", "those",
+      
+      // Possessive determiners
+      "my", "your", "his", "her", "its", "our", "their",
+      
+      // Quantifiers and other determiners
+      "all", "any", "both", "each", "every", "few", "many", "much",
+      "several", "some", "such", "no", "none", "neither", "either",
+      
+      // Numbers as determiners
+      "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+      "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+      
+      // Other common determiners
+      "another", "other", "what", "whatever", "which", "whichever",
+      "whose", "enough", "various", "certain", "plenty", "lots", "most",
+      "least", "last", "next", "previous", "same", "certain",
+      
+      // Distributive determiners
+      "each", "every", "either", "neither"
+  };
+
   // Basic pronouns and their contractions
   std::vector<std::string> pronouns = {
       "i",       "me",        "my",       "mine",     "myself",
@@ -104,7 +132,18 @@ void Vocabulary::initialize_basic_vocabulary() {
       "swimming", "swum", "eat", "eats", "ate", "eating", "eaten", "drink",
       "drinks", "drank", "drinking", "drunk", "sleep", "sleeps", "slept",
       "sleeping", "walk", "walks", "walked", "walking", "fly", "flies", "flew",
-      "flying", "flown", "draw", "draws", "drew", "drawing", "drawn"};
+      "flying", "flown", "draw", "draws", "drew", "drawing", "drawn",
+      // Adding frequently occurring verbs from logs
+      "prepare", "wait", "compete", "meet", "collaborate", "repair",
+      "cook", "rush", "entertain", "hop", "code", "respond", "train",
+      "examine", "soar", "maintain", "hunt", "patrol", "meditate",
+      "consult", "study", "practice", "deploy", "serve", "rehearse",
+      "build", "analyze", "learn", "drive", "create", "gather", "sit",
+      "teach", "worship", "visit", "test", "clean", "operate", "mix",
+      "treat", "research", "counsel", "fight", "glide", "preside",
+      "rest", "settle", "pray", "organize", "file", "type", "experiment",
+      "observe", "perform", "collect", "plan"
+  };
 
   // Common prepositions and conjunctions
   std::vector<std::string> connectors = {
@@ -252,10 +291,30 @@ void Vocabulary::initialize_basic_vocabulary() {
       "suffering", "surprise", "talent", "taste", "technology", "theory",
       "thinking", "time", "tolerance", "tradition", "trust", "understanding",
       "unity", "universe", "value", "victory", "violence", "virtue", "vision",
-      "wealth", "wisdom", "wonder", "work", "world", "worth", "youth"};
+      "wealth", "wisdom", "wonder", "work", "world", "worth", "youth",
+
+      // Adding frequently occurring nouns from logs
+      "service", "simulator", "tunnel", "briefing", "hangar", "club",
+      "hall", "space", "field", "players", "headquarters", "chamber",
+      "workspace", "facility", "meat", "comedy", "bakery", "center",
+      "tarmac", "auditorium", "bay", "ward", "pond", "wall", "ice",
+      "lab", "sanctuary", "temple", "mosque", "observatory", "academy",
+      "range", "shrine", "wine", "workshop", "chapel", "classroom",
+      "base", "records", "pharmacy", "department", "pool", "galley",
+      "rink", "track", "kitchen", "cellar", "precinct", "bar",
+      "courtroom", "conference", "meeting", "district", "mat", "cargo",
+      "anteroom", "monastery", "stage", "cockpit",
+
+      // Teams and groups
+      "crew", "teams", "assistants", "handlers", "technicians",
+      
+      // Facilities and rooms
+      "examination", "consultation", "therapy", "radiology", "filing"
+  };
 
   // Add all words to vocabulary
   std::vector<std::string> all_words;
+  all_words.insert(all_words.end(), articles.begin(), articles.end());
   all_words.insert(all_words.end(), pronouns.begin(), pronouns.end());
   all_words.insert(all_words.end(), contractions.begin(), contractions.end());
   all_words.insert(all_words.end(), verbs.begin(), verbs.end());
