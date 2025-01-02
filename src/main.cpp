@@ -450,6 +450,12 @@ int main(int argc, char *argv[]) {
                 Matrix hidden_states = transformer.forward(input_batch[i]);
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
                 
+                // Initialize accumulated_gradients with correct dimensions to match hidden_states
+                if (i == 0) {
+                    // Initialize with correct dimensions: should match hidden_states shape
+                    accumulated_gradients = Matrix(hidden_states.rows(), hidden_states.cols(), 0.0f);
+                }
+                
                 // Extract corresponding row from target distribution
                 Matrix target_slice(logits.rows(), target_distribution.cols());
                 for (size_t j = 0; j < target_distribution.cols(); j++) {
@@ -467,13 +473,18 @@ int main(int argc, char *argv[]) {
                 param_grads.reserve(transformer.getLayers().size());
                 sam_optimizer->compute_parameter_gradients(hidden_states, target_slice, param_grads);
                 
-                // Clip gradients
-                clip_gradients(param_grads, GRADIENT_CLIP_THRESHOLD);
-                
-                // Accumulate gradients
+                // Accumulate gradients with proper dimensions
                 for (const auto& grad : param_grads) {
-                    for (size_t j = 0; j < grad.size(); j++) {
-                        accumulated_gradients.data()[j] += grad.data()[j];
+                    // Ensure grad dimensions match hidden_states before accumulating
+                    if (grad.rows() == accumulated_gradients.rows() && 
+                        grad.cols() == accumulated_gradients.cols()) {
+                        for (size_t j = 0; j < grad.size(); j++) {
+                            accumulated_gradients.data()[j] += grad.data()[j];
+                        }
+                    } else {
+                        std::cout << "Skipping gradient with mismatched dimensions. Expected: " 
+                                  << accumulated_gradients.rows() << "x" << accumulated_gradients.cols()
+                                  << ", Got: " << grad.rows() << "x" << grad.cols() << std::endl;
                     }
                 }
             }
@@ -489,7 +500,7 @@ int main(int argc, char *argv[]) {
             learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step++);
             
             // Apply gradients
-            transformer.backward(accumulated_gradients, input_batch[0]);  // Use first sequence for shape
+            transformer.backward(accumulated_gradients, input_batch[0]);
             
             // Update loss tracking
             prev_loss = batch_loss;
