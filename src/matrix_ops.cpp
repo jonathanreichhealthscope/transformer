@@ -1,6 +1,8 @@
 #include "../include/components.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <iostream>
 
 Vector Matrix::row(size_t row_idx) const {
   Vector result(cols_);
@@ -95,14 +97,23 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
     throw std::runtime_error(
         "Matrix dimensions don't match for multiplication");
   }
+  float max_val = 0.0f;
   Matrix result(a.rows(), b.cols(), 0.0f);
   for (size_t i = 0; i < a.rows(); ++i) {
     for (size_t j = 0; j < b.cols(); ++j) {
       for (size_t k = 0; k < a.cols(); ++k) {
         result(i, j) += a(i, k) * b(k, j);
+        max_val = std::max(max_val, std::abs(result(i, j)));
       }
     }
   }
+  // Validate result is non-zero
+  if(max_val == 0.0f) {
+    std::cerr << "Warning: Matrix multiplication resulted in all zeros\n";
+    std::cerr << "Input matrix A stats: min=" << a.min() << " max=" << a.max() << "\n";
+    std::cerr << "Input matrix B stats: min=" << b.min() << " max=" << b.max() << "\n";
+  }
+
   return result;
 }
 
