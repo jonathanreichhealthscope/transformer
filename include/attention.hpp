@@ -201,9 +201,13 @@ private:
                                size_t seq_len, size_t hidden_size) const {
        // Reshape from [batch_size * num_heads, seq_len, head_size] to 
        // [batch_size, seq_len, hidden_size]
+       std::cout << "entered reshape_from_attention" << std::endl;
        Matrix reshaped(batch_size, hidden_size);
        size_t head_size = hidden_size / num_heads;
-       
+       std::cout << "head_size: " << head_size << std::endl;    
+       std::cout << "hidden_size: " << hidden_size << std::endl;
+       std::cout << "num_heads: " << num_heads << std::endl;
+
        for (size_t b = 0; b < batch_size; b++) {
            for (size_t h = 0; h < num_heads; h++) {
                for (size_t s = 0; s < seq_len; s++) {
@@ -215,6 +219,7 @@ private:
                }
            }
        }
+       std::cout << "exiting reshape_from_attention" << std::endl;
        return reshaped;
    }
    

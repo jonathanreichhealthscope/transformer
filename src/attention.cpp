@@ -106,17 +106,20 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   
   // Project input to Q, K, V with dimension checks
   try {
+      std::cout << "projecting input to Q, K, V" << std::endl;
       Matrix Q = matmul(x, query_proj);
       Matrix K = matmul(x, key_proj);
       Matrix V = matmul(x, value_proj);
-      
+      std::cout << "Q shape: " << Q.shape() << std::endl;
+      std::cout << "K shape: " << K.shape() << std::endl;
+      std::cout << "V shape: " << V.shape() << std::endl;
       // Validate projected dimensions
       if (Q.cols() != head_dim * num_heads || 
           K.cols() != head_dim * num_heads || 
           V.cols() != head_dim * num_heads) {
           throw std::runtime_error("Projection dimension mismatch");
       }
-      
+      std::cout << "adding bias" << std::endl;
       // Add bias with numerical stability
       auto safe_add_bias = [EPSILON, MAX_VAL](Matrix& m, const FloatVector& bias) {
           if (m.cols() != bias.size()) {
@@ -133,24 +136,25 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
               }
           }
       };
-      
+      std::cout << "adding query bias" << std::endl;
       safe_add_bias(Q, query_bias);
+      std::cout << "adding key bias" << std::endl;
       safe_add_bias(K, key_bias);
+      std::cout << "adding value bias" << std::endl;
       safe_add_bias(V, value_bias);
 
       std::cout << "After projection:" << std::endl;
-      std::cout << "Q stats:" << std::endl;
       print_matrix_stats(Q);
-      std::cout << "K stats:" << std::endl;
       print_matrix_stats(K);
-      std::cout << "V stats:" << std::endl;
       print_matrix_stats(V);
 
       // Reshape for attention computation
       size_t batch_size = x.rows();
       size_t seq_len = x.rows();  // For self-attention, seq_len = batch_size
-      
+      std::cout << "batch_size: " << batch_size << std::endl;
+      std::cout << "seq_len: " << seq_len << std::endl;
       // Validate attention mask dimensions if provided
+      std::cout << "mask shape: " << mask.mask.shape() << std::endl;
       if (!mask.mask.empty() && 
           (mask.mask.rows() != seq_len || mask.mask.cols() != seq_len)) {
           throw std::runtime_error("Attention mask dimension mismatch");
