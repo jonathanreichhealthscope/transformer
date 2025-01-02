@@ -5,7 +5,7 @@
 
 class Tensor : public Matrix {
 private:
-    std::vector<size_t> dims;  // Stores dimensions (e.g., [batch, heads, seq_len, hidden])
+    std::vector<size_t> dims_;  // Stores dimensions (e.g., [batch, heads, seq_len, hidden])
     
 public:
     // Constructors
@@ -22,8 +22,8 @@ public:
     
     // Dimension access
     size_t dim(size_t index) const;
-    const std::vector<size_t>& dims() const { return dims; }
-    size_t rank() const { return dims.size(); }
+    const std::vector<size_t>& get_dims() const { return dims_; }
+    size_t rank() const { return dims_.size(); }
     
     // Reshape methods
     void reshape(const std::vector<size_t>& new_dims);
@@ -40,5 +40,19 @@ public:
     
     // Basic operations
     Tensor transpose(const std::vector<size_t>& axes) const;
-    Tensor matmul(const Tensor& other) const;
+    Tensor tensormul(const Tensor& other) const;
+    Tensor matmul(const Matrix& first, const Matrix& second) const;
+    
+    // Safe tensor multiplication with dimension checks
+    static Tensor safe_tensormul(const Tensor& A, const Tensor& B);
+    
+    // Helper method to compute transposed index
+    size_t compute_transposed_index(const std::vector<size_t>& indices,
+                                  const std::vector<size_t>& axes) const;
+    
+    // Helper method to convert flat index to multi-dimensional indices
+    std::vector<size_t> unflatten_index(size_t flat_idx) const;
+    
+    // Helper method to convert multi-dimensional indices to flat index
+    size_t flatten_index(const std::vector<size_t>& indices) const;
 }; 

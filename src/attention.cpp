@@ -631,30 +631,81 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output,
     }
 }
 
-Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size, 
-                                               size_t num_heads, size_t seq_len, size_t head_size) const {
-    // Reshape from [batch_size, seq_len, hidden_size] to 
-    // [batch_size * num_heads, seq_len, head_size]
-    std::cout << "In reshaped for attention" << std::endl;
-    std::cout << "Input matrix shape: " << x.shape() << std::endl;
-    std::cout << "num_heads: " << num_heads << std::endl;
-    std::cout << "head_size: " << head_size << std::endl;
-    std::cout << "seq_len: " << seq_len << std::endl;
-    std::cout << "batch_size: " << batch_size << std::endl;
-    Matrix reshaped(batch_size * num_heads, seq_len, num_heads);
-    std::cout << "Reshaped matrix shape: " << reshaped.shape() << std::endl;
-    for (size_t b = 0; b < batch_size; b++) {
-        for (size_t h = 0; h < num_heads; h++) {
-            for (size_t s = 0; s < x.rows(); s++) {
-                for (size_t d = 0; d < head_size; d++) {
-                    size_t src_idx = s * x.cols() + h * head_size + d;
-                    size_t tgt_idx = (b * num_heads + h) * x.rows() + s;
-                    reshaped.data()[tgt_idx * head_size + d] = x.data()[src_idx];
+Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size, 
+                                                size_t num_heads, size_t seq_len, 
+                                                size_t head_size) const {
+    // Create a 4D tensor with shape [batch_size, num_heads, seq_len, head_size]
+    Tensor reshaped(batch_size, num_heads, seq_len, head_size);
+    
+    // Copy and reshape the data
+    for (size_t b = 0; b < batch_size; ++b) {
+        for (size_t h = 0; h < num_heads; ++h) {
+            for (size_t s = 0; s < seq_len; ++s) {
+                for (size_t d = 0; d < head_size; ++d) {
+                    size_t flat_idx = b * seq_len * hidden_size + 
+                                    s * hidden_size + 
+                                    h * head_size + d;
+                    reshaped.at(b, h, s, d) = x.data()[flat_idx];
                 }
             }
         }
     }
     return reshaped;
+}
+
+Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t batch_size, 
+                                                size_t seq_len, size_t hidden_size) const {
+    // Create output matrix with shape [batch_size * seq_len, hidden_size]
+    Matrix reshaped(batch_size * seq_len, hidden_size);
+    
+    size_t head_size = hidden_size / num_heads;
+    
+    // Copy and reshape the data
+    for (size_t b = 0; b < batch_size; ++b) {
+        for (size_t s = 0; s < seq_len; ++s) {
+            for (size_t h = 0; h < num_heads; ++h) {
+                for (size_t d = 0; d < head_size; ++d) {
+                    size_t out_idx = (b * seq_len + s) * hidden_size + h * head_size + d;
+                    reshaped.data()[out_idx] = x.at(b, h, s, d);
+                }
+            }
+        }
+    }
+    return reshaped;
+}
+
+Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, 
+                                          const Matrix& V, const AttentionMask& mask) {
+    // ... (earlier validation code remains the same)
+    
+    // Reshape inputs to 4D tensors
+    Tensor Q_4d = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
+    Tensor K_4d = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
+    Tensor V_4d = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
+    
+    // Compute attention scores using tensor operations
+    Tensor scores = Q_4d.matmul(K_4d.transpose({0, 1, 3, 2}));  // [batch, heads, seq, seq]
+    
+    // Scale attention scores
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
+    for (size_t i = 0; i < scores.size(); ++i) {
+        scores.data()[i] *= scale;
+    }
+    
+    // Apply mask if provided
+    if (!mask.mask.empty()) {
+        // ... (mask application code)
+    }
+    
+    // Apply softmax
+    apply_stable_softmax(scores.to_matrix());
+    
+    // Compute weighted sum
+    Tensor attention = Tensor(scores.to_matrix(), {batch_size, num_heads, seq_len, seq_len})
+                          .matmul(V_4d);
+    
+    // Reshape back to matrix
+    return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
 }
 
 

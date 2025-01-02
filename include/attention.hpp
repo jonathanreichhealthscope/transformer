@@ -1,6 +1,7 @@
 #pragma once
 #include "cache.hpp"
 #include "components.hpp"
+#include "tensor.hpp"
 #include <optional>
 using FloatVector = Vector;
 
@@ -43,7 +44,7 @@ private:
                          const AttentionMask &mask) const;
   Matrix standard_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
                             const AttentionMask &mask);
-  Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
+  Tensor reshape_for_attention(const Matrix& x, size_t batch_size, 
                                 size_t num_heads, size_t seq_len, size_t head_size) const;
 
   void validate_dimensions(const Matrix& grad_output, 
@@ -114,12 +115,12 @@ private:
        std::cout << "Q.shape(): " << Q.shape() << std::endl;
        std::cout << "K.shape(): " << K.shape() << std::endl;
        std::cout << "V.shape(): " << V.shape() << std::endl;
-       Matrix Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
-       Matrix K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
-       Matrix V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
+       Tensor Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
+       Tensor K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
+       Tensor V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
        std::cout << "exiting reshape_for_attention" << std::endl;
        // Compute attention scores with bounds checking
-       Matrix scores = safe_matmul(Q_reshaped, K_reshaped.transpose());
+       Tensor scores = Tensor::safe_tensormul(Q_reshaped, K_reshaped.transpose({0, 1, 3, 2}));
        std::cout << "exiting safe_matmul" << std::endl;
        // Scale attention scores with temperature scaling
        const float temperature = std::sqrt(static_cast<float>(head_size));

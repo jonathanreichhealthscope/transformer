@@ -27,8 +27,10 @@ public:
   Matrix(size_t rows, size_t cols, float init_val = 0.0f);
   Matrix(size_t rows, size_t cols, float *external_data);
   Matrix(size_t rows, size_t cols, float *external_data, bool is_owner);
+  Matrix(size_t rows, size_t cols, size_t batch_size, float *external_data);
   Matrix(const Matrix& other);
   Matrix(Matrix&& other) noexcept;
+  Matrix(size_t rows, size_t cols, const float* data);
 
   // Assignment operators
   Matrix& operator=(const Matrix& other);

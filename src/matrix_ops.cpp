@@ -5,6 +5,14 @@
 #include <iostream>
 #include <string>
 
+Matrix::Matrix(size_t rows, size_t cols, const float* data) 
+    : rows_(rows), cols_(cols) {
+    data_.resize(rows * cols);
+    if (data) {
+        std::copy(data, data + (rows * cols), data_.begin());
+    }
+}
+
 Vector Matrix::row(size_t row_idx) const {
   Vector result(cols_);
   for (size_t i = 0; i < cols_; ++i) {
