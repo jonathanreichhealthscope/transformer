@@ -54,31 +54,39 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
 Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
                                const std::optional<KVCache> &kv_cache) {
   std::cout << "entering TransformerLayer::forward" << std::endl;
+  
   // Layer norm before attention
   Matrix normalized = attention_ln->forward(input);
+  
   // Cache the normalized input for backward pass
   GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
-  std::cout << "exiting GradientCheckpoint::cache_activation" << std::endl;
+  
   // Self attention
   Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
   std::cout << "attention output shape: " << attention_output.shape() << std::endl;
+  
+  // Scale residual connection
+  const float residual_scale = 0.5f;  // Scale factor to prevent value explosion
+  for(size_t i = 0; i < attention_output.size(); i++) {
+    attention_output.data()[i] *= residual_scale;
+  }
   Matrix residual1 = attention_output + input;
-  std::cout << "residual1 shape: " << residual1.shape() << std::endl;
+  
   // Layer norm before feed forward
   Matrix ffn_normalized = ffn_ln->forward(residual1);
-  std::cout << "ffn_normalized shape: " << ffn_normalized.shape() << std::endl;
+  
   // Cache the normalized input for feed forward backward pass
-  std::cout << "caching ffn_normalized" << std::endl;
   GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
-  std::cout << "exiting GradientCheckpoint::cache_activation" << std::endl;
+  
   // Feed forward
-  // THIS IS WHERE THE ERROR OCCURS
-  std::cout << "feed forward" << std::endl;
   Matrix ffn_output = feed_forward->forward(ffn_normalized);
-  std::cout << "ffn_output shape: " << ffn_output.shape() << std::endl;
+  
+  // Scale second residual connection
+  for(size_t i = 0; i < ffn_output.size(); i++) {
+    ffn_output.data()[i] *= residual_scale;
+  }
   Matrix residual2 = ffn_output + residual1;
-  std::cout << "residual2 shape: " << residual2.shape() << std::endl;
-  std::cout << "exiting TransformerLayer::forward" << std::endl;
+  
   return residual2;
 }
 
