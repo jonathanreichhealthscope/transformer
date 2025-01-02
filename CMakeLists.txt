@@ -236,3 +236,8 @@ if(CUDAToolkit_FOUND)
         PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
     )
 endif()
+
+# Add to your sources list:
+target_sources(transformer_lib PRIVATE
+    src/tensor.cpp
+)

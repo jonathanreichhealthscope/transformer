@@ -1,234 +1,120 @@
-#include "tensor.hpp"
+#include "../include/tensor.hpp"
+#include <stdexcept>
 #include <numeric>
-#include <functional>
-#include <string>
-Tensor::Tensor(size_t dim1, size_t dim2, size_t dim3) 
-    : Matrix(dim1 * dim2, dim3), dims_{dim1, dim2, dim3} {
+
+Tensor::Tensor(unsigned long d1, unsigned long d2, unsigned long d3, unsigned long d4) 
+    : dims_{d1, d2, d3, d4} {
+    size_t total_size = d1 * d2 * d3 * d4;
+    data_.resize(total_size, 0.0f);
 }
 
-Tensor::Tensor(size_t dim1, size_t dim2, size_t dim3, size_t dim4) 
-    : Matrix(dim1 * dim2, dim3 * dim4), dims_{dim1, dim2, dim3, dim4} {
-}
-
-Tensor::Tensor(const Matrix& matrix, const std::vector<size_t>& dimensions) 
-    : Matrix(matrix), dims_(dimensions) {
-    // Verify that dimensions match the total size
-    size_t total = std::accumulate(dimensions.begin(), dimensions.end(), 
-                                 1ULL, std::multiplies<size_t>());
-    if (total != matrix.size()) {
-        throw std::runtime_error("Dimension mismatch in Tensor construction");
-    }
-}
-
-size_t Tensor::dim(size_t index) const {
-    if (index >= dims_.size()) {
-        throw std::out_of_range("Dimension index out of range");
-    }
-    return dims_[index];
-}
-
-void Tensor::reshape(const std::vector<size_t>& new__dims) {
-    size_t total = std::accumulate(new__dims.begin(), new__dims.end(), 
-                                 1ULL, std::multiplies<size_t>());
-    if (total != size()) {
-        throw std::runtime_error("Invalid reshape dimensions");
-    }
-    dims_ = new__dims;
-}
-
-float& Tensor::at(size_t i, size_t j, size_t k) {
-    if (dims_.size() != 3) {
-        throw std::runtime_error("Tensor is not 3-dimensional");
-    }
-    size_t index = (i * dims_[1] + j) * dims_[2] + k;
-    return data()[index];
-}
-
-float& Tensor::at(size_t i, size_t j, size_t k, size_t l) {
-    if (dims_.size() != 4) {
-        throw std::runtime_error("Tensor is not 4-dimensional");
-    }
-    size_t index = ((i * dims_[1] + j) * dims_[2] + k) * dims_[3] + l;
-    return data()[index];
-}
-
-const float& Tensor::at(size_t i, size_t j, size_t k) const {
-    if (dims_.size() != 3) {
-        throw std::runtime_error("Tensor is not 3-dimensional");
-    }
-    size_t index = (i * dims_[1] + j) * dims_[2] + k;
-    return data()[index];
-}
-
-const float& Tensor::at(size_t i, size_t j, size_t k, size_t l) const {
-    if (dims_.size() != 4) {
-        throw std::runtime_error("Tensor is not 4-dimensional");
-    }
-    size_t index = ((i * dims_[1] + j) * dims_[2] + k) * dims_[3] + l;
-    return data()[index];
-}
-
-Matrix Tensor::to_matrix() const {
-    // For 3D tensor: collapse first two dimensions
-    if (dims_.size() == 3) {
-        return Matrix(dims_[0] * dims_[1], dims_[2], data());
-    }
-    // For 4D tensor: collapse first two and last two dimensions
-    else if (dims_.size() == 4) {
-        return Matrix(dims_[0] * dims_[1], dims_[2] * dims_[3], data());
-    }
-    throw std::runtime_error("Unsupported tensor rank for matrix conversion");
-}
-
-Tensor Tensor::from_matrix(const Matrix& matrix, const std::vector<size_t>& dims_) {
-    return Tensor(matrix, dims_);
-}
-
-Tensor Tensor::transpose(const std::vector<size_t>& axes) const {
-    // Validate axes
-    if (axes.size() != dims_.size()) {
-        throw std::runtime_error("Number of axes must match tensor rank");
+Tensor::Tensor(const Matrix& mat, const std::vector<unsigned long>& shape) {
+    if (shape.size() != 4) {
+        throw std::runtime_error("Tensor shape must have 4 dimensions");
     }
     
-    // Check if axes is a valid permutation
-    std::vector<bool> used(dims_.size(), false);
-    for (size_t axis : axes) {
-        if (axis >= dims_.size() || used[axis]) {
-            throw std::runtime_error("Invalid axes permutation");
+    size_t total_size = std::accumulate(shape.begin(), shape.end(), 1UL, std::multiplies<unsigned long>());
+    if (total_size != mat.size()) {
+        throw std::runtime_error("Matrix size does not match tensor shape");
+    }
+    
+    dims_ = shape;
+    data_ = std::vector<float>(mat.data(), mat.data() + mat.size());
+}
+
+float& Tensor::at(unsigned long i, unsigned long j, unsigned long k, unsigned long l) {
+    size_t index = i * (dims_[1] * dims_[2] * dims_[3]) +
+                   j * (dims_[2] * dims_[3]) +
+                   k * dims_[3] + l;
+    if (index >= data_.size()) {
+        throw std::out_of_range("Tensor index out of bounds");
+    }
+    return data_[index];
+}
+
+float Tensor::at(unsigned long i, unsigned long j, unsigned long k, unsigned long l) const {
+    size_t index = i * (dims_[1] * dims_[2] * dims_[3]) +
+                   j * (dims_[2] * dims_[3]) +
+                   k * dims_[3] + l;
+    if (index >= data_.size()) {
+        throw std::out_of_range("Tensor index out of bounds");
+    }
+    return data_[index];
+}
+
+Tensor Tensor::transpose(const std::vector<unsigned long>& perm) const {
+    if (perm.size() != 4) {
+        throw std::runtime_error("Transpose permutation must have 4 dimensions");
+    }
+    
+    std::vector<unsigned long> new_dims = {
+        dims_[perm[0]], dims_[perm[1]], dims_[perm[2]], dims_[perm[3]]
+    };
+    
+    Tensor result(new_dims[0], new_dims[1], new_dims[2], new_dims[3]);
+    
+    for (size_t i = 0; i < dims_[0]; ++i) {
+        for (size_t j = 0; j < dims_[1]; ++j) {
+            for (size_t k = 0; k < dims_[2]; ++k) {
+                for (size_t l = 0; l < dims_[3]; ++l) {
+                    std::vector<size_t> old_idx = {i, j, k, l};
+                    std::vector<size_t> new_idx = {
+                        old_idx[perm[0]], old_idx[perm[1]], 
+                        old_idx[perm[2]], old_idx[perm[3]]
+                    };
+                    result.at(new_idx[0], new_idx[1], new_idx[2], new_idx[3]) = 
+                        at(i, j, k, l);
+                }
+            }
         }
-        used[axis] = true;
-    }
-    
-    // Create new dimensions array based on the permutation
-    std::vector<size_t> new__dims(dims_.size());
-    for (size_t i = 0; i < dims_.size(); ++i) {
-        new__dims[i] = dims_[axes[i]];
-    }
-    
-    // Create new tensor with transposed dimensions
-    Tensor result(new__dims[0], new__dims[1], new__dims[2], new__dims[3]);
-    
-    // Copy data with transposed indices
-    for (size_t i = 0; i < size(); ++i) {
-        std::vector<size_t> indices = unflatten_index(i);
-        size_t transposed_idx = compute_transposed_index(indices, axes);
-        result.data()[transposed_idx] = data()[i];
     }
     
     return result;
 }
 
 Tensor Tensor::tensormul(const Tensor& other) const {
-    if (dims_.size() != other.dims_.size()) {
-        throw std::runtime_error("Tensor ranks must match for multiplication");
+    // Assuming the last dimension of this tensor matches the second-to-last dimension of other
+    if (dims_[3] != other.dims_[2]) {
+        throw std::runtime_error("Incompatible dimensions for tensor multiplication");
     }
     
-    if (dims_.size() == 4) {
-        // For 4D tensors [batch, heads, seq, hidden]
-        if (dims_[0] != other.dims_[0] || dims_[1] != other.dims_[1]) {
-            throw std::runtime_error("Batch and head dimensions must match");
-        }
-        if (dims_[3] != other.dims_[2]) {
-            throw std::runtime_error("Inner dimensions mismatch for multiplication");
-        }
-        
-        // Result dimensions: [batch, heads, seq_len1, seq_len2]
-        Tensor result(dims_[0], dims_[1], dims_[2], other.dims_[3]);
-        
-        // Perform batched matrix multiplication for each batch and head
-        for (size_t b = 0; b < dims_[0]; ++b) {
-            for (size_t h = 0; h < dims_[1]; ++h) {
-                // Create temporary matrices for this batch and head
-                Matrix m1(dims_[2], dims_[3]);
-                Matrix m2(other.dims_[2], other.dims_[3]);
-                
-                // Fill matrices
-                for (size_t i = 0; i < dims_[2]; ++i) {
-                    for (size_t j = 0; j < dims_[3]; ++j) {
-                        m1(i, j) = at(b, h, i, j);
+    Tensor result(dims_[0], dims_[1], dims_[2], other.dims_[3]);
+    
+    for (size_t i = 0; i < dims_[0]; ++i) {
+        for (size_t j = 0; j < dims_[1]; ++j) {
+            for (size_t k = 0; k < dims_[2]; ++k) {
+                for (size_t l = 0; l < other.dims_[3]; ++l) {
+                    float sum = 0.0f;
+                    for (size_t m = 0; m < dims_[3]; ++m) {
+                        sum += at(i, j, k, m) * other.at(i, j, m, l);
                     }
-                }
-                
-                for (size_t i = 0; i < other.dims_[2]; ++i) {
-                    for (size_t j = 0; j < other.dims_[3]; ++j) {
-                        m2(i, j) = other.at(b, h, i, j);
-                    }
-                }
-                
-                // Multiply matrices
-                Matrix res = matmul(m1, m2);
-                
-                // Store result
-                for (size_t i = 0; i < res.rows(); ++i) {
-                    for (size_t j = 0; j < res.cols(); ++j) {
-                        result.at(b, h, i, j) = res(i, j);
-                    }
+                    result.at(i, j, k, l) = sum;
                 }
             }
         }
-        
-        return result;
     }
     
-    throw std::runtime_error("Unsupported tensor rank for multiplication");
+    return result;
 }
 
-std::vector<size_t> Tensor::unflatten_index(size_t flat_idx) const {
-    std::vector<size_t> indices(dims_.size());
-    for (int i = dims_.size() - 1; i >= 0; --i) {
-        indices[i] = flat_idx % dims_[i];
-        flat_idx /= dims_[i];
-    }
-    return indices;
-}
-
-size_t Tensor::flatten_index(const std::vector<size_t>& indices) const {
-    if (indices.size() != dims_.size()) {
-        throw std::runtime_error("Invalid number of indices");
-    }
+Matrix Tensor::to_matrix() const {
+    size_t rows = this->rows();
+    size_t cols = this->cols();
     
-    size_t flat_idx = 0;
-    size_t multiplier = 1;
-    
-    for (int i = dims_.size() - 1; i >= 0; --i) {
-        if (indices[i] >= dims_[i]) {
-            throw std::runtime_error("Index out of bounds");
+    Matrix result(rows, cols);
+    for (size_t i = 0; i < rows; ++i) {
+        for (size_t j = 0; j < cols; ++j) {
+            result(i, j) = data_[i * cols + j];
         }
-        flat_idx += indices[i] * multiplier;
-        multiplier *= dims_[i];
-    }
-    return flat_idx;
-}
-
-size_t Tensor::compute_transposed_index(const std::vector<size_t>& indices,
-                                      const std::vector<size_t>& axes) const {
-    std::vector<size_t> transposed_indices(indices.size());
-    for (size_t i = 0; i < indices.size(); ++i) {
-        transposed_indices[i] = indices[axes[i]];
-    }
-    return flatten_index(transposed_indices);
-}
-
-Tensor Tensor::safe_tensormul(const Tensor& A, const Tensor& B) {
-    // Validate tensor ranks match
-    if (A.rank() != B.rank()) {
-        throw std::runtime_error("Tensor ranks must match for multiplication");
     }
     
-    // For 4D tensors [batch, heads, seq, hidden]
-    if (A.rank() == 4) {
-        // Check batch and heads dimensions match
-        if (A.dim(0) != B.dim(0) || A.dim(1) != B.dim(1)) {
-            throw std::runtime_error("Batch or heads dimensions mismatch");
-        }
-        
-        // Check multiplication compatibility
-        if (A.dim(3) != B.dim(2)) {
-            throw std::runtime_error("Inner dimensions mismatch");
-        }
-        
-        return A.tensormul(B);
+    return result;
+}
+
+Tensor Tensor::safe_tensormul(const Tensor& a, const Tensor& b) {
+    try {
+        return a.tensormul(b);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("Safe tensor multiplication failed: ") + e.what());
     }
-    
-    throw std::runtime_error("Unsupported tensor rank for safe_tensormul");
-} 
+}

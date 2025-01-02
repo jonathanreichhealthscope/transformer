@@ -675,35 +675,75 @@ Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t batch_
     return reshaped;
 }
 
-Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, 
-                                          const Matrix& V, const AttentionMask& mask, size_t batch_size, size_t num_heads, size_t seq_len, size_t head_size) {
+Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
+                                           const Matrix& V, const AttentionMask& mask) {
+    // Validate input dimensions
+    if (Q.cols() != K.cols() || K.cols() != V.cols()) {
+        throw std::runtime_error("Q, K, V dimension mismatch");
+    }
     
-    // Reshape inputs to 4D tensors
-    Tensor Q_4d = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
-    Tensor K_4d = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
-    Tensor V_4d = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
+    // Split heads
+    size_t batch_size = Q.rows();
+    size_t seq_len = Q.rows();
+    size_t head_size = Q.cols() / num_heads;
     
-    // Compute attention scores using tensor operations
-    Tensor scores = Q_4d.tensormul(K_4d.transpose({0, 1, 3, 2}));  // [batch, heads, seq, seq]
+    // Debug dimensions
+    std::cout << "Attention dimensions:" << std::endl;
+    std::cout << "batch_size: " << batch_size << ", seq_len: " << seq_len 
+              << ", head_size: " << head_size << ", num_heads: " << num_heads << std::endl;
     
-    // Scale attention scores
-    float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
-    for (size_t i = 0; i < scores.size(); ++i) {
-        scores.data()[i] *= scale;
+    // Reshape Q, K, V to [batch_size, num_heads, seq_len, head_dim]
+    std::cout << "Q.shape(): " << Q.shape() << std::endl;
+    std::cout << "K.shape(): " << K.shape() << std::endl;
+    std::cout << "V.shape(): " << V.shape() << std::endl;
+    Tensor Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
+    Tensor K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
+    Tensor V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
+    std::cout << "exiting reshape_for_attention" << std::endl;
+    
+    // Compute attention scores with bounds checking
+    Tensor scores = Tensor::safe_tensormul(Q_reshaped, K_reshaped.transpose({0, 1, 3, 2}));
+    std::cout << "exiting safe_matmul" << std::endl;
+    
+    // Scale attention scores with temperature scaling
+    const float temperature = std::sqrt(static_cast<float>(head_size));
+    const float scale = 1.0f / temperature;
+    const float MAX_SCORE = 10.0f;
+    
+    for(size_t i = 0; i < scores.size(); i++) {
+        float val = scores.data()[i];
+        if (std::abs(val) > 1e-6f) {  // Only scale non-zero values
+            val *= scale;
+            scores.data()[i] = std::clamp(val, -MAX_SCORE, MAX_SCORE);
+        }
     }
     
     // Apply mask if provided
     if (!mask.mask.empty()) {
-        // ... (mask application code)
+        Matrix expanded_mask(scores.rows(), scores.cols());
+        for (size_t h = 0; h < num_heads; h++) {
+            for (size_t i = 0; i < mask.mask.rows(); i++) {
+                for (size_t j = 0; j < mask.mask.cols(); j++) {
+                    expanded_mask(h * mask.mask.rows() + i, j) = mask.mask(i, j);
+                }
+            }
+        }
+        apply_mask(scores, expanded_mask);
     }
     
     // Apply softmax
-    Matrix scores_matrix = scores.to_matrix();
-    apply_stable_softmax(scores_matrix);
+    apply_stable_softmax(scores);
     
     // Compute weighted sum
-    Tensor attention = Tensor(scores_matrix, {batch_size, num_heads, seq_len, seq_len})
-                          .tensormul(V_4d);
-    // Reshape back to matrix
-    Matrix result = reshape_from_attention(attention, batch_size, seq_len, head_size * num_heads);
+    Matrix attention = safe_matmul(scores, V_reshaped);
+    
+    // Add small epsilon to prevent exactly zero gradients
+    const float EPSILON = 1e-6f;
+    for(size_t i = 0; i < attention.size(); i++) {
+        if (std::abs(attention.data()[i]) < EPSILON) {
+            attention.data()[i] = attention.data()[i] < 0 ? -EPSILON : EPSILON;
+        }
+    }
+    
+    return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
 }

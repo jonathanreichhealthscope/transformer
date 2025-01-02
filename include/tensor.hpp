@@ -1,57 +1,41 @@
 #pragma once
-#include "matrix.hpp"
-#include <vector>
-#include <stdexcept>
 
-class Tensor : public Matrix {
-private:
-    std::vector<size_t> dims_;  // Stores dimensions (e.g., [batch, heads, seq_len, hidden])
-    
+#include <vector>
+#include "matrix.hpp"
+
+class Tensor {
 public:
-    // Constructors
-    Tensor() = default;
+    Tensor(unsigned long d1, unsigned long d2, unsigned long d3, unsigned long d4);
+    Tensor(const Matrix& mat, const std::vector<unsigned long>& shape);
     
-    // Constructor for 3D tensor
-    Tensor(size_t dim1, size_t dim2, size_t dim3);
+    // Matrix-like interface
+    size_t rows() const { return dims_[0] * dims_[1] * dims_[2]; }
+    size_t cols() const { return dims_[3]; }
+    float& operator()(size_t i, size_t j) { return data_[i * cols() + j]; }
+    float operator()(size_t i, size_t j) const { return data_[i * cols() + j]; }
     
-    // Constructor for 4D tensor
-    Tensor(size_t dim1, size_t dim2, size_t dim3, size_t dim4);
+    // Tensor-specific access
+    float& at(unsigned long i, unsigned long j, unsigned long k, unsigned long l);
+    float at(unsigned long i, unsigned long j, unsigned long k, unsigned long l) const;
     
-    // Constructor from Matrix with reshape
-    explicit Tensor(const Matrix& matrix, const std::vector<size_t>& dimensions);
+    // Data access
+    std::vector<float>& data() { return data_; }
+    const std::vector<float>& data() const { return data_; }
+    size_t size() const { return data_.size(); }
     
-    // Dimension access
-    size_t dim(size_t index) const;
-    const std::vector<size_t>& get_dims() const { return dims_; }
-    size_t rank() const { return dims_.size(); }
-    
-    // Reshape methods
-    void reshape(const std::vector<size_t>& new_dims);
-    
-    // Access methods (for 3D and 4D)
-    float& at(size_t i, size_t j, size_t k);
-    float& at(size_t i, size_t j, size_t k, size_t l);
-    const float& at(size_t i, size_t j, size_t k) const;
-    const float& at(size_t i, size_t j, size_t k, size_t l) const;
-    
-    // Conversion methods
-    Matrix to_matrix() const;  // Flattens to 2D
-    static Tensor from_matrix(const Matrix& matrix, const std::vector<size_t>& dims);
-    
-    // Basic operations
-    Tensor transpose(const std::vector<size_t>& axes) const;
+    // Operations
+    Tensor transpose(const std::vector<unsigned long>& perm) const;
     Tensor tensormul(const Tensor& other) const;
+    Matrix to_matrix() const;
     
-    // Static methods
-    static Tensor safe_tensormul(const Tensor& A, const Tensor& B);
+    // Conversion operators
+    operator Matrix() const { return to_matrix(); }
     
-    // Helper method to compute transposed index
-    size_t compute_transposed_index(const std::vector<size_t>& indices,
-                                  const std::vector<size_t>& axes) const;
+    static Tensor safe_tensormul(const Tensor& a, const Tensor& b);
     
-    // Helper method to convert flat index to multi-dimensional indices
-    std::vector<size_t> unflatten_index(size_t flat_idx) const;
-    
-    // Helper method to convert multi-dimensional indices to flat index
-    size_t flatten_index(const std::vector<size_t>& indices) const;
+    const std::vector<unsigned long>& dims() const { return dims_; }
+
+private:
+    std::vector<unsigned long> dims_;
+    std::vector<float> data_;
 }; 

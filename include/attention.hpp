@@ -103,85 +103,7 @@ Tensor compute_attention(const Matrix& Q, const Matrix& K,
 
   // Add compute_attention declaration
   Matrix compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V, 
-                         const AttentionMask& mask) {
-       // Validate input dimensions
-       if (Q.cols() != K.cols() || K.cols() != V.cols()) {
-           throw std::runtime_error("Q, K, V dimension mismatch");
-       }
-       
-       // Split heads
-       size_t batch_size = Q.rows();
-       size_t seq_len = Q.rows();
-       size_t head_size = Q.cols() / num_heads;
-       
-       // Debug dimensions
-       std::cout << "Attention dimensions:" << std::endl;
-       std::cout << "batch_size: " << batch_size << ", seq_len: " << seq_len 
-                 << ", head_size: " << head_size << ", num_heads: " << num_heads << std::endl;
-       
-       // Reshape Q, K, V to [batch_size, num_heads, seq_len, head_dim]
-       std::cout << "Q.shape(): " << Q.shape() << std::endl;
-       std::cout << "K.shape(): " << K.shape() << std::endl;
-       std::cout << "V.shape(): " << V.shape() << std::endl;
-       Tensor Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
-       Tensor K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
-       Tensor V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
-       std::cout << "exiting reshape_for_attention" << std::endl;
-       // Compute attention scores with bounds checking
-       Tensor scores = Tensor::safe_tensormul(Q_reshaped, K_reshaped.transpose({0, 1, 3, 2}));
-       std::cout << "exiting safe_matmul" << std::endl;
-       // Scale attention scores with temperature scaling
-       const float temperature = std::sqrt(static_cast<float>(head_size));
-       const float scale = 1.0f / temperature;
-       const float MAX_SCORE = 10.0f;
-       std::cout << "exiting temperature scaling" << std::endl;
-       std::cout << "entering for loop" << std::endl;
-       for(size_t i = 0; i < scores.size(); i++) {
-           // Apply scaling with better numerical stability
-           float val = scores.data()[i];
-           if (std::abs(val) > 1e-6f) {  // Only scale non-zero values
-               val *= scale;
-               scores.data()[i] = std::clamp(val, -MAX_SCORE, MAX_SCORE);
-           }
-       }
-       std::cout << "exiting for loop" << std::endl;
-       // Apply mask if provided
-       if (!mask.mask.empty()) {
-           // Expand mask for all heads
-           Matrix expanded_mask(scores.rows(), scores.cols());
-           for (size_t h = 0; h < num_heads; h++) {
-               for (size_t i = 0; i < mask.mask.rows(); i++) {
-                   for (size_t j = 0; j < mask.mask.cols(); j++) {
-                       expanded_mask(h * mask.mask.rows() + i, j) = mask.mask(i, j);
-                   }
-               }
-           }
-           apply_mask(scores, expanded_mask);
-           std::cout << "exiting apply_mask" << std::endl;
-       }
-       
-       std::cout << "Attention scores shape after mask: " 
-                 << scores.rows() << "x" << scores.cols() << std::endl;
-       std::cout << "Applying softmax" << std::endl;
-       // Apply softmax with improved numerical stability
-       apply_stable_softmax(scores);
-       std::cout << "exiting apply_stable_softmax" << std::endl;
-       std::cout << "entering safe_matmul" << std::endl;
-       // Compute weighted sum with scaling
-       Matrix attention = safe_matmul(scores, V_reshaped);
-       std::cout << "exiting safe_matmul" << std::endl;
-       // Add small epsilon to prevent exactly zero gradients
-       const float EPSILON = 1e-6f;
-       for(size_t i = 0; i < attention.size(); i++) {
-           if (std::abs(attention.data()[i]) < EPSILON) {
-               attention.data()[i] = attention.data()[i] < 0 ? -EPSILON : EPSILON;
-           }
-       }
-       std::cout << "exiting for loop" << std::endl;
-       std::cout << "entering reshape_from_attention" << std::endl;
-
-       return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
-   }
+                         const AttentionMask& mask);
 
    // Helper method for safe matrix multiplication
    Matrix safe_matmul(const Matrix& A, const Matrix& B) {
@@ -289,6 +211,21 @@ Tensor compute_attention(const Matrix& Q, const Matrix& K,
                }
            }
        }
+   }
+
+   // Add these new methods to handle Tensors directly
+   void apply_mask(Tensor& scores, const Matrix& mask) const {
+       Matrix scores_mat = scores.to_matrix();
+       apply_mask(scores_mat, mask);
+       // Convert back to tensor with same dimensions
+       scores = Tensor(scores_mat, {scores.dims()[0], scores.dims()[1], scores.dims()[2], scores.dims()[3]});
+   }
+
+   void apply_stable_softmax(Tensor& scores) const {
+       Matrix scores_mat = scores.to_matrix();
+       apply_stable_softmax(scores_mat);
+       // Convert back to tensor with same dimensions
+       scores = Tensor(scores_mat, {scores.dims()[0], scores.dims()[1], scores.dims()[2], scores.dims()[3]});
    }
 
 public:
