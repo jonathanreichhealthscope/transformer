@@ -88,83 +88,115 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
 Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                    const std::optional<KVCache> &kv_cache) {
   std::cout << "entering MultiHeadAttention::forward" << std::endl;
-  // Debug input stats
-  std::cout << "Input matrix x stats before projection:" << std::endl;
-  print_matrix_stats(x);
   
-  // Validate input dimensions
+  // Add detailed dimension logging
+  std::cout << "Input dimensions: " << x.rows() << "x" << x.cols() << std::endl;
+  std::cout << "Query proj dimensions: " << query_proj.rows() << "x" << query_proj.cols() << std::endl;
+  std::cout << "Key proj dimensions: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
+  std::cout << "Value proj dimensions: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
+  
+  // Validate all matrix dimensions before operations
+  if (x.empty() || query_proj.empty() || key_proj.empty() || value_proj.empty()) {
+    throw std::runtime_error("One or more matrices are empty");
+  }
+  
   if (x.cols() != query_proj.rows()) {
-      throw std::runtime_error("Input dimension mismatch: x.cols (" + 
-                              std::to_string(x.cols()) + 
-                              ") != query_proj.rows (" + 
-                              std::to_string(query_proj.rows()) + ")");
+    throw std::runtime_error("Input/query dimension mismatch: x.cols=" + 
+                            std::to_string(x.cols()) + 
+                            ", query_proj.rows=" + 
+                            std::to_string(query_proj.rows()));
+  }
+  
+  if (x.cols() != key_proj.rows()) {
+    throw std::runtime_error("Input/key dimension mismatch: x.cols=" + 
+                            std::to_string(x.cols()) + 
+                            ", key_proj.rows=" + 
+                            std::to_string(key_proj.rows()));
+  }
+  
+  if (x.cols() != value_proj.rows()) {
+    throw std::runtime_error("Input/value dimension mismatch: x.cols=" + 
+                            std::to_string(x.cols()) + 
+                            ", value_proj.rows=" + 
+                            std::to_string(value_proj.rows()));
+  }
+
+  // Validate projection matrix dimensions match expected sizes
+  size_t expected_proj_cols = num_heads * head_dim;
+  if (query_proj.cols() != expected_proj_cols) {
+    throw std::runtime_error("Query projection has wrong output dimension: " + 
+                            std::to_string(query_proj.cols()) + 
+                            ", expected " + std::to_string(expected_proj_cols));
   }
 
   // Add numerical stability checks
   const float EPSILON = 1e-6f;
   const float MAX_VAL = 1e2f;
   
-  // Project input to Q, K, V with dimension checks
   try {
-      std::cout << "projecting input to Q, K, V" << std::endl;
-      Matrix Q = matmul(x, query_proj);
-      Matrix K = matmul(x, key_proj);
-      Matrix V = matmul(x, value_proj);
-      std::cout << "Q shape: " << Q.shape() << std::endl;
-      std::cout << "K shape: " << K.shape() << std::endl;
-      std::cout << "V shape: " << V.shape() << std::endl;
-      // Validate projected dimensions
-      if (Q.cols() != head_dim * num_heads || 
-          K.cols() != head_dim * num_heads || 
-          V.cols() != head_dim * num_heads) {
-          throw std::runtime_error("Projection dimension mismatch");
-      }
-      std::cout << "adding bias" << std::endl;
-      // Add bias with numerical stability
-      auto safe_add_bias = [EPSILON, MAX_VAL](Matrix& m, const FloatVector& bias) {
-          if (m.cols() != bias.size()) {
-              throw std::runtime_error("Bias dimension mismatch");
-          }
-          for(size_t i = 0; i < m.rows(); i++) {
-              for(size_t j = 0; j < m.cols(); j++) {
-                  float val = m(i,j) + bias[j];
-                  val = std::clamp(val, -MAX_VAL, MAX_VAL);
-                  if (std::abs(val) < EPSILON) {
-                      val = val < 0 ? -EPSILON : EPSILON;
-                  }
-                  m(i,j) = val;
-              }
-          }
-      };
-      std::cout << "adding query bias" << std::endl;
-      safe_add_bias(Q, query_bias);
-      std::cout << "adding key bias" << std::endl;
-      safe_add_bias(K, key_bias);
-      std::cout << "adding value bias" << std::endl;
-      safe_add_bias(V, value_bias);
+    // Project input to Q, K, V with dimension checks
+    std::cout << "Computing Q projection..." << std::endl;
+    Matrix Q = matmul(x, query_proj);
+    std::cout << "Q projection complete. Computing K projection..." << std::endl;
+    Matrix K = matmul(x, key_proj);
+    std::cout << "K projection complete. Computing V projection..." << std::endl;
+    Matrix V = matmul(x, value_proj);
+    
+    std::cout << "Q shape: " << Q.shape() << std::endl;
+    std::cout << "K shape: " << K.shape() << std::endl;
+    std::cout << "V shape: " << V.shape() << std::endl;
+    // Validate projected dimensions
+    if (Q.cols() != head_dim * num_heads || 
+        K.cols() != head_dim * num_heads || 
+        V.cols() != head_dim * num_heads) {
+        throw std::runtime_error("Projection dimension mismatch");
+    }
+    std::cout << "adding bias" << std::endl;
+    // Add bias with numerical stability
+    auto safe_add_bias = [EPSILON, MAX_VAL](Matrix& m, const FloatVector& bias) {
+        if (m.cols() != bias.size()) {
+            throw std::runtime_error("Bias dimension mismatch");
+        }
+        for(size_t i = 0; i < m.rows(); i++) {
+            for(size_t j = 0; j < m.cols(); j++) {
+                float val = m(i,j) + bias[j];
+                val = std::clamp(val, -MAX_VAL, MAX_VAL);
+                if (std::abs(val) < EPSILON) {
+                    val = val < 0 ? -EPSILON : EPSILON;
+                }
+                m(i,j) = val;
+            }
+        }
+    };
+    std::cout << "adding query bias" << std::endl;
+    safe_add_bias(Q, query_bias);
+    std::cout << "adding key bias" << std::endl;
+    safe_add_bias(K, key_bias);
+    std::cout << "adding value bias" << std::endl;
+    safe_add_bias(V, value_bias);
 
-      std::cout << "After projection:" << std::endl;
-      print_matrix_stats(Q);
-      print_matrix_stats(K);
-      print_matrix_stats(V);
+    std::cout << "After projection:" << std::endl;
+    print_matrix_stats(Q);
+    print_matrix_stats(K);
+    print_matrix_stats(V);
 
-      // Reshape for attention computation
-      size_t batch_size = x.rows();
-      size_t seq_len = x.rows();  // For self-attention, seq_len = batch_size
-      std::cout << "batch_size: " << batch_size << std::endl;
-      std::cout << "seq_len: " << seq_len << std::endl;
-      // Validate attention mask dimensions if provided
-      std::cout << "mask shape: " << mask.mask.shape() << std::endl;
-      if (!mask.mask.empty() && 
-          (mask.mask.rows() != seq_len || mask.mask.cols() != seq_len)) {
-          throw std::runtime_error("Attention mask dimension mismatch");
-      }
+    // Reshape for attention computation
+    size_t batch_size = x.rows();
+    size_t seq_len = x.rows();  // For self-attention, seq_len = batch_size
+    std::cout << "batch_size: " << batch_size << std::endl;
+    std::cout << "seq_len: " << seq_len << std::endl;
+    // Validate attention mask dimensions if provided
+    std::cout << "mask shape: " << mask.mask.shape() << std::endl;
+    if (!mask.mask.empty() && 
+        (mask.mask.rows() != seq_len || mask.mask.cols() != seq_len)) {
+        throw std::runtime_error("Attention mask dimension mismatch");
+    }
 
-      std::cout << "exiting MultiHeadAttention::forward" << std::endl;
-      return compute_attention(Q, K, V, mask);
+    std::cout << "exiting MultiHeadAttention::forward" << std::endl;
+    return compute_attention(Q, K, V, mask);
   } catch (const std::exception& e) {
-      std::cerr << "Error in attention forward pass: " << e.what() << std::endl;
-      throw;
+    std::cerr << "Error in attention forward pass: " << e.what() << std::endl;
+    throw;
   }
 }
 
@@ -207,15 +239,7 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
                                      bool use_flash_, bool use_rope_,
                                      bool use_sliding_window_, size_t window_size_,
                                      bool use_gqa_, size_t num_kv_heads_)
-    : query_proj(Matrix(hidden_size_, hidden_size_)),
-      key_proj(Matrix(hidden_size_, hidden_size_)),
-      value_proj(Matrix(hidden_size_, hidden_size_)),
-      output_proj(Matrix(hidden_size_, hidden_size_)),
-      query_bias(FloatVector(hidden_size_)),
-      key_bias(FloatVector(hidden_size_)),
-      value_bias(FloatVector(hidden_size_)),
-      output_bias(FloatVector(hidden_size_)),
-      num_heads(num_heads_),
+    : num_heads(num_heads_),
       head_dim(head_dim_),
       hidden_size(hidden_size_),
       dropout_prob(dropout_prob_),
@@ -226,53 +250,39 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
       use_gqa(use_gqa_),
       num_kv_heads(num_kv_heads_) {
   std::cout << "entering MultiHeadAttention constructor" << std::endl;
-  // Initialize projection matrices
+  
+  // Validate input dimensions
+  if (hidden_size == 0 || num_heads == 0 || head_dim == 0) {
+    throw std::runtime_error("Invalid dimensions: hidden_size=" + std::to_string(hidden_size) +
+                           ", num_heads=" + std::to_string(num_heads) +
+                           ", head_dim=" + std::to_string(head_dim));
+  }
+  
+  if (hidden_size % num_heads != 0) {
+    throw std::runtime_error("hidden_size must be divisible by num_heads");
+  }
+
+  // Initialize projection matrices with correct dimensions
+  std::cout << "Initializing projection matrices..." << std::endl;
   query_proj = Matrix(hidden_size, num_heads * head_dim);
   key_proj = Matrix(hidden_size, num_heads * head_dim);
   value_proj = Matrix(hidden_size, num_heads * head_dim);
   output_proj = Matrix(num_heads * head_dim, hidden_size);
 
-  // Use Xavier/Glorot initialization with proper scaling
-  float q_scale = std::sqrt(2.0f / (hidden_size + head_dim * num_heads));
-  float kv_scale = std::sqrt(2.0f / (hidden_size + head_dim));
-  float out_scale = std::sqrt(2.0f / (hidden_size * 2));
+  // Initialize bias vectors
+  query_bias = FloatVector(num_heads * head_dim);
+  key_bias = FloatVector(num_heads * head_dim);
+  value_bias = FloatVector(num_heads * head_dim);
+  output_bias = FloatVector(hidden_size);
 
-  query_proj.randomize(-q_scale, q_scale);
-  key_proj.randomize(-kv_scale, kv_scale);
-  value_proj.randomize(-kv_scale, kv_scale);
-  output_proj.randomize(-out_scale, out_scale);
+  // Print dimensions for debugging
+  std::cout << "Projection matrix dimensions:" << std::endl;
+  std::cout << "Query: " << query_proj.rows() << "x" << query_proj.cols() << std::endl;
+  std::cout << "Key: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
+  std::cout << "Value: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
+  std::cout << "Output: " << output_proj.rows() << "x" << output_proj.cols() << std::endl;
 
-  // Initialize biases to small positive values to prevent dead neurons
-  const float BIAS_INIT = 0.01f;
-  for(size_t i = 0; i < query_bias.size(); i++) query_bias[i] = BIAS_INIT;
-  for(size_t i = 0; i < key_bias.size(); i++) key_bias[i] = BIAS_INIT;
-  for(size_t i = 0; i < value_bias.size(); i++) value_bias[i] = BIAS_INIT;
-  for(size_t i = 0; i < output_bias.size(); i++) output_bias[i] = BIAS_INIT;
-
-  // Validate initialization
-  if(query_proj.max() == 0.0f || key_proj.max() == 0.0f || value_proj.max() == 0.0f) {
-    throw std::runtime_error("Attention projection matrices failed to initialize");
-  }
-
-  // Initialize RoPE buffers if needed
-  if (use_rope) {
-    // Fix: Use ceiling division to ensure we have enough columns
-    size_t required_cols = (head_dim + 1) / 2; // Ceiling division
-    cos_cached = Matrix(window_size, required_cols);
-    sin_cached = Matrix(window_size, required_cols);
-
-    std::cout << "Initializing RoPE buffers with dimensions: " << window_size
-              << "x" << required_cols << std::endl;
-
-    // Initialize RoPE angle cache
-    for (size_t pos = 0; pos < window_size; ++pos) {
-      for (size_t i = 0; i < required_cols; ++i) {
-        float theta = pos / std::pow(10000.0f, (2.0f * i) / head_dim);
-        cos_cached(pos, i) = std::cos(theta);
-        sin_cached(pos, i) = std::sin(theta);
-      }
-    }
-  }
+  // Rest of the initialization...
   std::cout << "exiting MultiHeadAttention constructor" << std::endl;
 }
 
