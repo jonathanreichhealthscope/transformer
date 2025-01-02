@@ -1,9 +1,11 @@
 #include "../include/layernorm.hpp"
 #include <cmath>
+#include <omp.h>
 
 Matrix LayerNorm::forward(const Matrix &x) {
   // Compute mean and variance
   float mean = 0.0f, var = 0.0f;
+  #pragma omp parallel for reduction(+:mean,var)
   for (size_t i = 0; i < x.size(); i++) {
     mean += x.data()[i];
     var += x.data()[i] * x.data()[i];
@@ -15,6 +17,7 @@ Matrix LayerNorm::forward(const Matrix &x) {
   // Store normalized values for backward pass
   normalized = Matrix(x.rows(), x.cols());
   Matrix output(x.rows(), x.cols());
+  #pragma omp parallel for
   for (size_t i = 0; i < x.size(); i++) {
     normalized.data()[i] = (x.data()[i] - mean) / std;
     output.data()[i] = gamma_[i % hidden_size_] * normalized.data()[i] + beta_[i % hidden_size_];
@@ -26,6 +29,7 @@ Matrix LayerNorm::backward(const Matrix &grad, const Matrix &input) {
   Matrix dx(grad.rows(), grad.cols());
   
   // Compute gradients with respect to normalized inputs
+  #pragma omp parallel for
   for (size_t i = 0; i < grad.size(); i++) {
     dx.data()[i] = grad.data()[i] * gamma_[i % hidden_size_];
   }

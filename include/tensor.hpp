@@ -25,6 +25,7 @@ public:
     
     // Operations
     Tensor transpose(const std::vector<unsigned long>& perm) const;
+    Tensor permute(const std::vector<unsigned long>& perm) const;
     Tensor tensormul(const Tensor& other) const;
     Matrix to_matrix() const;
     

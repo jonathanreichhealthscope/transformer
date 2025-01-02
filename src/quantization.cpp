@@ -1,4 +1,5 @@
 #include "../include/quantization.hpp"
+#include <omp.h>
 #ifdef USE_CUDA
 #include "../include/cuda/cuda_check.cuh"
 #include "../include/cuda/cuda_launch.cuh"
@@ -9,14 +10,27 @@ Quantizer::Quantizer(size_t num_bits)
     : bits(num_bits), scale(1.0f), zero_point(0.0f) {}
 
 Matrix Quantizer::quantize(const Matrix &input) {
-  // Find min and max values
+  // Find min and max values using OpenMP reduction
   float min_val = std::numeric_limits<float>::max();
   float max_val = std::numeric_limits<float>::lowest();
 
-  for (size_t i = 0; i < input.rows(); ++i) {
-    for (size_t j = 0; j < input.cols(); ++j) {
-      min_val = std::min(min_val, input(i, j));
-      max_val = std::max(max_val, input(i, j));
+  #pragma omp parallel
+  {
+    float local_min = std::numeric_limits<float>::max();
+    float local_max = std::numeric_limits<float>::lowest();
+
+    #pragma omp for collapse(2) nowait
+    for (size_t i = 0; i < input.rows(); ++i) {
+      for (size_t j = 0; j < input.cols(); ++j) {
+        local_min = std::min(local_min, input(i, j));
+        local_max = std::max(local_max, input(i, j));
+      }
+    }
+
+    #pragma omp critical
+    {
+      min_val = std::min(min_val, local_min);
+      max_val = std::max(max_val, local_max);
     }
   }
 
@@ -25,8 +39,9 @@ Matrix Quantizer::quantize(const Matrix &input) {
   scale = range / ((1 << bits) - 1);
   zero_point = -min_val / scale;
 
-  // Quantize values
+  // Quantize values using OpenMP
   Matrix quantized(input.rows(), input.cols());
+  #pragma omp parallel for collapse(2)
   for (size_t i = 0; i < input.rows(); ++i) {
     for (size_t j = 0; j < input.cols(); ++j) {
       float val = input(i, j);
@@ -40,6 +55,7 @@ Matrix Quantizer::quantize(const Matrix &input) {
 Matrix Quantizer::dequantize(const Matrix &quantized) {
   Matrix result(quantized.rows(), quantized.cols());
 
+  #pragma omp parallel for collapse(2)
   for (size_t i = 0; i < quantized.rows(); ++i) {
     for (size_t j = 0; j < quantized.cols(); ++j) {
       float val = quantized(i, j);

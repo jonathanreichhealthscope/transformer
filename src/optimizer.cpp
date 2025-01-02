@@ -1,5 +1,6 @@
 #include "../include/optimizer.hpp"
 #include <cmath>
+#include <omp.h>
 
 Optimizer::Optimizer(float lr, float b1, float b2, float eps)
     : learning_rate(lr), beta1(b1), beta2(b2), epsilon(eps), t(0) {}
@@ -12,6 +13,7 @@ void Optimizer::add_parameter(Matrix &param) {
 void Optimizer::update(const std::vector<Matrix> &params,
                        const std::vector<Matrix> &grads) {
   t++;
+  #pragma omp parallel for
   for (size_t i = 0; i < parameters.size(); ++i) {
     // Accumulate gradients
     gradients[i] = grads[i];
@@ -19,11 +21,15 @@ void Optimizer::update(const std::vector<Matrix> &params,
 }
 
 void Optimizer::step() {
+  // Single parallel region for all parameter updates
   for (size_t i = 0; i < parameters.size(); ++i) {
-    // Simple SGD update
-    for (size_t j = 0; j < parameters[i]->rows(); ++j) {
-      for (size_t k = 0; k < parameters[i]->cols(); ++k) {
-        (*parameters[i])(j, k) -= learning_rate * gradients[i](j, k);
+    Matrix& param = *parameters[i];
+    const Matrix& grad = gradients[i];
+    
+    #pragma omp parallel for collapse(2)
+    for (size_t j = 0; j < param.rows(); ++j) {
+      for (size_t k = 0; k < param.cols(); ++k) {
+        param(j, k) -= learning_rate * grad(j, k);
       }
     }
   }
