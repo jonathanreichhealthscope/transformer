@@ -45,6 +45,15 @@ const size_t WARMUP_STEPS = 100;
 float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 
+// Add at the top of main.cpp
+struct GradientState {
+    Matrix momentum;
+    Matrix velocity;
+    float beta1 = 0.9f;
+    float beta2 = 0.999f;
+    float epsilon = 1e-8f;
+};
+
 // Helper function to clip gradients
 void clip_gradients(std::vector<Matrix>& gradients, float threshold) {
     float total_norm = 0.0f;
@@ -70,20 +79,28 @@ void clip_gradients(std::vector<Matrix>& gradients, float threshold) {
 
 // Helper function to adjust learning rate
 float adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
-    // Warmup phase
-    if (step < WARMUP_STEPS) {
-        return INITIAL_LEARNING_RATE * (step + 1) / WARMUP_STEPS;
+    // More aggressive warmup
+    const size_t EXTENDED_WARMUP_STEPS = 200;  // Extended warmup period
+    const float WARMUP_FACTOR = 3.0f;  // More aggressive initial learning rate
+    
+    if (step < EXTENDED_WARMUP_STEPS) {
+        float warmup_progress = static_cast<float>(step) / EXTENDED_WARMUP_STEPS;
+        // Cosine warmup schedule
+        float warmup_lr = INITIAL_LEARNING_RATE * WARMUP_FACTOR * 
+                         (1.0f - std::cos(warmup_progress * M_PI / 2.0f));
+        return std::min(warmup_lr, MAX_LEARNING_RATE);
     }
     
-    // Adjust based on loss
+    // More aggressive learning rate adjustment based on loss
     if (loss_ratio > LOSS_SPIKE_THRESHOLD) {
-        current_lr *= 0.5f;  // Halve the learning rate
+        current_lr *= 0.3f;  // More aggressive decrease
     } else if (loss_ratio < 0.8f) {
-        current_lr *= 1.1f;  // Slightly increase learning rate
+        current_lr *= 1.2f;  // More aggressive increase
     }
     
-    // Ensure learning rate stays within bounds
-    return std::clamp(current_lr, MIN_LEARNING_RATE, MAX_LEARNING_RATE);
+    // Add minimum learning rate threshold to prevent vanishing updates
+    const float MIN_EFFECTIVE_LR = 1e-5f;
+    return std::clamp(current_lr, MIN_EFFECTIVE_LR, MAX_LEARNING_RATE);
 }
 
 // Helper function to validate input tokens
@@ -105,34 +122,39 @@ bool validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size, 
 
 // Helper function to compute loss with improved numerical stability
 float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
-    // Validate dimensions
-    if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
-        std::cout << "Dimension mismatch in compute_batch_loss:" << std::endl;
-        std::cout << "logits: " << logits.rows() << "x" << logits.cols() << std::endl;
-        std::cout << "targets: " << targets.rows() << "x" << targets.cols() << std::endl;
-        throw std::runtime_error("Dimension mismatch in loss computation: logits shape: " + 
-                               std::to_string(logits.rows()) + "x" + std::to_string(logits.cols()) + 
-                               ", targets shape: " + std::to_string(targets.rows()) + "x" + 
-                               std::to_string(targets.cols()));
-    }
-    
     float loss = 0.0f;
-    const float epsilon = 1e-10f;  // Small constant for numerical stability
+    const float epsilon = 1e-10f;
+    
+    // Add temperature scaling to soften the probability distribution
+    const float temperature = 0.8f;  // Adjust between 0.5 and 1.0
     
     for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max logit for numerical stability
+        float max_logit = logits(i, 0);
         for (size_t j = 0; j < logits.cols(); j++) {
-            // Clip predictions to avoid log(0)
-            float pred = std::clamp(logits(i, j), epsilon, 1.0f - epsilon);
-            float target = targets(i, j);
-            
-            // Cross-entropy with improved numerical stability
-            if (target > 0.0f) {
-                loss -= target * std::log(pred);
-            }
+            max_logit = std::max(max_logit, logits(i, j));
+        }
+        
+        // Compute softmax with temperature scaling
+        float sum_exp = 0.0f;
+        std::vector<float> scaled_probs(logits.cols());
+        
+        for (size_t j = 0; j < logits.cols(); j++) {
+            scaled_probs[j] = std::exp((logits(i, j) - max_logit) / temperature);
+            sum_exp += scaled_probs[j];
+        }
+        
+        // Compute cross-entropy with label smoothing
+        const float smoothing_factor = 0.1f;
+        for (size_t j = 0; j < logits.cols(); j++) {
+            float prob = scaled_probs[j] / (sum_exp + epsilon);
+            float smooth_target = targets(i, j) * (1.0f - smoothing_factor) + 
+                                (smoothing_factor / logits.cols());
+            loss -= smooth_target * std::log(prob + epsilon);
         }
     }
     
-    return loss / logits.rows();  // Normalize by batch size
+    return loss / logits.rows();
 }
 
 // Helper function to create target distribution for a batch
