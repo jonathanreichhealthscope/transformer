@@ -53,40 +53,63 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
 
 Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
                                const std::optional<KVCache> &kv_cache) {
-  std::cout << "entering TransformerLayer::forward" << std::endl;
+  std::cout << "=== TransformerLayer::forward START ===" << std::endl;
+  std::cout << "Input matrix shape: " << input.rows() << "x" << input.cols() << std::endl;
   
   // Layer norm before attention
+  std::cout << "Applying attention layer normalization..." << std::endl;
   Matrix normalized = attention_ln->forward(input);
+  std::cout << "Normalized matrix shape: " << normalized.rows() << "x" << normalized.cols() << std::endl;
   
   // Cache the normalized input for backward pass
+  std::cout << "Caching normalized input for layer " << layer_idx << std::endl;
   GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
+  std::cout << "Cached activation successfully" << std::endl;
   
   // Self attention
+  std::cout << "Applying self attention..." << std::endl;
   Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
-  std::cout << "attention output shape: " << attention_output.shape() << std::endl;
+  std::cout << "Attention output shape: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
   
-  // Scale residual connection
+  // Scale residual connection to prevent value explosion
   const float residual_scale = 0.5f;  // Scale factor to prevent value explosion
+  std::cout << "Scaling residual connection with factor " << residual_scale << std::endl;
   for(size_t i = 0; i < attention_output.size(); i++) {
     attention_output.data()[i] *= residual_scale;
   }
+  std::cout << "Scaled attention output" << std::endl;
+  
+  std::cout << "Adding first residual connection..." << std::endl;
   Matrix residual1 = attention_output + input;
+  std::cout << "First residual shape: " << residual1.rows() << "x" << residual1.cols() << std::endl;
   
   // Layer norm before feed forward
+  std::cout << "Applying feed forward layer normalization..." << std::endl;
   Matrix ffn_normalized = ffn_ln->forward(residual1);
+  std::cout << "FFN normalized shape: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
   
   // Cache the normalized input for feed forward backward pass
+  std::cout << "Caching FFN normalized input for layer " << layer_idx << std::endl;
   GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
+  std::cout << "Cached FFN activation successfully" << std::endl;
   
   // Feed forward
+  std::cout << "Applying feed forward network..." << std::endl;
   Matrix ffn_output = feed_forward->forward(ffn_normalized);
+  std::cout << "FFN output shape: " << ffn_output.rows() << "x" << ffn_output.cols() << std::endl;
   
   // Scale second residual connection
+  std::cout << "Scaling second residual connection..." << std::endl;
   for(size_t i = 0; i < ffn_output.size(); i++) {
     ffn_output.data()[i] *= residual_scale;
   }
-  Matrix residual2 = ffn_output + residual1;
+  std::cout << "Scaled FFN output" << std::endl;
   
+  std::cout << "Adding second residual connection..." << std::endl;
+  Matrix residual2 = ffn_output + residual1;
+  std::cout << "Second residual shape: " << residual2.rows() << "x" << residual2.cols() << std::endl;
+  
+  std::cout << "=== TransformerLayer::forward END ===" << std::endl;
   return residual2;
 }
 
@@ -117,118 +140,197 @@ void TransformerLayer::convert_to_fp16() {
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
-  std::cout << "entering Transformer constructor" << std::endl;
+  std::cout << "\n=== Transformer::constructor START ===" << std::endl;
+  
+  // Print configuration
+  std::cout << "Configuration:" << std::endl;
+  std::cout << "- Vocabulary size: " << config.vocab_size << std::endl;
+  std::cout << "- Max sequence length: " << config.max_seq_length << std::endl;
+  std::cout << "- Hidden size: " << config.hidden_size << std::endl;
+  std::cout << "- Number of layers: " << config.num_layers << std::endl;
+  std::cout << "- Number of heads: " << config.num_heads << std::endl;
+  std::cout << "- Head dimension: " << config.head_dim << std::endl;
+  std::cout << "- Intermediate size: " << config.intermediate_size << std::endl;
+  std::cout << "- Dropout probability: " << config.dropout_prob << std::endl;
+  std::cout << "- Use flash attention: " << std::boolalpha << config.use_flash_attention << std::endl;
+  std::cout << "- Use RoPE: " << config.use_rope << std::endl;
+  std::cout << "- Use sliding window: " << config.use_sliding_window << std::endl;
+  std::cout << "- Window size: " << config.window_size << std::endl;
+  std::cout << "- Use GQA: " << config.use_gqa << std::endl;
+  std::cout << "- Number of KV heads: " << config.num_kv_heads << std::endl;
+  std::cout << "- Use CUDA: " << config.use_cuda << std::endl;
+
   if (config.use_cuda) {
+    std::cout << "\nInitializing CUDA..." << std::endl;
     initialize_cuda();
     cuda_initialized = true;
+    std::cout << "CUDA initialization complete" << std::endl;
   }
 
   // Initialize token embedding with memory pooling
-  token_embedding =
-      std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
+  std::cout << "\nInitializing token embedding..." << std::endl;
+  token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
+  std::cout << "Token embedding initialized" << std::endl;
 
   // Initialize positional encoding
-  pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length,
-                                                      config.hidden_size);
+  std::cout << "\nInitializing positional encoding..." << std::endl;
+  pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
+  std::cout << "Positional encoding initialized" << std::endl;
 
   // Initialize transformer layers
+  std::cout << "\nInitializing transformer layers..." << std::endl;
   layers.reserve(config.num_layers);
   for (size_t i = 0; i < config.num_layers; ++i) {
+    std::cout << "Creating layer " << i << "..." << std::endl;
     layers.push_back(TransformerLayer::create(config, i));
+    std::cout << "Layer " << i << " created" << std::endl;
   }
+  std::cout << "All layers initialized" << std::endl;
 
   // Initialize final layer normalization
+  std::cout << "\nInitializing final layer normalization..." << std::endl;
   final_ln = std::make_unique<LayerNorm>(config.hidden_size);
+  std::cout << "Final layer normalization initialized" << std::endl;
 
   // Enable half-precision training if configured
   if (config.use_fp16) {
+    std::cout << "\nConverting to FP16..." << std::endl;
     for (auto &layer : layers) {
       layer->convert_to_fp16();
     }
+    std::cout << "FP16 conversion complete" << std::endl;
   }
-  std::cout << "exiting Transformer constructor" << std::endl;
+
+  std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
-Matrix Transformer::forward(const std::vector<int> &input_tokens,
-                            bool use_cache) {
-  std::cout << "entering Transformer::forward" << std::endl;
-  if (config.use_cuda) {
-    std::cout << "Using CUDA for forward pass" << std::endl;
-    return forward_cuda(input_tokens);
-  }
-  // Use memory pool for embeddings
-  size_t embed_size = input_tokens.size() * config.hidden_size;
-  float *embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
-  Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
-
-  // Get embeddings using cuBLAS for matrix operations
-  token_embedding->forward_cuda(input_tokens, embeddings);
-
-  // Validate embeddings are non-zero
-  bool embeddings_zero = true;
-  for(size_t i = 0; i < std::min(size_t(10), embeddings.size()); i++) {
-    if(embeddings.data()[i] != 0.0f) {
-      embeddings_zero = false;
-      break;
-    }
-  }
-  if(embeddings_zero) {
-    std::cerr << "Error: Initial embeddings are all zero!\n";
-    throw std::runtime_error("Embeddings initialization failed");
-  }
-
-  // Add positional encodings
-  Matrix position_ids(input_tokens.size(), 1);
-  for (size_t i = 0; i < input_tokens.size(); ++i) {
-    position_ids(i, 0) = static_cast<float>(i);
-  }
-  embeddings += pos_encoding->forward(position_ids);
-
-  // Create attention mask if needed
-  AttentionMask mask;
-  if (!use_cache) {
-    mask = AttentionMask::create_causal_mask(input_tokens.size());
-  }
-
-  // Forward pass through layers with gradient checkpointing
-  hidden_states = embeddings;
-  for (size_t i = 0; i < layers.size(); ++i) {
-    // Save activation for gradient checkpointing
-    GradientCheckpoint::save_activation(hidden_states, i);
-
-    // Normalize hidden states between layers to prevent explosion/vanishing
-    float mean = 0.0f, var = 0.0f;
-    for(size_t j = 0; j < hidden_states.size(); j++) {
-      mean += hidden_states.data()[j];
-      var += hidden_states.data()[j] * hidden_states.data()[j];
-    }
-    mean /= hidden_states.size();
-    var = var/hidden_states.size() - mean*mean;
-    float std = sqrt(var + 1e-5f);
+Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache) {
+  std::cout << "\n=== Transformer::forward START ===" << std::endl;
+  
+  try {
+    // Print input information
+    std::cout << "Input:" << std::endl;
+    std::cout << "- Number of tokens: " << input_tokens.size() << std::endl;
+    std::cout << "- Use cache: " << std::boolalpha << use_cache << std::endl;
     
-    for(size_t j = 0; j < hidden_states.size(); j++) {
-      hidden_states.data()[j] = (hidden_states.data()[j] - mean) / std;
+    if (config.use_cuda) {
+      std::cout << "\nUsing CUDA for forward pass" << std::endl;
+      return forward_cuda(input_tokens);
     }
 
-    hidden_states = layers[i]->forward(hidden_states, mask);
+    // Allocate memory for embeddings
+    std::cout << "\nAllocating memory for embeddings..." << std::endl;
+    size_t embed_size = input_tokens.size() * config.hidden_size;
+    float *embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
+    Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
+    std::cout << "Embeddings matrix allocated: " << embeddings.rows() << "x" << embeddings.cols() << std::endl;
 
-    // Convert to FP16 if enabled
-    if (config.use_fp16) {
-      HalfPrecisionTraining::convert_to_fp16(hidden_states);
+    // Get embeddings using cuBLAS for matrix operations
+    std::cout << "\nComputing token embeddings..." << std::endl;
+    token_embedding->forward_cuda(input_tokens, embeddings);
+    std::cout << "Token embeddings computed" << std::endl;
+
+    // Validate embeddings are non-zero
+    std::cout << "\nValidating embeddings..." << std::endl;
+    bool embeddings_zero = true;
+    for(size_t i = 0; i < std::min(size_t(10), embeddings.size()); i++) {
+      if(embeddings.data()[i] != 0.0f) {
+        embeddings_zero = false;
+        break;
+      }
     }
+    if(embeddings_zero) {
+      std::cerr << "Error: Initial embeddings are all zero!\n";
+      throw std::runtime_error("Embeddings initialization failed");
+    }
+    std::cout << "Embeddings validation passed" << std::endl;
+
+    // Add positional encodings
+    std::cout << "\nAdding positional encodings..." << std::endl;
+    Matrix position_ids(input_tokens.size(), 1);
+    for (size_t i = 0; i < input_tokens.size(); ++i) {
+      position_ids(i, 0) = static_cast<float>(i);
+    }
+    embeddings += pos_encoding->forward(position_ids);
+    std::cout << "Positional encodings added" << std::endl;
+
+    // Create attention mask if needed
+    std::cout << "\nCreating attention mask..." << std::endl;
+    AttentionMask mask;
+    if (!use_cache) {
+      mask = AttentionMask::create_causal_mask(input_tokens.size());
+      std::cout << "Created causal mask: " << mask.mask.rows() << "x" << mask.mask.cols() << std::endl;
+    } else {
+      std::cout << "No mask needed (using cache)" << std::endl;
+    }
+
+    // Forward pass through layers with gradient checkpointing
+    std::cout << "\nStarting forward pass through layers..." << std::endl;
+    hidden_states = embeddings;
+    for (size_t i = 0; i < layers.size(); ++i) {
+      std::cout << "\nProcessing layer " << i << "..." << std::endl;
+      
+      // Save activation for gradient checkpointing
+      std::cout << "Saving activation for gradient checkpointing..." << std::endl;
+      GradientCheckpoint::save_activation(hidden_states, i);
+      std::cout << "Activation saved" << std::endl;
+
+      // Normalize hidden states between layers to prevent explosion/vanishing
+      std::cout << "Normalizing hidden states..." << std::endl;
+      float mean = 0.0f, var = 0.0f;
+      for(size_t j = 0; j < hidden_states.size(); j++) {
+        mean += hidden_states.data()[j];
+        var += hidden_states.data()[j] * hidden_states.data()[j];
+      }
+      mean /= hidden_states.size();
+      var = var/hidden_states.size() - mean*mean;
+      float std = sqrt(var + 1e-5f);
+      
+      std::cout << "Hidden states statistics:" << std::endl;
+      std::cout << "- Mean: " << mean << std::endl;
+      std::cout << "- Variance: " << var << std::endl;
+      std::cout << "- Standard deviation: " << std << std::endl;
+      
+      for(size_t j = 0; j < hidden_states.size(); j++) {
+        hidden_states.data()[j] = (hidden_states.data()[j] - mean) / std;
+      }
+      std::cout << "Normalization complete" << std::endl;
+
+      std::cout << "Applying transformer layer..." << std::endl;
+      hidden_states = layers[i]->forward(hidden_states, mask);
+      std::cout << "Layer " << i << " complete" << std::endl;
+
+      // Convert to FP16 if enabled
+      if (config.use_fp16) {
+        std::cout << "Converting to FP16..." << std::endl;
+        HalfPrecisionTraining::convert_to_fp16(hidden_states);
+        std::cout << "FP16 conversion complete" << std::endl;
+      }
+    }
+
+    // Final layer normalization
+    std::cout << "\nApplying final layer normalization..." << std::endl;
+    hidden_states = final_ln->forward(hidden_states);
+    std::cout << "Final normalization complete" << std::endl;
+
+    // Store the hidden states for backward pass
+    std::cout << "\nStoring hidden states for backward pass..." << std::endl;
+    last_hidden_states = hidden_states;
+    std::cout << "Hidden states stored" << std::endl;
+
+    // Free memory pool allocation
+    std::cout << "\nCleaning up memory..." << std::endl;
+    MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
+    std::cout << "Memory cleanup complete" << std::endl;
+
+    std::cout << "=== Transformer::forward END ===\n" << std::endl;
+    return hidden_states;
+    
+  } catch (const std::exception& e) {
+    std::cerr << "\nERROR in transformer forward pass: " << e.what() << std::endl;
+    std::cerr << "=== Transformer::forward FAILED ===\n" << std::endl;
+    throw;
   }
-
-  // Final layer normalization
-  hidden_states = final_ln->forward(hidden_states);
-
-  // Store the hidden states for backward pass
-  last_hidden_states = hidden_states;
-
-  // Free memory pool allocation
-  MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
-
-  std::cout << "exiting Transformer::forward" << std::endl;
-  return hidden_states;
 }
 
 void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
@@ -653,91 +755,137 @@ Matrix TransformerLayer::backward(const Matrix& grad_output,
 Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
                                  bool use_cache) {
 #ifdef USE_CUDA
-  if (!cuda_initialized) {
-    throw std::runtime_error("CUDA not initialized");
-  }
+  std::cout << "\n=== Transformer::forward_cuda START ===" << std::endl;
+  
+  try {
+    // Validate CUDA initialization
+    std::cout << "Validating CUDA initialization..." << std::endl;
+    if (!cuda_initialized) {
+      throw std::runtime_error("CUDA not initialized");
+    }
+    std::cout << "CUDA initialization valid" << std::endl;
 
-  // Pin the embedding table memory to prevent it from being paged out
-  const Matrix &embedding_table = token_embedding->get_embedding_table();
-  float *pinned_embedding;
-  CUDA_CHECK(cudaMallocHost(&pinned_embedding, embedding_table.rows() *
+    // Pin the embedding table memory
+    std::cout << "\nPinning embedding table memory..." << std::endl;
+    const Matrix &embedding_table = token_embedding->get_embedding_table();
+    float *pinned_embedding;
+    CUDA_CHECK(cudaMallocHost(&pinned_embedding, embedding_table.rows() *
                                                    embedding_table.cols() *
                                                    sizeof(float)));
-  std::memcpy(pinned_embedding, embedding_table.data(),
+    std::memcpy(pinned_embedding, embedding_table.data(),
               embedding_table.rows() * embedding_table.cols() * sizeof(float));
+    std::cout << "Embedding table pinned successfully" << std::endl;
 
-  // Allocate memory for embeddings using memory pool
-  std::cout << "Allocating memory for embeddings" << std::endl;
-  size_t embed_size = input_tokens.size() * config.hidden_size;
-  float *embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
-  Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
+    // Allocate memory for embeddings using memory pool
+    std::cout << "\nAllocating memory for embeddings..." << std::endl;
+    size_t embed_size = input_tokens.size() * config.hidden_size;
+    float *embed_data = MemoryPool::allocate_static(embed_size * sizeof(float));
+    Matrix embeddings(input_tokens.size(), config.hidden_size, embed_data);
+    std::cout << "Embeddings matrix allocated: " << embeddings.rows() << "x" << embeddings.cols() << std::endl;
 
-  // Get embeddings using CUDA
-  std::cout << "Getting embeddings using CUDA" << std::endl;
-  token_embedding->forward_cuda(input_tokens, embeddings);
-  // Add positional encodings
-  Matrix position_ids(input_tokens.size(), 1);
-  for (size_t i = 0; i < input_tokens.size(); ++i) {
-    position_ids(i, 0) = static_cast<float>(i);
-  }
-  // Compute positional encodings on GPU
-  std::cout << "Computing positional encodings on GPU" << std::endl;
-  Matrix pos_encodings = pos_encoding->forward(position_ids);
+    // Get embeddings using CUDA
+    std::cout << "\nComputing embeddings using CUDA..." << std::endl;
+    token_embedding->forward_cuda(input_tokens, embeddings);
+    std::cout << "CUDA embeddings computed" << std::endl;
+    
+    // Add positional encodings
+    std::cout << "\nAdding positional encodings..." << std::endl;
+    Matrix position_ids(input_tokens.size(), 1);
+    for (size_t i = 0; i < input_tokens.size(); ++i) {
+      position_ids(i, 0) = static_cast<float>(i);
+    }
+    
+    // Compute positional encodings on GPU
+    std::cout << "Computing positional encodings on GPU..." << std::endl;
+    Matrix pos_encodings = pos_encoding->forward(position_ids);
+    std::cout << "Position encodings shape: " << pos_encodings.rows() << "x" << pos_encodings.cols() << std::endl;
 
-  // Add position encodings using CUDA
-        // Add positional encodings using OpenMP
-  #pragma omp parallel for
-  for (size_t i = 0; i < embeddings.rows(); ++i) {
+    // Add position encodings using OpenMP
+    std::cout << "Adding position encodings using OpenMP..." << std::endl;
+    #pragma omp parallel for
+    for (size_t i = 0; i < embeddings.rows(); ++i) {
       for (size_t j = 0; j < embeddings.cols(); ++j) {
-          embeddings(i, j) += pos_encodings(i % pos_encodings.rows(), j);
+        embeddings(i, j) += pos_encodings(i % pos_encodings.rows(), j);
       }
-  }
-  // Create deep copy for hidden states
-  hidden_states = Matrix(embeddings.rows(), embeddings.cols(), embeddings.data(), false);
-
-  // Create attention mask if needed
-  AttentionMask mask;
-  if (!use_cache) {
-    mask = AttentionMask::create_causal_mask(input_tokens.size());
-  }
-
-  for (size_t i = 0; i < layers.size(); ++i) {
-    // Save activation for gradient checkpointing
-    GradientCheckpoint::save_activation(hidden_states, i);
-
-    // Forward through layer using CUDA
-    hidden_states = layers[i]->forward(hidden_states, mask);
-
-    // Convert to FP16 if enabled
-    if (config.use_fp16) {
-      HalfPrecisionTraining::convert_to_fp16(hidden_states);
     }
-  }
+    std::cout << "Position encodings added" << std::endl;
 
-  // Final layer normalization using CUDA
-  hidden_states = final_ln->forward(hidden_states);
+    // Create deep copy for hidden states
+    std::cout << "\nCreating hidden states copy..." << std::endl;
+    hidden_states = Matrix(embeddings.rows(), embeddings.cols(), embeddings.data(), false);
+    std::cout << "Hidden states initialized" << std::endl;
 
-  // Instead of cublasSgemm, do the projection on CPU
-  Matrix logits(hidden_states.rows(), config.vocab_size);
+    // Create attention mask if needed
+    std::cout << "\nCreating attention mask..." << std::endl;
+    AttentionMask mask;
+    if (!use_cache) {
+      mask = AttentionMask::create_causal_mask(input_tokens.size());
+      std::cout << "Created causal mask: " << mask.mask.rows() << "x" << mask.mask.cols() << std::endl;
+    } else {
+      std::cout << "No mask needed (using cache)" << std::endl;
+    }
 
-// CPU matrix multiplication
-#pragma omp parallel for collapse(2)
-  for (size_t i = 0; i < logits.rows(); i++) {
-    for (size_t j = 0; j < config.vocab_size; j++) {
-      float sum = 0.0f;
-      for (size_t k = 0; k < config.hidden_size; k++) {
-        sum += hidden_states(i, k) * embedding_table(j, k);
+    // Process through transformer layers
+    std::cout << "\nProcessing through transformer layers..." << std::endl;
+    for (size_t i = 0; i < layers.size(); ++i) {
+      std::cout << "\nProcessing layer " << i << "..." << std::endl;
+      
+      // Save activation for gradient checkpointing
+      std::cout << "Saving activation for gradient checkpointing..." << std::endl;
+      GradientCheckpoint::save_activation(hidden_states, i);
+      std::cout << "Activation saved" << std::endl;
+
+      // Forward through layer using CUDA
+      std::cout << "Applying transformer layer..." << std::endl;
+      hidden_states = layers[i]->forward(hidden_states, mask);
+      std::cout << "Layer " << i << " complete" << std::endl;
+
+      // Convert to FP16 if enabled
+      if (config.use_fp16) {
+        std::cout << "Converting to FP16..." << std::endl;
+        HalfPrecisionTraining::convert_to_fp16(hidden_states);
+        std::cout << "FP16 conversion complete" << std::endl;
       }
-      std::cout << "current sum is: " << sum << std::endl;
-      logits(i, j) = sum;
     }
+
+    // Final layer normalization using CUDA
+    std::cout << "\nApplying final layer normalization..." << std::endl;
+    hidden_states = final_ln->forward(hidden_states);
+    std::cout << "Final normalization complete" << std::endl;
+
+    // Project to logits
+    std::cout << "\nComputing logits..." << std::endl;
+    Matrix logits(hidden_states.rows(), config.vocab_size);
+    std::cout << "Logits matrix allocated: " << logits.rows() << "x" << logits.cols() << std::endl;
+
+    // CPU matrix multiplication
+    std::cout << "Computing logits on CPU using OpenMP..." << std::endl;
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < logits.rows(); i++) {
+      for (size_t j = 0; j < config.vocab_size; j++) {
+        float sum = 0.0f;
+        for (size_t k = 0; k < config.hidden_size; k++) {
+          sum += hidden_states(i, k) * embedding_table(j, k);
+        }
+        logits(i, j) = sum;
+      }
+    }
+    std::cout << "Logits computation complete" << std::endl;
+
+    // Make a copy and cleanup
+    std::cout << "\nCleaning up..." << std::endl;
+    Matrix result = logits;
+    MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
+    std::cout << "Memory cleanup complete" << std::endl;
+
+    std::cout << "=== Transformer::forward_cuda END ===\n" << std::endl;
+    return result;
+    
+  } catch (const std::exception& e) {
+    std::cerr << "\nERROR in transformer CUDA forward pass: " << e.what() << std::endl;
+    std::cerr << "=== Transformer::forward_cuda FAILED ===\n" << std::endl;
+    throw;
   }
-
-  // Make a copy and cleanup
-  Matrix result = logits;
-  MemoryPool::deallocate_static(embed_data, embed_size * sizeof(float));
-
-  return result;
 #else
   throw std::runtime_error("CUDA support not enabled");
 #endif
@@ -820,39 +968,75 @@ Transformer &Transformer::operator=(const Transformer &other) {
 
 void Transformer::backward(const Matrix &grad_output,
                          const std::vector<int> &input_tokens) {
-  // Verify dimensions
-  if (grad_output.cols() != config.hidden_size) {
-    throw std::runtime_error("Gradient output dimension (" +
+  std::cout << "\n=== Transformer::backward START ===" << std::endl;
+  
+  try {
+    // Print input information
+    std::cout << "Input:" << std::endl;
+    std::cout << "- Gradient output shape: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+    std::cout << "- Number of input tokens: " << input_tokens.size() << std::endl;
+    
+    // Verify dimensions
+    std::cout << "\nVerifying dimensions..." << std::endl;
+    if (grad_output.cols() != config.hidden_size) {
+      throw std::runtime_error("Gradient output dimension (" +
                              std::to_string(grad_output.cols()) +
                              ") must match hidden size (" +
                              std::to_string(config.hidden_size) + ")");
-  }
-
-  // Backpropagate through final layer norm
-  Matrix grad = final_ln->backward(grad_output, hidden_states);
-  std::cout << "outside of final ln with grad shape: " << grad.shape()
-            << std::endl;
-  // Backpropagate through transformer layers in reverse order
-  for (int i = layers.size() - 1; i >= 0; --i) {
-    Matrix cached_activation = GradientCheckpoint::get_activation(i);
-    // Verify cached activation dimensions
-    if (cached_activation.cols() != config.hidden_size) {
-      throw std::runtime_error("Cached activation dimension mismatch");
     }
-    std::cout << "layer " << i << " backward" << std::endl;
-    grad = layers[i]->backward(grad, cached_activation);
-  }
+    std::cout << "Dimension verification passed" << std::endl;
 
-  // Backpropagate through embeddings
-  if (grad.rows() != input_tokens.size()) {
-    throw std::runtime_error("Gradient rows (" + std::to_string(grad.rows()) +
+    // Backpropagate through final layer norm
+    std::cout << "\nBackpropagating through final layer norm..." << std::endl;
+    Matrix grad = final_ln->backward(grad_output, hidden_states);
+    std::cout << "Final layer norm gradients:" << std::endl;
+    std::cout << "- Shape: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "- Range: [" << grad.min() << ", " << grad.max() << "]" << std::endl;
+    
+    // Backpropagate through transformer layers in reverse order
+    std::cout << "\nBackpropagating through transformer layers..." << std::endl;
+    for (int i = layers.size() - 1; i >= 0; --i) {
+      std::cout << "\nProcessing layer " << i << "..." << std::endl;
+      
+      // Get cached activation
+      std::cout << "Retrieving cached activation..." << std::endl;
+      Matrix cached_activation = GradientCheckpoint::get_activation(i);
+      std::cout << "Cached activation shape: " << cached_activation.rows() << "x" << cached_activation.cols() << std::endl;
+      
+      // Verify cached activation dimensions
+      if (cached_activation.cols() != config.hidden_size) {
+        throw std::runtime_error("Cached activation dimension mismatch");
+      }
+      
+      // Process layer gradients
+      std::cout << "Computing layer gradients..." << std::endl;
+      grad = layers[i]->backward(grad, cached_activation);
+      std::cout << "Layer " << i << " gradients:" << std::endl;
+      std::cout << "- Shape: " << grad.rows() << "x" << grad.cols() << std::endl;
+      std::cout << "- Range: [" << grad.min() << ", " << grad.max() << "]" << std::endl;
+    }
+
+    // Validate gradient dimensions for embeddings
+    std::cout << "\nValidating gradient dimensions for embeddings..." << std::endl;
+    if (grad.rows() != input_tokens.size()) {
+      throw std::runtime_error("Gradient rows (" + std::to_string(grad.rows()) +
                              ") must match sequence length (" +
                              std::to_string(input_tokens.size()) + ")");
-  }
+    }
+    std::cout << "Gradient dimensions valid" << std::endl;
 
-  // Update token embeddings
-  token_embedding->backward(grad, input_tokens);
-  std::cout << "exiting Transformer::backward" << std::endl;
+    // Update token embeddings
+    std::cout << "\nUpdating token embeddings..." << std::endl;
+    token_embedding->backward(grad, input_tokens);
+    std::cout << "Token embeddings updated" << std::endl;
+
+    std::cout << "=== Transformer::backward END ===\n" << std::endl;
+    
+  } catch (const std::exception& e) {
+    std::cerr << "\nERROR in transformer backward pass: " << e.what() << std::endl;
+    std::cerr << "=== Transformer::backward FAILED ===\n" << std::endl;
+    throw;
+  }
 }
 
 // Add member to store last hidden states for backward pass
