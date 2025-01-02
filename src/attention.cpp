@@ -741,8 +741,7 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
         
         // Create reshaped matrix
         std::cout << "\nCreating reshaped matrix..." << std::endl;
-        //Matrix reshaped(batch_size * num_heads, seq_length * head_size, 0.0f);
-        Matrix reshaped(batch_size * seq_length, head_size);
+        Matrix reshaped(batch_size * head_size * seq_length, num_heads, 0.0f);
         std::cout << "Reshaped matrix created: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
         
         // Verify reshaped matrix
@@ -761,7 +760,7 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
         
         // Perform actual reshaping
         std::cout << "Performing reshape operation..." << std::endl;
-        // Original shape: [batch_size, seq_length, num_heads * head_size]
+        // Original shape: [batch_size * seq_length, num_heads * head_size]
         // Target shape: [batch_size * num_heads, seq_length * head_size]
         
         // For each batch
@@ -773,7 +772,7 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
                     // For each element in head
                     for (size_t d = 0; d < head_size; d++) {
                         // Calculate source and target indices
-                        size_t src_idx = b * (seq_length * num_heads * head_size) + // batch offset
+                        size_t src_idx = b * seq_length * (num_heads * head_size) + // batch offset
                                        s * (num_heads * head_size) +                // sequence offset
                                        h * head_size +                              // head offset
                                        d;                                           // element offset
