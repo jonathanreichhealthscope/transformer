@@ -105,8 +105,15 @@ bool validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size, 
 
 // Helper function to compute loss with improved numerical stability
 float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
+    // Validate dimensions
     if (logits.rows() != targets.rows() || logits.cols() != targets.cols()) {
-        throw std::runtime_error("Dimension mismatch in loss computation");
+        std::cout << "Dimension mismatch in compute_batch_loss:" << std::endl;
+        std::cout << "logits: " << logits.rows() << "x" << logits.cols() << std::endl;
+        std::cout << "targets: " << targets.rows() << "x" << targets.cols() << std::endl;
+        throw std::runtime_error("Dimension mismatch in loss computation: logits shape: " + 
+                               std::to_string(logits.rows()) + "x" + std::to_string(logits.cols()) + 
+                               ", targets shape: " + std::to_string(targets.rows()) + "x" + 
+                               std::to_string(targets.cols()));
     }
     
     float loss = 0.0f;
@@ -444,9 +451,11 @@ int main(int argc, char *argv[]) {
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
                 
                 // Extract corresponding row from target distribution
-                Matrix target_slice(1, target_distribution.cols());
+                Matrix target_slice(logits.rows(), target_distribution.cols());
                 for (size_t j = 0; j < target_distribution.cols(); j++) {
-                    target_slice(0, j) = target_distribution(i, j);
+                    for (size_t r = 0; r < logits.rows(); r++) {
+                        target_slice(r, j) = target_distribution(i, j);
+                    }
                 }
                 
                 // Compute loss and gradients
