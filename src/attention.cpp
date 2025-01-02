@@ -299,29 +299,48 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
         throw std::runtime_error("hidden_size must be divisible by num_heads");
     }
 
-    // Initialize weights with Xavier/Glorot initialization
-    float q_scale = std::sqrt(2.0f / (hidden_size + head_dim * num_heads));
-    float kv_scale = std::sqrt(2.0f / (hidden_size + head_dim));
-    float out_scale = std::sqrt(2.0f / (hidden_size * 2));
+    // Initialize weights with smaller scale for numerical stability
+    const float MAX_INIT_VAL = 0.1f;  // Limit maximum initial value
+    
+    float q_scale = std::min(std::sqrt(2.0f / (hidden_size + head_dim * num_heads)), MAX_INIT_VAL);
+    float kv_scale = std::min(std::sqrt(2.0f / (hidden_size + head_dim)), MAX_INIT_VAL);
+    float out_scale = std::min(std::sqrt(2.0f / (hidden_size * 2)), MAX_INIT_VAL);
+
+    std::cout << "Initialization scales:" << std::endl;
+    std::cout << "q_scale: " << q_scale << std::endl;
+    std::cout << "kv_scale: " << kv_scale << std::endl;
+    std::cout << "out_scale: " << out_scale << std::endl;
 
     query_proj.randomize(-q_scale, q_scale);
     key_proj.randomize(-kv_scale, kv_scale);
     value_proj.randomize(-kv_scale, kv_scale);
     output_proj.randomize(-out_scale, out_scale);
 
-    // Initialize biases
-    const float BIAS_INIT = 0.01f;
+    // Initialize biases with smaller values
+    const float BIAS_INIT = 0.001f;  // Reduced from 0.01f
     for(size_t i = 0; i < query_bias.size(); i++) query_bias[i] = BIAS_INIT;
     for(size_t i = 0; i < key_bias.size(); i++) key_bias[i] = BIAS_INIT;
     for(size_t i = 0; i < value_bias.size(); i++) value_bias[i] = BIAS_INIT;
     for(size_t i = 0; i < output_bias.size(); i++) output_bias[i] = BIAS_INIT;
 
-    // Print dimensions for debugging
-    std::cout << "Projection matrix dimensions:" << std::endl;
-    std::cout << "Query: " << query_proj.rows() << "x" << query_proj.cols() << std::endl;
-    std::cout << "Key: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
-    std::cout << "Value: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
-    std::cout << "Output: " << output_proj.rows() << "x" << output_proj.cols() << std::endl;
+    // Validate initialization
+    auto validate_matrix = [](const Matrix& m, const std::string& name) {
+        if (m.empty()) {
+            throw std::runtime_error(name + " is empty after initialization");
+        }
+        std::cout << name << " stats after init:" << std::endl;
+        std::cout << "  Shape: " << m.rows() << "x" << m.cols() << std::endl;
+        std::cout << "  Range: [" << m.min() << ", " << m.max() << "]" << std::endl;
+        if (std::isnan(m.min()) || std::isnan(m.max()) || 
+            std::isinf(m.min()) || std::isinf(m.max())) {
+            throw std::runtime_error("Invalid values in " + name + " after initialization");
+        }
+    };
+
+    validate_matrix(query_proj, "query_proj");
+    validate_matrix(key_proj, "key_proj");
+    validate_matrix(value_proj, "value_proj");
+    validate_matrix(output_proj, "output_proj");
 
     std::cout << "exiting MultiHeadAttention constructor" << std::endl;
 }

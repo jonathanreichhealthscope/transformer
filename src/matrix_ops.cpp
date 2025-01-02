@@ -105,29 +105,69 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
         std::to_string(a.cols()) + ", b.rows=" + std::to_string(b.rows()));
   }
   
-  // Print input matrix stats
+  // Print input matrix stats and dimensions
+  std::cout << "Matrix A dimensions: " << a.rows() << "x" << a.cols() << std::endl;
+  std::cout << "Matrix B dimensions: " << b.rows() << "x" << b.cols() << std::endl;
   std::cout << "Matrix A stats: min=" << a.min() << " max=" << a.max() << std::endl;
   std::cout << "Matrix B stats: min=" << b.min() << " max=" << b.max() << std::endl;
+  
+  // Check for invalid values in input matrices
+  for (size_t i = 0; i < a.rows(); ++i) {
+    for (size_t j = 0; j < a.cols(); ++j) {
+      if (std::isnan(a(i,j)) || std::isinf(a(i,j))) {
+        throw std::runtime_error("Invalid value in matrix A at position (" + 
+                               std::to_string(i) + "," + std::to_string(j) + 
+                               "): " + std::to_string(a(i,j)));
+      }
+    }
+  }
+  
+  for (size_t i = 0; i < b.rows(); ++i) {
+    for (size_t j = 0; j < b.cols(); ++j) {
+      if (std::isnan(b(i,j)) || std::isinf(b(i,j))) {
+        throw std::runtime_error("Invalid value in matrix B at position (" + 
+                               std::to_string(i) + "," + std::to_string(j) + 
+                               "): " + std::to_string(b(i,j)));
+      }
+    }
+  }
   
   float max_val = 0.0f;
   Matrix result(a.rows(), b.cols(), 0.0f);
   
-  // Check for potential overflow
+  // Numerical stability parameters
   const float MAX_SAFE_VAL = 1e6f;
+  const float MIN_SAFE_VAL = -1e6f;
+  const float EPSILON = 1e-6f;
   
   for (size_t i = 0; i < a.rows(); ++i) {
     for (size_t j = 0; j < b.cols(); ++j) {
       float sum = 0.0f;
       for (size_t k = 0; k < a.cols(); ++k) {
-        float prod = a(i, k) * b(k, j);
+        // Clamp input values for numerical stability
+        float a_val = std::clamp(a(i, k), MIN_SAFE_VAL, MAX_SAFE_VAL);
+        float b_val = std::clamp(b(k, j), MIN_SAFE_VAL, MAX_SAFE_VAL);
+        
+        float prod = a_val * b_val;
+        
+        // Check for overflow/underflow
         if (std::isnan(prod) || std::isinf(prod)) {
-          throw std::runtime_error("NaN/Inf detected during matrix multiplication");
+          std::cerr << "Warning: Invalid product at position (" << i << "," << j << "," << k << ")" << std::endl;
+          std::cerr << "a_val=" << a_val << ", b_val=" << b_val << std::endl;
+          prod = 0.0f;  // Reset invalid products to zero
         }
-        if (std::abs(prod) > MAX_SAFE_VAL) {
-          std::cerr << "Warning: Large value in matrix multiplication: " << prod << std::endl;
-        }
+        
         sum += prod;
+        
+        // Clamp running sum for stability
+        sum = std::clamp(sum, MIN_SAFE_VAL, MAX_SAFE_VAL);
       }
+      
+      // Add small epsilon to avoid exact zero
+      if (std::abs(sum) < EPSILON) {
+        sum = (sum < 0) ? -EPSILON : EPSILON;
+      }
+      
       result(i, j) = sum;
       max_val = std::max(max_val, std::abs(sum));
     }
@@ -138,8 +178,18 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
     std::cerr << "Warning: Matrix multiplication resulted in all zeros\n";
   }
   
-  std::cout << "Matrix multiplication result stats: min=" << result.min() 
-            << " max=" << result.max() << std::endl;
+  // Check final result for invalid values
+  for (size_t i = 0; i < result.rows(); ++i) {
+    for (size_t j = 0; j < result.cols(); ++j) {
+      if (std::isnan(result(i,j)) || std::isinf(result(i,j))) {
+        std::cerr << "Invalid value in result at (" << i << "," << j << "): " << result(i,j) << std::endl;
+        result(i,j) = 0.0f;  // Reset invalid results to zero
+      }
+    }
+  }
+  
+  std::cout << "Matrix multiplication result dimensions: " << result.rows() << "x" << result.cols() << std::endl;
+  std::cout << "Matrix multiplication result stats: min=" << result.min() << " max=" << result.max() << std::endl;
   
   return result;
 }

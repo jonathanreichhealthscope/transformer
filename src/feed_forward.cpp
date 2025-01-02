@@ -53,18 +53,26 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size,
 }
 
 Matrix FeedForward::forward(const Matrix &x) {
+    std::cout << "FeedForward::forward dimensions:" << std::endl;
+    std::cout << "x: " << x.rows() << "x" << x.cols() << std::endl;
+    std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
+    std::cout << "b1: " << b1.size() << std::endl;
     Matrix intermediate = matmul(x, w1);
+    std::cout << "intermediate shape: " << intermediate.shape() << std::endl;
     intermediate.add_bias(b1);
     intermediate.apply_gelu();
-    
+    std::cout << "intermediate after gelu: " << intermediate.shape() << std::endl;
     // Deep copy for cache
+    std::cout << "deep copying intermediate for cache" << std::endl;
     intermediate_cache = Matrix(intermediate.rows(), intermediate.cols());
     std::copy(intermediate.data(), 
               intermediate.data() + intermediate.size(),
               intermediate_cache.data());
-    
+    std::cout << "intermediate_cache shape: " << intermediate_cache.shape() << std::endl;
     Matrix output = matmul(intermediate, w2);
+    std::cout << "output shape: " << output.shape() << std::endl;
     output.add_bias(b2);
+    std::cout << "output after adding bias: " << output.shape() << std::endl;
     return output;
 }
 
