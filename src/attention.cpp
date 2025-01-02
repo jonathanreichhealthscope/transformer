@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <string>
 
 Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
   std::cout << "entering MultiHeadAttention::apply_rope" << std::endl;

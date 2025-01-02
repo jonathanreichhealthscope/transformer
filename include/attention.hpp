@@ -109,14 +109,16 @@ private:
        Matrix Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, head_size);
        Matrix K_reshaped = reshape_for_attention(K, batch_size, num_heads, head_size);
        Matrix V_reshaped = reshape_for_attention(V, batch_size, num_heads, head_size);
-       
+       std::cout << "exiting reshape_for_attention" << std::endl;
        // Compute attention scores with bounds checking
        Matrix scores = safe_matmul(Q_reshaped, K_reshaped.transpose());
+       std::cout << "exiting safe_matmul" << std::endl;
        // Scale attention scores with temperature scaling
        const float temperature = std::sqrt(static_cast<float>(head_size));
        const float scale = 1.0f / temperature;
        const float MAX_SCORE = 10.0f;
-       
+       std::cout << "exiting temperature scaling" << std::endl;
+       std::cout << "entering for loop" << std::endl;
        for(size_t i = 0; i < scores.size(); i++) {
            // Apply scaling with better numerical stability
            float val = scores.data()[i];
@@ -125,7 +127,7 @@ private:
                scores.data()[i] = std::clamp(val, -MAX_SCORE, MAX_SCORE);
            }
        }
-       
+       std::cout << "exiting for loop" << std::endl;
        // Apply mask if provided
        if (!mask.mask.empty()) {
            // Expand mask for all heads
@@ -138,16 +140,19 @@ private:
                }
            }
            apply_mask(scores, expanded_mask);
+           std::cout << "exiting apply_mask" << std::endl;
        }
        
        std::cout << "Attention scores shape after mask: " 
                  << scores.rows() << "x" << scores.cols() << std::endl;
-       
+       std::cout << "Applying softmax" << std::endl;
        // Apply softmax with improved numerical stability
        apply_stable_softmax(scores);
-       
+       std::cout << "exiting apply_stable_softmax" << std::endl;
+       std::cout << "entering safe_matmul" << std::endl;
        // Compute weighted sum with scaling
        Matrix attention = safe_matmul(scores, V_reshaped);
+       std::cout << "exiting safe_matmul" << std::endl;
        // Add small epsilon to prevent exactly zero gradients
        const float EPSILON = 1e-6f;
        for(size_t i = 0; i < attention.size(); i++) {
@@ -155,7 +160,9 @@ private:
                attention.data()[i] = attention.data()[i] < 0 ? -EPSILON : EPSILON;
            }
        }
-       
+       std::cout << "exiting for loop" << std::endl;
+       std::cout << "entering reshape_from_attention" << std::endl;
+
        return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
    }
 

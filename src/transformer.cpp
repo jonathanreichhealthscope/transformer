@@ -58,7 +58,7 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
   Matrix normalized = attention_ln->forward(input);
   // Cache the normalized input for backward pass
   GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
-
+  std::cout << "exiting GradientCheckpoint::cache_activation" << std::endl;
   // Self attention
   Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
   Matrix residual1 = attention_output + input;
@@ -244,8 +244,8 @@ void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
 
       // Backward pass
       backward_pass(activations, loss_grad);
-
-      // Update parameters using optimizer (you'll need to implement this)
+      std::cout << "backward pass done" << std::endl;
+      // IMPORTANT TO UPDATE PARAMETERS USING OPTIMIZER
       update_parameters(learning_rate);
     }
   }
@@ -298,25 +298,30 @@ Matrix Transformer::compute_loss_gradients(const Matrix &logits,
 
 void Transformer::backward_pass(const std::vector<Matrix> &activations,
                                 const Matrix &loss_grad) {
+  std::cout << "entering Transformer::backward_pass" << std::endl;
   Matrix current_grad = loss_grad;
-
   // Convert gradients to FP16 if enabled
   if (config.use_fp16) {
     HalfPrecisionTraining::convert_to_fp16(current_grad);
   }
-
+  std::cout << "backward pass using cuda" << std::endl;
   // Backward through final layer norm using cuBLAS
   current_grad = final_ln->backward_cuda(current_grad, activations.back());
-
+  std::cout << "backward pass using cuda done" << std::endl;
+  std::cout << "iterating through layers in reverse order" << std::endl;
   // Backward through layers in reverse order
   for (int i = layers.size() - 1; i >= 0; --i) {
     // Retrieve checkpointed activation
     Matrix activation = GradientCheckpoint::get_activation(i);
 
-    if (config.use_cuda) {
+    if (config.use_cuda) {  
+      std::cout << "backward pass using cuda" << std::endl;
       current_grad = layers[i]->backward_cuda(current_grad, activation);
+      std::cout << "backward pass using cuda done" << std::endl;
     } else {
+      std::cout << "backward pass using cpu" << std::endl;
       current_grad = layers[i]->backward(current_grad, activation);
+      std::cout << "backward pass using cpu done" << std::endl;
     }
 
     // Convert gradients back to FP32 if needed
@@ -327,13 +332,16 @@ void Transformer::backward_pass(const std::vector<Matrix> &activations,
 }
 
 void Transformer::update_parameters(float learning_rate) {
+  std::cout << "entering Transformer::update_parameters" << std::endl;
   // Get all trainable parameters and their gradients
   auto &params = this->parameters();
-
+  std::cout << "parameters size: " << params.size() << std::endl;
   // Simple SGD update
   for (size_t i = 0; i < params.size(); ++i) {
     Matrix &param = params[i];
+    std::cout << "parameter shape: " << param.rows() << "x" << param.cols() << std::endl;
     // Assuming you have stored gradients somewhere
+    std::cout << "NO GRADIENTS STORED" << std::endl;
     // Matrix& grad = parameter_gradients[i];
 
     // Update rule: param = param - learning_rate * grad
@@ -341,6 +349,7 @@ void Transformer::update_parameters(float learning_rate) {
       for (size_t col = 0; col < param.cols(); ++col) {
         // param(row, col) -= learning_rate * grad(row, col);
         // For now, just add a placeholder update
+        std::cout << "PLACEHOLDER UPDATE" << std::endl;
         param(row, col) -=
             learning_rate * 0.01f; // Replace with actual gradient
       }
@@ -463,12 +472,13 @@ Matrix Transformer::backward_cuda(const Matrix &grad, const Matrix &activation,
 }
 
 std::vector<Matrix> &Transformer::parameters() {
+  std::cout << "entering Transformer::parameters" << std::endl;
   static std::vector<Matrix> all_params;
   all_params.clear();
 
   // Add embedding parameters
   all_params.push_back(token_embedding->get_embedding_table());
-
+  std::cout << "Adding attention parameters" << std::endl;
   // Add layer parameters
   for (auto &layer : layers) {
     // Add attention parameters
@@ -476,7 +486,7 @@ std::vector<Matrix> &Transformer::parameters() {
     all_params.push_back(layer->self_attention->key_proj);
     all_params.push_back(layer->self_attention->value_proj);
     all_params.push_back(layer->self_attention->output_proj);
-
+    std::cout << "Adding layer norm parameters" << std::endl;
     // Add layer norm parameters - convert Vector to Matrix
     const Vector &gamma = layer->attention_ln->get_gamma();
     const Vector &beta = layer->attention_ln->get_beta();
@@ -492,8 +502,9 @@ std::vector<Matrix> &Transformer::parameters() {
     // Add feed forward parameters
     all_params.push_back(layer->feed_forward->w1);
     all_params.push_back(layer->feed_forward->w2);
-
+    std::cout << "Added feed forward parameters" << std::endl;
     // Convert feed forward biases to matrices
+    std::cout << "Converting feed forward biases to matrices" << std::endl;
     Matrix b1_matrix(1, layer->feed_forward->b1.size());
     Matrix b2_matrix(1, layer->feed_forward->b2.size());
     for (size_t i = 0; i < layer->feed_forward->b1.size(); ++i) {
@@ -506,6 +517,7 @@ std::vector<Matrix> &Transformer::parameters() {
     all_params.push_back(b2_matrix);
 
     // Add final layer norm parameters
+    std::cout << "Adding final layer norm parameters" << std::endl;
     const Vector &ffn_gamma = layer->ffn_ln->get_gamma();
     const Vector &ffn_beta = layer->ffn_ln->get_beta();
     Matrix ffn_gamma_matrix(1, ffn_gamma.size());
@@ -519,6 +531,7 @@ std::vector<Matrix> &Transformer::parameters() {
   }
 
   // Add final layer norm parameters
+  std::cout << "Adding final layer norm parameters" << std::endl;
   const Vector &final_gamma = final_ln->get_gamma();
   const Vector &final_beta = final_ln->get_beta();
   Matrix final_gamma_matrix(1, final_gamma.size());
@@ -529,7 +542,7 @@ std::vector<Matrix> &Transformer::parameters() {
   }
   all_params.push_back(final_gamma_matrix);
   all_params.push_back(final_beta_matrix);
-
+  std::cout << "Exiting Transformer::parameters" << std::endl;
   return all_params;
 }
 
@@ -538,21 +551,25 @@ void Transformer::save(std::ostream &os) const {
   os.write(reinterpret_cast<const char *>(&config), sizeof(config));
 
   // Save embeddings
+  std::cout << "Saving embeddings" << std::endl;
   token_embedding->save(os);
   pos_encoding->save(os);
 
   // Save layers
   for (const auto &layer : layers) {
+    std::cout << "Saving layer" << std::endl;
     layer->save(os);
   }
 
   // Save final layer norm
+  std::cout << "Saving final layer norm" << std::endl;
   final_ln->save(os);
 }
 
 void Transformer::load(std::istream &is) {
   // Read config
   size_t vocab_size, max_seq_length, hidden_size, num_layers, num_heads;
+  std::cout << "Reading config" << std::endl;
   is.read(reinterpret_cast<char *>(&vocab_size), sizeof(vocab_size));
   is.read(reinterpret_cast<char *>(&max_seq_length), sizeof(max_seq_length));
   is.read(reinterpret_cast<char *>(&hidden_size), sizeof(hidden_size));
@@ -566,15 +583,18 @@ void Transformer::load(std::istream &is) {
   layers.clear();
   for (size_t i = 0; i < num_layers; ++i) {
     auto layer = TransformerLayer::create(config, i);
+    std::cout << "Loading layer" << std::endl;
     layer->load(is);
     layers.push_back(std::move(layer));
   }
 
   // Load embeddings and final layer norm
   token_embedding = std::make_unique<TokenEmbedding>(vocab_size, hidden_size);
+  std::cout << "Loading embeddings" << std::endl;
   token_embedding->load(is);
   
   final_ln = std::make_unique<LayerNorm>(hidden_size);
+  std::cout << "Loading final layer norm" << std::endl;
   final_ln->load(is);
 }
 
@@ -582,27 +602,33 @@ Matrix TransformerLayer::backward(const Matrix& grad_output,
                                 const Matrix& input,
                                 const Matrix& target_distribution) {
     try {
+        std::cout << "entering TransformerLayer::backward" << std::endl;
         // Get cached activations
         std::string ffn_key = std::to_string(layer_idx) + "_ffn";
         if (!GradientCheckpoint::has_activation(ffn_key)) {
             throw std::runtime_error("Missing feed forward activation cache");
         }
+        std::cout << "Getting feed forward activation cache" << std::endl;
         Matrix ffn_normalized = GradientCheckpoint::get_activation(ffn_key);
         
         // Feed forward backward
         Matrix d_ffn = feed_forward->backward(grad_output, ffn_normalized);
+        std::cout << "Feed forward backward" << std::endl;
         Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
+        std::cout << "Feed forward layer norm backward" << std::endl;
         
         // Attention backward
         std::string attn_key = std::to_string(layer_idx);
         if (!GradientCheckpoint::has_activation(attn_key)) {
             throw std::runtime_error("Missing attention activation cache");
         }
+        std::cout << "Getting attention activation cache" << std::endl;
         Matrix attn_normalized = GradientCheckpoint::get_activation(attn_key);
         
         Matrix d_residual1 = d_ln2;
         Matrix d_attn = self_attention->backward(d_residual1, attn_normalized, target_distribution);
-        
+        std::cout << "Attention backward" << std::endl;
+
         return d_attn;
     } catch (const std::exception& e) {
         std::cerr << "Error in transformer backward pass: " << e.what() << std::endl;
@@ -748,29 +774,32 @@ Transformer::Transformer(const Transformer &other) : config(other.config) {
 Transformer &Transformer::operator=(const Transformer &other) {
   if (this != &other) {
     config = other.config;
-
+    std::cout << "Copying config" << std::endl;
     // Deep copy token embedding
     token_embedding = std::make_unique<TokenEmbedding>(*other.token_embedding);
-
+    std::cout << "Copying token embedding" << std::endl;
     // Deep copy positional encoding
     pos_encoding = std::make_unique<PositionalEncoding>(*other.pos_encoding);
-
+    std::cout << "Copying positional encoding" << std::endl;
     // Deep copy layers
     layers.clear();
+    std::cout << "Clearing layers" << std::endl;
     layers.reserve(other.layers.size());
+    std::cout << "Reserving layers" << std::endl;
     for (const auto &layer : other.layers) {
       layers.push_back(std::make_unique<TransformerLayer>(*layer));
     }
-
+    std::cout << "Copying final layer norm" << std::endl;
     // Deep copy final layer norm
     final_ln = std::make_unique<LayerNorm>(*other.final_ln);
-
+    std::cout << "Copying language model head" << std::endl;
     // Deep copy language model head if it exists
     if (other.lm_head) {
       lm_head = std::make_unique<LanguageModelHead>(*other.lm_head);
     } else {
       lm_head.reset();
     }
+    std::cout << "Exiting operator=" << std::endl;
   }
   return *this;
 }
@@ -809,6 +838,7 @@ void Transformer::backward(const Matrix &grad_output,
 
   // Update token embeddings
   token_embedding->backward(grad, input_tokens);
+  std::cout << "exiting Transformer::backward" << std::endl;
 }
 
 // Add member to store last hidden states for backward pass
