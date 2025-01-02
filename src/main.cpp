@@ -13,6 +13,7 @@
 #include "../include/vocabulary.hpp"
 #include "../include/matrix.hpp"
 #include "../include/gradient_tape.hpp"
+#include "../include/preprocessing.hpp"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -408,6 +409,9 @@ int main(int argc, char *argv[]) {
     // Get training data
     std::vector<std::pair<std::string, std::string>> training_data = create_training_data();
     
+    // Preprocess the training data (convert to lowercase)
+    training_data = TextPreprocessor::preprocess_training_data(training_data);
+    
     // Analyze token mappings
     analyze_token_mappings(training_data, *tokenizer);
     
@@ -573,7 +577,7 @@ int main(int argc, char *argv[]) {
                 std::vector<int> test_tokens = tokenizer->encode(test_input);
                 Matrix test_hidden = transformer.forward(test_tokens);
                 Matrix test_logits = lm_head->forward(test_hidden);
-                print_top_predictions(test_logits, *tokenizer, 3);
+                print_top_predictions(test_logits, *tokenizer, 5);
             }
         }
     }

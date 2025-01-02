@@ -1041,8 +1041,7 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
         for (size_t i = 0; i < clipped_grad.size(); ++i) {
             clipped_grad.data()[i] *= dynamic_scale;
         }
-
-        // ... rest of the backward pass implementation
+        // TO-DO - rest of the backward pass implementation
     } catch (const std::exception& e) {
         std::cerr << "\nERROR in transformer backward pass: " << e.what() << std::endl;
         std::cerr << "=== Transformer::backward FAILED ===\n" << std::endl;
