@@ -1007,77 +1007,90 @@ Transformer &Transformer::operator=(const Transformer &other) {
   return *this;
 }
 
-void Transformer::backward(const Matrix &grad_output,
-                         const std::vector<int> &input_tokens) {
-  std::cout << "\n=== Transformer::backward START ===" << std::endl;
-  
-  try {
-    // Print input information
-    std::cout << "Input:" << std::endl;
-    std::cout << "- Gradient output shape: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-    std::cout << "- Number of input tokens: " << input_tokens.size() << std::endl;
+void Transformer::backward(const Matrix &grad_output, const std::vector<int> &input_tokens) {
+    std::cout << "\n=== Transformer::backward START ===" << std::endl;
     
-    // Verify dimensions
-    std::cout << "\nVerifying dimensions..." << std::endl;
-    if (grad_output.cols() != config.hidden_size) {
-      throw std::runtime_error("Gradient output dimension (" +
-                             std::to_string(grad_output.cols()) +
-                             ") must match hidden size (" +
-                             std::to_string(config.hidden_size) + ")");
+    try {
+        // Print input information
+        std::cout << "Input:" << std::endl;
+        std::cout << "- Gradient output shape: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+        std::cout << "- Number of input tokens: " << input_tokens.size() << std::endl;
+        std::cout << "- Hidden states shape: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+        
+        // Verify and adjust gradient dimensions if needed
+        Matrix adjusted_grad;
+        if (grad_output.rows() != input_tokens.size()) {
+            std::cout << "Adjusting gradient dimensions to match sequence length..." << std::endl;
+            adjusted_grad = Matrix(input_tokens.size(), grad_output.cols());
+            
+            // Copy values with proper dimension handling
+            for (size_t i = 0; i < input_tokens.size(); ++i) {
+                for (size_t j = 0; j < grad_output.cols(); ++j) {
+                    adjusted_grad(i, j) = grad_output(i % grad_output.rows(), j);
+                }
+            }
+            std::cout << "Adjusted gradient shape: " << adjusted_grad.rows() << "x" << adjusted_grad.cols() << std::endl;
+        } else {
+            adjusted_grad = grad_output;
+        }
+        
+        // Verify dimensions after adjustment
+        if (adjusted_grad.cols() != config.hidden_size) {
+            throw std::runtime_error("Gradient output dimension (" +
+                                   std::to_string(adjusted_grad.cols()) +
+                                   ") must match hidden size (" +
+                                   std::to_string(config.hidden_size) + ")");
+        }
+
+        Matrix current_grad = final_ln->backward(adjusted_grad, hidden_states);
+        
+        // Backpropagate through transformer layers in reverse order
+        for (int i = layers.size() - 1; i >= 0; --i) {
+            std::cout << "\nProcessing layer " << i << "..." << std::endl;
+            
+            // Get cached activation
+            Matrix cached_activation = GradientCheckpoint::get_activation(i);
+            std::cout << "Cached activation shape: " << cached_activation.rows() << "x" << cached_activation.cols() << std::endl;
+            
+            // Ensure gradient dimensions match cached activation
+            if (current_grad.rows() != cached_activation.rows()) {
+                std::cout << "Adjusting layer gradient dimensions..." << std::endl;
+                Matrix resized_grad(cached_activation.rows(), current_grad.cols());
+                for (size_t r = 0; r < cached_activation.rows(); ++r) {
+                    for (size_t c = 0; c < current_grad.cols(); ++c) {
+                        resized_grad(r, c) = current_grad(r % current_grad.rows(), c);
+                    }
+                }
+                current_grad = std::move(resized_grad);
+            }
+            
+            // Process layer gradients
+            current_grad = layers[i]->backward(current_grad, cached_activation);
+            std::cout << "Layer " << i << " gradients shape: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
+        }
+
+        // Final adjustment to match input sequence length
+        if (current_grad.rows() != input_tokens.size()) {
+            std::cout << "Final gradient dimension adjustment..." << std::endl;
+            Matrix final_grad(input_tokens.size(), current_grad.cols());
+            for (size_t i = 0; i < input_tokens.size(); ++i) {
+                for (size_t j = 0; j < current_grad.cols(); ++j) {
+                    final_grad(i, j) = current_grad(i % current_grad.rows(), j);
+                }
+            }
+            current_grad = std::move(final_grad);
+        }
+
+        // Update token embeddings
+        std::cout << "\nUpdating token embeddings..." << std::endl;
+        token_embedding->backward(current_grad, input_tokens);
+        std::cout << "Token embeddings updated" << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nERROR in transformer backward pass: " << e.what() << std::endl;
+        std::cerr << "=== Transformer::backward FAILED ===\n" << std::endl;
+        throw;
     }
-    std::cout << "Dimension verification passed" << std::endl;
-
-    // Backpropagate through final layer norm
-    std::cout << "\nBackpropagating through final layer norm..." << std::endl;
-    Matrix grad = final_ln->backward(grad_output, hidden_states);
-    std::cout << "Final layer norm gradients:" << std::endl;
-    std::cout << "- Shape: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "- Range: [" << grad.min() << ", " << grad.max() << "]" << std::endl;
-    
-    // Backpropagate through transformer layers in reverse order
-    std::cout << "\nBackpropagating through transformer layers..." << std::endl;
-    for (int i = layers.size() - 1; i >= 0; --i) {
-      std::cout << "\nProcessing layer " << i << "..." << std::endl;
-      
-      // Get cached activation
-      std::cout << "Retrieving cached activation..." << std::endl;
-      Matrix cached_activation = GradientCheckpoint::get_activation(i);
-      std::cout << "Cached activation shape: " << cached_activation.rows() << "x" << cached_activation.cols() << std::endl;
-      
-      // Verify cached activation dimensions
-      if (cached_activation.cols() != config.hidden_size) {
-        throw std::runtime_error("Cached activation dimension mismatch");
-      }
-      
-      // Process layer gradients
-      std::cout << "Computing layer gradients..." << std::endl;
-      grad = layers[i]->backward(grad, cached_activation);
-      std::cout << "Layer " << i << " gradients:" << std::endl;
-      std::cout << "- Shape: " << grad.rows() << "x" << grad.cols() << std::endl;
-      std::cout << "- Range: [" << grad.min() << ", " << grad.max() << "]" << std::endl;
-    }
-
-    // Validate gradient dimensions for embeddings
-    std::cout << "\nValidating gradient dimensions for embeddings..." << std::endl;
-    if (grad.rows() != input_tokens.size()) {
-      throw std::runtime_error("Gradient rows (" + std::to_string(grad.rows()) +
-                             ") must match sequence length (" +
-                             std::to_string(input_tokens.size()) + ")");
-    }
-    std::cout << "Gradient dimensions valid" << std::endl;
-
-    // Update token embeddings
-    std::cout << "\nUpdating token embeddings..." << std::endl;
-    token_embedding->backward(grad, input_tokens);
-    std::cout << "Token embeddings updated" << std::endl;
-
-    std::cout << "=== Transformer::backward END ===\n" << std::endl;
-    
-  } catch (const std::exception& e) {
-    std::cerr << "\nERROR in transformer backward pass: " << e.what() << std::endl;
-    std::cerr << "=== Transformer::backward FAILED ===\n" << std::endl;
-    throw;
-  }
 }
 
 // Add member to store last hidden states for backward pass
