@@ -32,6 +32,18 @@ Matrix TokenEmbedding::forward(const std::vector<int> &tokens) {
       output(i, j) = weights_(tokens[i], j);
     }
   }
+
+  // Normalize output embeddings
+  float norm = 0.0f;
+  for(size_t i = 0; i < output.size(); i++) {
+    norm += output.data()[i] * output.data()[i];
+  }
+  norm = std::sqrt(norm + 1e-12f);
+  float scale = std::min(1.0f, 1.0f / norm);
+  for(size_t i = 0; i < output.size(); i++) {
+    output.data()[i] *= scale;
+  }
+
   return output;
 }
 

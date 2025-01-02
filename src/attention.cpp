@@ -328,11 +328,13 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
                                               const Matrix &V,
                                               const AttentionMask &mask) const {
-  
   Matrix scores = matmul(Q, K.transpose());
-  std::cout << "Q: " << *Q.data() << std::endl;
-  std::cout << "K: " << *K.data() << std::endl;
-  std::cout << "V: " << *V.data() << std::endl;
+  
+  // Clamp extreme values in scores
+  for(size_t i = 0; i < scores.size(); i++) {
+    scores.data()[i] = std::clamp(scores.data()[i], -10.0f, 10.0f);
+  }
+
   // Add numerical stability to attention scaling
   float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
   scale = std::min(scale, 10.0f);  // Prevent too large scaling
@@ -341,7 +343,6 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
   if (!mask.mask.empty()) {
     for (size_t i = 0; i < scores.rows(); ++i) {
       for (size_t j = 0; j < scores.cols(); ++j) {
-        std::cout << "score: " << scores(i, j) << std::endl;
         if (mask.mask(i, j) == 0.0f) {
           scores(i, j) = -1e6f;  // Use finite value instead of infinity
         }
@@ -364,6 +365,14 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
     sum = std::max(sum, epsilon);
     for (size_t j = 0; j < scores.cols(); ++j) {
       scores(i, j) /= sum;
+    }
+  }
+
+  // Validate no NaN in output
+  for(size_t i = 0; i < scores.size(); i++) {
+    if(std::isnan(scores.data()[i])) {
+      std::cerr << "NaN detected in attention scores!" << std::endl;
+      scores.data()[i] = 0.0f;  // Replace NaN with zero
     }
   }
 

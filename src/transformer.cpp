@@ -157,6 +157,20 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
     // Save activation for gradient checkpointing
     GradientCheckpoint::save_activation(hidden_states, i);
 
+    // Normalize hidden states between layers to prevent explosion/vanishing
+    float mean = 0.0f, var = 0.0f;
+    for(size_t j = 0; j < hidden_states.size(); j++) {
+      mean += hidden_states.data()[j];
+      var += hidden_states.data()[j] * hidden_states.data()[j];
+    }
+    mean /= hidden_states.size();
+    var = var/hidden_states.size() - mean*mean;
+    float std = sqrt(var + 1e-5f);
+    
+    for(size_t j = 0; j < hidden_states.size(); j++) {
+      hidden_states.data()[j] = (hidden_states.data()[j] - mean) / std;
+    }
+
     hidden_states = layers[i]->forward(hidden_states, mask);
 
     // Convert to FP16 if enabled

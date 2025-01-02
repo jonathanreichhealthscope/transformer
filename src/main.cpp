@@ -281,7 +281,14 @@ int main(int argc, char *argv[]) {
         float loss = 0.0f;
         for (size_t j = 0; j < logits.cols(); ++j) {
           if (target_matrix(last_position, j) > 0.0f) {
-            loss -= std::log(logits(last_position, j) + 1e-10);
+            // Clamp logits to prevent log(negative)
+            float logit = std::max(logits(last_position, j), 1e-10f);
+            // Prevent extremely small values
+            if (logit < 1e-7f) {
+              std::cerr << "Warning: Very small logit value: " << logit << std::endl;
+              logit = 1e-7f;
+            }
+            loss -= std::log(logit);
           }
         }
         epoch_loss += loss;
