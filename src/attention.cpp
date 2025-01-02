@@ -96,10 +96,41 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   std::cerr << "x min: " << x.min() << ", x max: " << x.max() << "\n";
   std::cerr << "query_proj size: " << query_proj.size() << ", query_proj(0,0): " << query_proj(0,0) << "\n";
 
+  // Normalize input before projection
+  Matrix normalized_x = x;
+  float mean = 0.0f, var = 0.0f;
+  
+  // Calculate mean and variance
+  for(size_t i = 0; i < x.size(); i++) {
+    mean += x.data()[i];
+    var += x.data()[i] * x.data()[i];
+  }
+  mean /= x.size();
+  var = var/x.size() - mean*mean;
+  float std = sqrt(var + 1e-5f);
+  
+  // Normalize
+  for(size_t i = 0; i < x.size(); i++) {
+    normalized_x.data()[i] = (x.data()[i] - mean) / std;
+  }
+
   // Project input to Q, K, V
-  Matrix Q = matmul(x, query_proj);
-  Matrix K = matmul(x, key_proj);
-  Matrix V = matmul(x, value_proj);
+  Matrix Q = matmul(normalized_x, query_proj);
+  Matrix K = matmul(normalized_x, key_proj);
+  Matrix V = matmul(normalized_x, value_proj);
+
+  // Scale down Q,K,V values
+  const float qk_scale = 1.0f / sqrt(head_dim);
+  for(size_t i = 0; i < Q.size(); i++) {
+    Q.data()[i] *= qk_scale;
+    K.data()[i] *= qk_scale;
+  }
+
+  // Scale V separately since it doesn't participate in dot product
+  const float v_scale = 0.2f;
+  for(size_t i = 0; i < V.size(); i++) {
+    V.data()[i] *= v_scale;
+  }
 
   // Validate matrix multiplication results
   if(Q.size() == 0 || K.size() == 0 || V.size() == 0) {
@@ -197,6 +228,22 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   } else {
     attention_output = standard_attention(Q, K, V, mask);
   }
+
+  // Normalize attention output
+  mean = 0.0f;
+  var = 0.0f;
+  for(size_t i = 0; i < attention_output.size(); i++) {
+    mean += attention_output.data()[i];
+    var += attention_output.data()[i] * attention_output.data()[i];
+  }
+  mean /= attention_output.size();
+  var = var/attention_output.size() - mean*mean;
+  std = sqrt(var + 1e-5f);
+  
+  for(size_t i = 0; i < attention_output.size(); i++) {
+    attention_output.data()[i] = (attention_output.data()[i] - mean) / std;
+  }
+
   return matmul(attention_output, output_proj);
 }
 
@@ -245,8 +292,8 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
   value_proj = Matrix(hidden_size, num_heads * head_dim);
   output_proj = Matrix(num_heads * head_dim, hidden_size);
 
-  // Use larger initialization scale to prevent tiny values
-  float scale = sqrt(6.0f / (hidden_size + head_dim * num_heads));  // He initialization
+  // Use smaller scale for attention projections
+  float scale = sqrt(1.0f / (hidden_size + head_dim * num_heads));
   query_proj.randomize(-scale, scale);
   key_proj.randomize(-scale, scale);
   value_proj.randomize(-scale, scale);
