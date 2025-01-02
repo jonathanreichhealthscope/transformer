@@ -630,3 +630,64 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output,
         throw;
     }
 }
+
+Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x, 
+                                            size_t batch_size,
+                                            size_t seq_length, 
+                                            size_t head_size) const {
+    std::cout << "\n=== MultiHeadAttention::reshape_for_attention START ===" << std::endl;
+    
+    try {
+        // Validate input dimensions
+        std::cout << "Validating input dimensions..." << std::endl;
+        std::cout << "Input matrix: " << x.rows() << "x" << x.cols() << std::endl;
+        std::cout << "Requested dimensions:" << std::endl;
+        std::cout << "- Batch size: " << batch_size << std::endl;
+        std::cout << "- Sequence length: " << seq_length << std::endl;
+        std::cout << "- Head size: " << head_size << std::endl;
+        
+        // Check for invalid dimensions
+        if (batch_size == 0 || seq_length == 0 || head_size == 0) {
+            throw std::runtime_error("Invalid dimensions: dimensions cannot be zero");
+        }
+        
+        // Check if total size matches
+        size_t total_elements = batch_size * seq_length * head_size;
+        if (total_elements != x.size()) {
+            throw std::runtime_error(
+                "Dimension mismatch: input size (" + std::to_string(x.size()) + 
+                ") != batch_size * seq_length * head_size (" + 
+                std::to_string(total_elements) + ")"
+            );
+        }
+        
+        // Check for potential overflow
+        const size_t max_size = std::numeric_limits<size_t>::max() / sizeof(float);
+        if (total_elements > max_size) {
+            throw std::runtime_error(
+                "Dimension overflow: total elements (" + std::to_string(total_elements) + 
+                ") exceeds maximum safe size (" + std::to_string(max_size) + ")"
+            );
+        }
+        
+        std::cout << "Dimension validation passed" << std::endl;
+        
+        // Create reshaped matrix
+        std::cout << "Creating reshaped matrix..." << std::endl;
+        Matrix reshaped(batch_size * num_heads, seq_length, head_size);
+        std::cout << "Reshaped matrix created: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
+        
+        // Copy data
+        std::cout << "Copying data..." << std::endl;
+        std::memcpy(reshaped.data(), x.data(), x.size() * sizeof(float));
+        std::cout << "Data copied successfully" << std::endl;
+        
+        std::cout << "=== MultiHeadAttention::reshape_for_attention END ===\n" << std::endl;
+        return reshaped;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "\nERROR in reshape_for_attention: " << e.what() << std::endl;
+        std::cerr << "=== MultiHeadAttention::reshape_for_attention FAILED ===\n" << std::endl;
+        throw;
+    }
+}
