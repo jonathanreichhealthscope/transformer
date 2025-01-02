@@ -60,16 +60,18 @@ class TransformerLayer {
 private:
   std::unique_ptr<MultiHeadAttention> self_attention;
   std::unique_ptr<LayerNorm> attention_ln;
-  std::unique_ptr<FeedForward> feed_forward;
   std::unique_ptr<LayerNorm> ffn_ln;
+  std::unique_ptr<FeedForward> feed_forward;
   KVCache kv_cache;
   TransformerConfig config;
+  size_t layer_idx;
 
 public:
   virtual ~TransformerLayer() = default;
   TransformerLayer() = default;
-  explicit TransformerLayer(const TransformerConfig &config);
-  Matrix forward(const Matrix &x, const AttentionMask &mask = {});
+  TransformerLayer(const TransformerConfig &config, size_t idx);
+  Matrix forward(const Matrix &input, const AttentionMask &mask,
+                 const std::optional<KVCache> &kv_cache = std::nullopt);
   void clear_cache();
   void save(std::ostream &os) const {
     self_attention->save(os);
@@ -78,8 +80,8 @@ public:
     ffn_ln->save(os);
   }
   static std::unique_ptr<TransformerLayer>
-  create(const TransformerConfig &config) {
-    return std::make_unique<TransformerLayer>(config);
+  create(const TransformerConfig &config, size_t idx) {
+    return std::make_unique<TransformerLayer>(config, idx);
   }
   void load(std::istream &is) {
     self_attention->load(is);

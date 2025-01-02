@@ -27,8 +27,10 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
 }
 
 // TransformerLayer implementation
-TransformerLayer::TransformerLayer(const TransformerConfig &config)
-    : kv_cache(config.max_seq_length), config(config) {
+TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
+    : kv_cache(config.max_seq_length), 
+      config(config),
+      layer_idx(idx) {
   // Initialize attention layer
   self_attention = std::make_unique<MultiHeadAttention>(
       config.hidden_size, config.num_heads, config.head_dim,
@@ -45,19 +47,27 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config)
       config.hidden_size, config.intermediate_size, config.dropout_prob);
 }
 
-Matrix TransformerLayer::forward(const Matrix &x, const AttentionMask &mask) {
-  // Pre-layer normalization
-  Matrix normalized = attention_ln->forward(x);
-  // Self-attention with residual connection
-  Matrix attention_output = self_attention->forward(
-      normalized, mask, std::make_optional(std::ref(kv_cache)));
-  Matrix residual = x + attention_output;
-  std::cout << "Residual: " << *residual.data() << std::endl;
-  // Feed-forward with residual connection
-  normalized = ffn_ln->forward(residual);
-  Matrix ffn_output = feed_forward->forward(normalized);
+Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
+                               const std::optional<KVCache> &kv_cache) {
+  // Layer norm before attention
+  Matrix normalized = attention_ln->forward(input);
+  // Cache the normalized input for backward pass
+  GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
 
-  return residual + ffn_output;
+  // Self attention
+  Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
+  Matrix residual1 = attention_output + input;
+
+  // Layer norm before feed forward
+  Matrix ffn_normalized = ffn_ln->forward(residual1);
+  // Cache the normalized input for feed forward backward pass
+  GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
+
+  // Feed forward
+  Matrix ffn_output = feed_forward->forward(ffn_normalized);
+  Matrix residual2 = ffn_output + residual1;
+
+  return residual2;
 }
 
 void TransformerLayer::clear_cache() { kv_cache.clear(); }
@@ -97,7 +107,7 @@ Transformer::Transformer(const TransformerConfig &config) : config(config) {
   // Initialize transformer layers
   layers.reserve(config.num_layers);
   for (size_t i = 0; i < config.num_layers; ++i) {
-    layers.push_back(std::make_unique<TransformerLayer>(config));
+    layers.push_back(TransformerLayer::create(config, i));
   }
 
   // Initialize final layer normalization
@@ -360,7 +370,7 @@ Transformer Transformer::load_model(const std::string &path) {
   // Load layers
   transformer.layers.clear();
   for (size_t i = 0; i < config.num_layers; ++i) {
-    auto layer = TransformerLayer::create(config);
+    auto layer = TransformerLayer::create(config, i);
     layer->load(is);
     transformer.layers.push_back(std::move(layer));
   }
@@ -521,61 +531,59 @@ void Transformer::save(std::ostream &os) const {
 }
 
 void Transformer::load(std::istream &is) {
-  // Load config
-  is.read(reinterpret_cast<char *>(&config), sizeof(config));
+  // Read config
+  size_t vocab_size, max_seq_length, hidden_size, num_layers, num_heads;
+  is.read(reinterpret_cast<char *>(&vocab_size), sizeof(vocab_size));
+  is.read(reinterpret_cast<char *>(&max_seq_length), sizeof(max_seq_length));
+  is.read(reinterpret_cast<char *>(&hidden_size), sizeof(hidden_size));
+  is.read(reinterpret_cast<char *>(&num_layers), sizeof(num_layers));
+  is.read(reinterpret_cast<char *>(&num_heads), sizeof(num_heads));
 
-  // Load embeddings
-  token_embedding = TokenEmbedding::load(is);
-  pos_encoding = PositionalEncoding::load(is);
+  TransformerConfig config(vocab_size, max_seq_length, hidden_size, num_layers,
+                         num_heads);
 
   // Load layers
   layers.clear();
-  for (size_t i = 0; i < config.num_layers; ++i) {
-    auto layer = TransformerLayer::create(config);
+  for (size_t i = 0; i < num_layers; ++i) {
+    auto layer = TransformerLayer::create(config, i);
     layer->load(is);
     layers.push_back(std::move(layer));
   }
 
-  // Load final layer norm
-  final_ln = LayerNorm::load(is);
+  // Load embeddings and final layer norm
+  token_embedding = std::make_unique<TokenEmbedding>(vocab_size, hidden_size);
+  token_embedding->load(is);
+  
+  final_ln = std::make_unique<LayerNorm>(hidden_size);
+  final_ln->load(is);
 }
 
 Matrix TransformerLayer::backward(const Matrix& grad_output, 
                                 const Matrix& input,
                                 const Matrix& target_distribution) {
-    if (grad_output.empty() || input.empty()) {
-        throw std::runtime_error("Empty matrices in transformer backward pass");
-    }
-    
-    std::cout << "Starting backward pass..." << std::endl;
-    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-    std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
-    
-    // Make copies to prevent modification of inputs
-    Matrix grad_copy = grad_output;
-    Matrix input_copy = input;
-    
-    std::cout << "Forward pass for normalization..." << std::endl;
-    Matrix ffn_input = input_copy;
-    Matrix ffn_normalized = ffn_ln->forward(ffn_input);
-    std::cout << "ffn_normalized dims: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
-    
-    std::cout << "Starting feed forward backward..." << std::endl;
     try {
-        Matrix d_ffn = feed_forward->backward(grad_copy, ffn_normalized);
-        std::cout << "Feed forward backward complete..." << std::endl;
+        // Get cached activations
+        std::string ffn_key = std::to_string(layer_idx) + "_ffn";
+        if (!GradientCheckpoint::has_activation(ffn_key)) {
+            throw std::runtime_error("Missing feed forward activation cache");
+        }
+        Matrix ffn_normalized = GradientCheckpoint::get_activation(ffn_key);
         
-        Matrix d_ln2 = ffn_ln->backward(d_ffn, input_copy);
-        std::cout << "Layer norm 2 backward complete..." << std::endl;
+        // Feed forward backward
+        Matrix d_ffn = feed_forward->backward(grad_output, ffn_normalized);
+        Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
+        
+        // Attention backward
+        std::string attn_key = std::to_string(layer_idx);
+        if (!GradientCheckpoint::has_activation(attn_key)) {
+            throw std::runtime_error("Missing attention activation cache");
+        }
+        Matrix attn_normalized = GradientCheckpoint::get_activation(attn_key);
         
         Matrix d_residual1 = d_ln2;
-        Matrix d_attn = self_attention->backward(d_residual1, input_copy, target_distribution);
-        std::cout << "Self attention backward complete..." << std::endl;
+        Matrix d_attn = self_attention->backward(d_residual1, attn_normalized, target_distribution);
         
-        Matrix d_ln1 = attention_ln->backward(d_attn, input_copy);
-        std::cout << "Layer norm 1 backward complete..." << std::endl;
-        
-        return d_ln1;
+        return d_attn;
     } catch (const std::exception& e) {
         std::cerr << "Error in transformer backward pass: " << e.what() << std::endl;
         throw;

@@ -32,13 +32,209 @@ private:
   Matrix cos_cached;
   Matrix sin_cached;
   Matrix attention_scores;
+  size_t hidden_size;
+  float dropout_prob;
+  bool use_gqa;
+  size_t num_kv_heads;
 
   // Private helper methods
-  Matrix apply_rope(const Matrix &x, size_t position) const;
+  Vector apply_rope(const Vector &x, size_t position) const;
   Matrix flash_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
                          const AttentionMask &mask) const;
   Matrix standard_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
                             const AttentionMask &mask);
+  void validate_dimensions(const Matrix& grad_output, 
+                         const Matrix& input,
+                         const Matrix& target_dist) const {
+       if (grad_output.cols() != hidden_size) {
+           throw std::runtime_error("grad_output.cols (" + 
+                                   std::to_string(grad_output.cols()) + 
+                                   ") != hidden_size (" + 
+                                   std::to_string(hidden_size) + ")");
+       }
+       if (input.cols() != hidden_size) {
+           throw std::runtime_error("input.cols (" + 
+                                   std::to_string(input.cols()) + 
+                                   ") != hidden_size (" + 
+                                   std::to_string(hidden_size) + ")");
+       }
+   }
+
+  // Add private gradient computation methods
+  Matrix compute_query_gradients(const Matrix& grad_output, const Matrix& input) const {
+      // Q = input * Wq
+      // dQ = grad_output * Wq^T
+      return matmul(grad_output, query_proj.transpose());
+  }
+  
+  Matrix compute_key_gradients(const Matrix& grad_output, const Matrix& input) const {
+      // K = input * Wk
+      // dK = grad_output * Wk^T
+      return matmul(grad_output, key_proj.transpose());
+  }
+  
+  Matrix compute_value_gradients(const Matrix& grad_output, const Matrix& input) const {
+      // V = input * Wv
+      // dV = grad_output * Wv^T
+      return matmul(grad_output, value_proj.transpose());
+  }
+  
+  Matrix combine_gradients(const Matrix& dQ, const Matrix& dK, const Matrix& dV) const {
+      // Combine all gradients
+      Matrix combined = dQ;
+      combined += dK;
+      combined += dV;
+      return combined;
+  }
+
+  // Add compute_attention declaration
+  Matrix compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V, 
+                         const AttentionMask& mask) {
+       // Validate input dimensions
+       if (Q.cols() != K.cols() || K.cols() != V.cols()) {
+           throw std::runtime_error("Q, K, V dimension mismatch");
+       }
+       
+       // Split heads
+       size_t batch_size = Q.rows();
+       size_t seq_len = Q.rows();
+       size_t head_size = Q.cols() / num_heads;
+       
+       // Debug dimensions
+       std::cout << "Attention dimensions:" << std::endl;
+       std::cout << "batch_size: " << batch_size << ", seq_len: " << seq_len 
+                 << ", head_size: " << head_size << ", num_heads: " << num_heads << std::endl;
+       
+       // Reshape Q, K, V to [batch_size, num_heads, seq_len, head_dim]
+       Matrix Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, head_size);
+       Matrix K_reshaped = reshape_for_attention(K, batch_size, num_heads, head_size);
+       Matrix V_reshaped = reshape_for_attention(V, batch_size, num_heads, head_size);
+       
+       // Compute attention scores with bounds checking
+       Matrix scores = safe_matmul(Q_reshaped, K_reshaped.transpose());
+       scores *= (1.0f / std::sqrt(static_cast<float>(head_size)));
+       
+       // Apply mask if provided
+       if (!mask.mask.empty()) {
+           // Expand mask for all heads
+           Matrix expanded_mask(scores.rows(), scores.cols());
+           for (size_t h = 0; h < num_heads; h++) {
+               for (size_t i = 0; i < mask.mask.rows(); i++) {
+                   for (size_t j = 0; j < mask.mask.cols(); j++) {
+                       expanded_mask(h * mask.mask.rows() + i, j) = mask.mask(i, j);
+                   }
+               }
+           }
+           apply_mask(scores, expanded_mask);
+       }
+       
+       std::cout << "Attention scores shape after mask: " 
+                 << scores.rows() << "x" << scores.cols() << std::endl;
+       
+       // Apply softmax
+       apply_softmax(scores);
+       
+       // Compute weighted sum
+       Matrix attention = safe_matmul(scores, V_reshaped);
+       
+       // Reshape back to [batch_size, seq_len, hidden_size]
+       return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
+   }
+
+   // Helper method for safe matrix multiplication
+   Matrix safe_matmul(const Matrix& A, const Matrix& B) {
+       if (A.cols() != B.rows()) {
+           throw std::runtime_error("Matrix multiplication dimension mismatch: " +
+                                  std::to_string(A.cols()) + " != " + 
+                                  std::to_string(B.rows()));
+       }
+       return matmul(A, B);
+   }
+
+   // Helper methods for attention computation
+   Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
+                              size_t num_heads, size_t head_size) const {
+       // Reshape from [batch_size, seq_len, hidden_size] to 
+       // [batch_size * num_heads, seq_len, head_size]
+       Matrix reshaped(batch_size * num_heads, x.cols() / num_heads);
+       
+       for (size_t b = 0; b < batch_size; b++) {
+           for (size_t h = 0; h < num_heads; h++) {
+               for (size_t s = 0; s < x.rows(); s++) {
+                   for (size_t d = 0; d < head_size; d++) {
+                       size_t src_idx = s * x.cols() + h * head_size + d;
+                       size_t tgt_idx = (b * num_heads + h) * x.rows() + s;
+                       reshaped.data()[tgt_idx * head_size + d] = x.data()[src_idx];
+                   }
+               }
+           }
+       }
+       return reshaped;
+   }
+   
+   Matrix reshape_from_attention(const Matrix& x, size_t batch_size, 
+                               size_t seq_len, size_t hidden_size) const {
+       // Reshape from [batch_size * num_heads, seq_len, head_size] to 
+       // [batch_size, seq_len, hidden_size]
+       Matrix reshaped(batch_size, hidden_size);
+       size_t head_size = hidden_size / num_heads;
+       
+       for (size_t b = 0; b < batch_size; b++) {
+           for (size_t h = 0; h < num_heads; h++) {
+               for (size_t s = 0; s < seq_len; s++) {
+                   for (size_t d = 0; d < head_size; d++) {
+                       size_t src_idx = (b * num_heads + h) * seq_len + s;
+                       size_t tgt_idx = s * hidden_size + h * head_size + d;
+                       reshaped.data()[tgt_idx] = x.data()[src_idx * head_size + d];
+                   }
+               }
+           }
+       }
+       return reshaped;
+   }
+   
+   void apply_mask(Matrix& scores, const Matrix& mask) const {
+       std::cout << "Applying mask - scores shape: " << scores.rows() << "x" << scores.cols() 
+                 << ", mask shape: " << mask.rows() << "x" << mask.cols() << std::endl;
+       
+       if (scores.rows() != mask.rows() || scores.cols() != mask.cols()) {
+           throw std::runtime_error("Mask dimensions don't match attention scores: scores(" + 
+                                   std::to_string(scores.rows()) + "," + 
+                                   std::to_string(scores.cols()) + ") != mask(" + 
+                                   std::to_string(mask.rows()) + "," + 
+                                   std::to_string(mask.cols()) + ")");
+       }
+       
+       for (size_t i = 0; i < scores.rows(); i++) {
+           for (size_t j = 0; j < scores.cols(); j++) {
+               if (mask(i,j) == 0.0f) {
+                   scores(i,j) = -std::numeric_limits<float>::infinity();
+               }
+           }
+       }
+   }
+   
+   void apply_softmax(Matrix& x) const {
+       for (size_t i = 0; i < x.rows(); i++) {
+           // Find max for numerical stability
+           float max_val = x(i,0);
+           for (size_t j = 1; j < x.cols(); j++) {
+               max_val = std::max(max_val, x(i,j));
+           }
+           
+           // Compute exp and sum
+           float sum = 0.0f;
+           for (size_t j = 0; j < x.cols(); j++) {
+               x(i,j) = std::exp(x(i,j) - max_val);
+               sum += x(i,j);
+           }
+           
+           // Normalize
+           for (size_t j = 0; j < x.cols(); j++) {
+               x(i,j) /= sum;
+           }
+       }
+   }
 
 public:
   virtual ~MultiHeadAttention() = default;
@@ -78,6 +274,7 @@ public:
         query_bias(other.query_bias), key_bias(other.key_bias),
         value_bias(other.value_bias), output_bias(other.output_bias),
         num_heads(other.num_heads), head_dim(other.head_dim),
+        hidden_size(other.hidden_size),
         use_rope(other.use_rope), use_flash(other.use_flash),
         use_sliding_window(other.use_sliding_window),
         window_size(other.window_size), cos_cached(other.cos_cached),
@@ -95,6 +292,7 @@ public:
       output_bias = other.output_bias;
       num_heads = other.num_heads;
       head_dim = other.head_dim;
+      hidden_size = other.hidden_size;
       use_rope = other.use_rope;
       use_flash = other.use_flash;
       use_sliding_window = other.use_sliding_window;
