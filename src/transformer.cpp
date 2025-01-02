@@ -540,30 +540,46 @@ void Transformer::load(std::istream &is) {
   final_ln = LayerNorm::load(is);
 }
 
-Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input,
+Matrix TransformerLayer::backward(const Matrix& grad_output, 
+                                const Matrix& input,
                                 const Matrix& target_distribution) {
-    // Backward through second residual connection
-    Matrix d_residual2 = grad_output;
+    // Validate inputs
+    if (grad_output.empty() || input.empty()) {
+        throw std::runtime_error("Empty matrices in transformer backward pass");
+    }
     
+    std::cout << "Starting backward pass..." << std::endl;
+    
+    // Make copies to prevent modification of inputs
+    Matrix grad_copy = grad_output;
+    Matrix input_copy = input;
+    
+    std::cout << "Forward pass for normalization..." << std::endl;
     // Forward passes to get normalized values
-    Matrix ffn_input = input;  // Store input for feed forward
+    Matrix ffn_input = input_copy;
     Matrix ffn_normalized = ffn_ln->forward(ffn_input);
-    Matrix attn_normalized = attention_ln->forward(input);
+    Matrix attn_normalized = attention_ln->forward(input_copy);
     
-    // Backward through feed forward network
-    Matrix d_ffn = feed_forward->backward(d_residual2, ffn_normalized);
-    Matrix d_ln2 = ffn_ln->backward(d_ffn, input);
-    
-    // Backward through first residual connection
-    Matrix d_residual1 = d_ln2;
-    
-    Matrix d_attn = self_attention->backward(d_residual1, attn_normalized, target_distribution);
-    
-    // Backward through first layer norm
-    Matrix d_ln1 = attention_ln->backward(d_attn, input);
-    
-    // Final gradient
-    return d_ln1;
+    std::cout << "Starting feed forward backward..." << std::endl;
+    try {
+        Matrix d_ffn = feed_forward->backward(grad_copy, ffn_normalized);
+        std::cout << "Feed forward backward complete..." << std::endl;
+        
+        Matrix d_ln2 = ffn_ln->backward(d_ffn, input_copy);
+        std::cout << "Layer norm 2 backward complete..." << std::endl;
+        
+        Matrix d_residual1 = d_ln2;
+        Matrix d_attn = self_attention->backward(d_residual1, attn_normalized, target_distribution);
+        std::cout << "Self attention backward complete..." << std::endl;
+        
+        Matrix d_ln1 = attention_ln->backward(d_attn, input_copy);
+        std::cout << "Layer norm 1 backward complete..." << std::endl;
+        
+        return d_ln1;
+    } catch (const std::exception& e) {
+        std::cerr << "Error in transformer backward pass: " << e.what() << std::endl;
+        throw;
+    }
 }
 
 Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,

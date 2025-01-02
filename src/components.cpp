@@ -105,12 +105,27 @@ void Matrix::apply_gelu_derivative(const Matrix& x) {
         throw std::runtime_error("Matrix dimensions must match for GELU derivative");
     }
     
+    // Ensure both matrices have valid data
+    if (data_.empty() || x.data_.empty()) {
+        throw std::runtime_error("Empty matrix in GELU derivative");
+    }
+    
     for (size_t i = 0; i < size(); i++) {
+        // Bounds checking
+        if (i >= x.data_.size() || i >= data_.size()) {
+            throw std::runtime_error("Index out of bounds in GELU derivative");
+        }
+        
         float val = x.data_[i];
+        // Prevent numerical instability
+        val = std::clamp(val, -10.0f, 10.0f);
+        
         float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * 
                                             (val + 0.044715f * val * val * val)));
         float pdf = sqrt_2_over_pi * (1.0f + 3.0f * 0.044715f * val * val);
         float derivative = cdf + val * pdf * (1.0f - std::tanh(val) * std::tanh(val));
+        // Prevent numerical overflow
+        derivative = std::clamp(derivative, -10.0f, 10.0f);
         data_[i] *= derivative;
     }
 }

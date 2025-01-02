@@ -48,38 +48,19 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size,
 }
 
 Matrix FeedForward::forward(const Matrix &x) {
-  // First linear layer + GELU activation
-  Matrix intermediate(x.rows(), w1.cols());
-  for (size_t i = 0; i < x.rows(); ++i) {
-    for (size_t j = 0; j < w1.cols(); ++j) {
-      float sum = b1[j];
-      for (size_t k = 0; k < x.cols(); ++k) {
-        sum += x(i, k) * w1(k, j);
-      }
-      // GELU activation
-      intermediate(i, j) =
-          0.5f * sum *
-          (1.0f + std::tanh(std::sqrt(2.0f / M_PI) *
-                            (sum + 0.044715f * std::pow(sum, 3))));
-    }
-  }
-
-  // Store intermediate values for backward pass
-  intermediate_cache = intermediate;
-
-  // Second linear layer
-  Matrix output(x.rows(), w2.cols());
-  for (size_t i = 0; i < x.rows(); ++i) {
-    for (size_t j = 0; j < w2.cols(); ++j) {
-      float sum = b2[j];
-      for (size_t k = 0; k < intermediate.cols(); ++k) {
-        sum += intermediate(i, k) * w2(k, j);
-      }
-      output(i, j) = sum;
-    }
-  }
-
-  return output;
+    Matrix intermediate = matmul(x, w1);
+    intermediate.add_bias(b1);
+    intermediate.apply_gelu();
+    
+    // Deep copy for cache
+    intermediate_cache = Matrix(intermediate.rows(), intermediate.cols());
+    std::copy(intermediate.data(), 
+              intermediate.data() + intermediate.size(),
+              intermediate_cache.data());
+    
+    Matrix output = matmul(intermediate, w2);
+    output.add_bias(b2);
+    return output;
 }
 
 void FeedForward::save(std::ostream &os) const {
@@ -126,12 +107,33 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream &is) {
 }
 
 Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
-  // First compute gradients for second layer
-  Matrix d_intermediate = matmul(grad_output, w2.transpose());
-  d_intermediate.apply_gelu_derivative(intermediate_cache);
-  // Compute gradients for first layer
-  Matrix grad_input = matmul(d_intermediate, w1.transpose());
-  return grad_input;
+    if (intermediate_cache.empty()) {
+        throw std::runtime_error("No cached intermediate values found for backward pass");
+    }
+    
+    // Validate dimensions
+    if (grad_output.cols() != w2.cols() || input.cols() != w1.cols()) {
+        throw std::runtime_error("Dimension mismatch in feed forward backward pass");
+    }
+    
+    std::cout << "Feed forward cache dimensions: " << intermediate_cache.rows() 
+              << "x" << intermediate_cache.cols() << std::endl;
+    
+    // Create local copy of cache to prevent it being moved/destroyed
+    Matrix cache_copy = intermediate_cache;
+    
+    std::cout << "Computing d_intermediate..." << std::endl;
+    Matrix d_intermediate = matmul(grad_output, w2.transpose());
+    std::cout << "Applying GELU derivative..." << std::endl;
+    d_intermediate.apply_gelu_derivative(cache_copy);
+    
+    std::cout << "Computing grad_input..." << std::endl;
+    Matrix grad_input = matmul(d_intermediate, w1.transpose());
+    
+    // Clear cache after use
+    intermediate_cache = Matrix();
+    
+    return grad_input;
 }
 
 Matrix FeedForward::backward_cuda(const Matrix &grad,

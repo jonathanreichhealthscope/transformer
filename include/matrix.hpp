@@ -27,7 +27,23 @@ public:
   Matrix(size_t rows, size_t cols, float init_val = 0.0f);
   Matrix(size_t rows, size_t cols, float *external_data);
   Matrix(size_t rows, size_t cols, float *external_data, bool is_owner);
-
+  Matrix(const Matrix& other) 
+      : data_(other.data_), 
+        rows_(other.rows_), 
+        cols_(other.cols_),
+        shape_(std::make_tuple(other.rows_, other.cols_)),
+        owns_data_(true) {}
+  Matrix(Matrix&& other) noexcept
+      : data_(std::move(other.data_)), 
+        rows_(other.rows_), 
+        cols_(other.cols_),
+        shape_(std::make_tuple(other.rows_, other.cols_)),
+        owns_data_(other.owns_data_) {
+        other.rows_ = 0;
+        other.cols_ = 0;
+        other.shape_ = std::make_tuple(0, 0);
+        other.owns_data_ = false;
+  }
 
   // Size-related methods
   size_t rows() const { return rows_; }
@@ -76,6 +92,35 @@ public:
 
   // Add empty() method
   bool empty() const { return data_.empty(); }
+
+  // Add assignment operator
+  Matrix& operator=(const Matrix& other) {
+      if (this != &other) {
+          data_ = other.data_;
+          rows_ = other.rows_;
+          cols_ = other.cols_;
+          shape_ = std::make_tuple(other.rows_, other.cols_);
+          owns_data_ = true;
+      }
+      return *this;
+  }
+  
+  // Add move assignment operator
+  Matrix& operator=(Matrix&& other) noexcept {
+      if (this != &other) {
+          data_ = std::move(other.data_);
+          rows_ = other.rows_;
+          cols_ = other.cols_;
+          shape_ = std::make_tuple(other.rows_, other.cols_);
+          owns_data_ = other.owns_data_;
+          
+          other.rows_ = 0;
+          other.cols_ = 0;
+          other.shape_ = std::make_tuple(0, 0);
+          other.owns_data_ = false;
+      }
+      return *this;
+  }
 };
 
 class Vector {
