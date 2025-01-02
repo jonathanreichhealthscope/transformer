@@ -44,7 +44,7 @@ private:
   Matrix standard_attention(const Matrix &Q, const Matrix &K, const Matrix &V,
                             const AttentionMask &mask);
   Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
-                                size_t num_heads, size_t head_size) const;
+                                size_t num_heads, size_t seq_len, size_t head_size) const;
 
   void validate_dimensions(const Matrix& grad_output, 
                          const Matrix& input,
@@ -111,9 +111,12 @@ private:
                  << ", head_size: " << head_size << ", num_heads: " << num_heads << std::endl;
        
        // Reshape Q, K, V to [batch_size, num_heads, seq_len, head_dim]
-       Matrix Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, head_size);
-       Matrix K_reshaped = reshape_for_attention(K, batch_size, num_heads, head_size);
-       Matrix V_reshaped = reshape_for_attention(V, batch_size, num_heads, head_size);
+       std::cout << "Q.shape(): " << Q.shape() << std::endl;
+       std::cout << "K.shape(): " << K.shape() << std::endl;
+       std::cout << "V.shape(): " << V.shape() << std::endl;
+       Matrix Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
+       Matrix K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
+       Matrix V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
        std::cout << "exiting reshape_for_attention" << std::endl;
        // Compute attention scores with bounds checking
        Matrix scores = safe_matmul(Q_reshaped, K_reshaped.transpose());
@@ -180,27 +183,6 @@ private:
        }
        return matmul(A, B);
    }
-
-   // Helper methods for attention computation
-   /*Matrix reshape_for_attention(const Matrix& x, size_t batch_size, 
-                              size_t num_heads, size_t head_size) const {
-       // Reshape from [batch_size, seq_len, hidden_size] to 
-       // [batch_size * num_heads, seq_len, head_size]
-       Matrix reshaped(batch_size * num_heads, x.cols() / num_heads);
-       
-       for (size_t b = 0; b < batch_size; b++) {
-           for (size_t h = 0; h < num_heads; h++) {
-               for (size_t s = 0; s < x.rows(); s++) {
-                   for (size_t d = 0; d < head_size; d++) {
-                       size_t src_idx = s * x.cols() + h * head_size + d;
-                       size_t tgt_idx = (b * num_heads + h) * x.rows() + s;
-                       reshaped.data()[tgt_idx * head_size + d] = x.data()[src_idx];
-                   }
-               }
-           }
-       }
-       return reshaped;
-   }*/
 
    
    Matrix reshape_from_attention(const Matrix& x, size_t batch_size, 

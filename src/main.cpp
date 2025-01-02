@@ -342,7 +342,7 @@ int main(int argc, char *argv[]) {
     config.window_size = 256;
     config.use_fp16 = false;
     config.head_dim = config.hidden_size / config.num_heads;  // Add explicit head_dim calculation
-    config.batch_size = 5;  // Set the batch size
+    config.batch_size = 8;  // Set the batch size
     config.num_epochs = 10;  // Set the number of epochs
 
     std::cout << "Initializing transformer with configuration:\n"

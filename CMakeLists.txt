@@ -105,6 +105,18 @@ set(OPTIMIZER_SOURCES
     src/optimizer/sam.cpp
 )
 
+# Add the tensor source file to the sources list
+set(SOURCES
+    ${SOURCES}
+    src/tensor.cpp
+)
+
+# Add the tensor header to the includes
+set(HEADERS
+    ${HEADERS}
+    include/tensor.hpp
+)
+
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}

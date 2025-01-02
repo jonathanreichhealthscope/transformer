@@ -632,23 +632,19 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output,
 }
 
 Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size, 
-                                               size_t num_heads, size_t head_size) const {
-    // Remove seq_len parameter and use x.rows() instead
-    size_t seq_len = x.rows();
+                                               size_t num_heads, size_t seq_len, size_t head_size) const {
     // Reshape from [batch_size, seq_len, hidden_size] to 
     // [batch_size * num_heads, seq_len, head_size]
-    std::cout << "batch size: " << batch_size << std::endl;
-    std::cout << "num heads: " << num_heads << std::endl;
-    std::cout << "head size: " << head_size << std::endl;
-    std::cout << "seq len: " << seq_len << std::endl;
-    std::cout << "matrix shape: " << x.shape() << std::endl;
-    std::cout << "reshaping for attention" << std::endl;
-    Matrix reshaped(batch_size * num_heads, x.cols() / num_heads);
-    std::cout << "Iteratiring through batch size" << std::endl;
+    std::cout << "In reshaped for attention" << std::endl;
+    std::cout << "Input matrix shape: " << x.shape() << std::endl;
+    std::cout << "num_heads: " << num_heads << std::endl;
+    std::cout << "head_size: " << head_size << std::endl;
+    std::cout << "seq_len: " << seq_len << std::endl;
+    std::cout << "batch_size: " << batch_size << std::endl;
+    Matrix reshaped(batch_size * num_heads, seq_len, num_heads);
+    std::cout << "Reshaped matrix shape: " << reshaped.shape() << std::endl;
     for (size_t b = 0; b < batch_size; b++) {
-        std::cout << "Iteratiring through num heads" << std::endl;
         for (size_t h = 0; h < num_heads; h++) {
-            std::cout << "Iteratiring through seq len" << std::endl;
             for (size_t s = 0; s < x.rows(); s++) {
                 for (size_t d = 0; d < head_size; d++) {
                     size_t src_idx = s * x.cols() + h * head_size + d;
@@ -660,5 +656,6 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_s
     }
     return reshaped;
 }
+
 
    
