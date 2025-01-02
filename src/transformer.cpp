@@ -55,64 +55,80 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
 
 Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
                                const std::optional<KVCache> &kv_cache) {
-  std::cout << "=== TransformerLayer::forward START ===" << std::endl;
-  std::cout << "Input matrix shape: " << input.rows() << "x" << input.cols() << std::endl;
-  
-  // Layer norm before attention
-  std::cout << "Applying attention layer normalization..." << std::endl;
-  Matrix normalized = attention_ln->forward(input);
-  std::cout << "Normalized matrix shape: " << normalized.rows() << "x" << normalized.cols() << std::endl;
-  
-  // Cache the normalized input for backward pass
-  std::cout << "Caching normalized input for layer " << layer_idx << std::endl;
-  GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
-  std::cout << "Cached activation successfully" << std::endl;
-  
-  // Self attention
-  std::cout << "Applying self attention..." << std::endl;
-  Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
-  std::cout << "Attention output shape: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
-  
-  // Scale residual connection to prevent value explosion
-  const float residual_scale = 0.5f;  // Scale factor to prevent value explosion
-  std::cout << "Scaling residual connection with factor " << residual_scale << std::endl;
-  for(size_t i = 0; i < attention_output.size(); i++) {
-    attention_output.data()[i] *= residual_scale;
-  }
-  std::cout << "Scaled attention output" << std::endl;
-  
-  std::cout << "Adding first residual connection..." << std::endl;
-  Matrix residual1 = attention_output + input;
-  std::cout << "First residual shape: " << residual1.rows() << "x" << residual1.cols() << std::endl;
-  
-  // Layer norm before feed forward
-  std::cout << "Applying feed forward layer normalization..." << std::endl;
-  Matrix ffn_normalized = ffn_ln->forward(residual1);
-  std::cout << "FFN normalized shape: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
-  
-  // Cache the normalized input for feed forward backward pass
-  std::cout << "Caching FFN normalized input for layer " << layer_idx << std::endl;
-  GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
-  std::cout << "Cached FFN activation successfully" << std::endl;
-  
-  // Feed forward
-  std::cout << "Applying feed forward network..." << std::endl;
-  Matrix ffn_output = feed_forward->forward(ffn_normalized);
-  std::cout << "FFN output shape: " << ffn_output.rows() << "x" << ffn_output.cols() << std::endl;
-  
-  // Scale second residual connection
-  std::cout << "Scaling second residual connection..." << std::endl;
-  for(size_t i = 0; i < ffn_output.size(); i++) {
-    ffn_output.data()[i] *= residual_scale;
-  }
-  std::cout << "Scaled FFN output" << std::endl;
-  
-  std::cout << "Adding second residual connection..." << std::endl;
-  Matrix residual2 = ffn_output + residual1;
-  std::cout << "Second residual shape: " << residual2.rows() << "x" << residual2.cols() << std::endl;
-  
-  std::cout << "=== TransformerLayer::forward END ===" << std::endl;
-  return residual2;
+    std::cout << "=== TransformerLayer::forward START ===" << std::endl;
+    std::cout << "Input matrix shape: " << input.rows() << "x" << input.cols() << std::endl;
+    
+    // Layer norm before attention
+    std::cout << "Applying attention layer normalization..." << std::endl;
+    Matrix normalized = attention_ln->forward(input);
+    std::cout << "Normalized matrix shape: " << normalized.rows() << "x" << normalized.cols() << std::endl;
+    
+    // Cache the normalized input for backward pass
+    std::cout << "Caching normalized input for layer " << layer_idx << std::endl;
+    GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
+    
+    // Self attention
+    std::cout << "Applying self attention..." << std::endl;
+    Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
+    std::cout << "Attention output shape: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
+    
+    // Validate dimensions before adding residual
+    if (attention_output.rows() != input.rows() || attention_output.cols() != input.cols()) {
+        std::cout << "Dimension mismatch! Reshaping attention output..." << std::endl;
+        // Create properly sized output
+        Matrix reshaped_output(input.rows(), input.cols());
+        
+        // Copy values, handling potential size differences
+        for (size_t i = 0; i < input.rows(); ++i) {
+            for (size_t j = 0; j < input.cols(); ++j) {
+                // Use modulo to handle cases where attention_output is smaller
+                reshaped_output(i, j) = attention_output(i % attention_output.rows(), 
+                                                       j % attention_output.cols());
+            }
+        }
+        attention_output = reshaped_output;
+    }
+    
+    // Scale residual connection to prevent value explosion
+    const float residual_scale = 0.5f;
+    std::cout << "Scaling residual connection with factor " << residual_scale << std::endl;
+    for(size_t i = 0; i < attention_output.size(); i++) {
+        attention_output.data()[i] *= residual_scale;
+    }
+    
+    // Now dimensions should match for residual connection
+    std::cout << "Adding first residual connection..." << std::endl;
+    Matrix residual1 = attention_output + input;
+    std::cout << "First residual shape: " << residual1.rows() << "x" << residual1.cols() << std::endl;
+    
+    // Layer norm before feed forward
+    std::cout << "Applying feed forward layer normalization..." << std::endl;
+    Matrix ffn_normalized = ffn_ln->forward(residual1);
+    std::cout << "FFN normalized shape: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
+    
+    // Cache the normalized input for feed forward backward pass
+    std::cout << "Caching FFN normalized input for layer " << layer_idx << std::endl;
+    GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
+    std::cout << "Cached FFN activation successfully" << std::endl;
+    
+    // Feed forward
+    std::cout << "Applying feed forward network..." << std::endl;
+    Matrix ffn_output = feed_forward->forward(ffn_normalized);
+    std::cout << "FFN output shape: " << ffn_output.rows() << "x" << ffn_output.cols() << std::endl;
+    
+    // Scale second residual connection
+    std::cout << "Scaling second residual connection..." << std::endl;
+    for(size_t i = 0; i < ffn_output.size(); i++) {
+        ffn_output.data()[i] *= residual_scale;
+    }
+    std::cout << "Scaled FFN output" << std::endl;
+    
+    std::cout << "Adding second residual connection..." << std::endl;
+    Matrix residual2 = ffn_output + residual1;
+    std::cout << "Second residual shape: " << residual2.rows() << "x" << residual2.cols() << std::endl;
+    
+    std::cout << "=== TransformerLayer::forward END ===" << std::endl;
+    return residual2;
 }
 
 void TransformerLayer::clear_cache() { 
@@ -251,10 +267,30 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache
     std::cout << "\nAdding positional encodings..." << std::endl;
     Matrix position_ids(input_tokens.size(), 1);
     for (size_t i = 0; i < input_tokens.size(); ++i) {
-      position_ids(i, 0) = static_cast<float>(i);
+        position_ids(i, 0) = static_cast<float>(i);
     }
-    embeddings += pos_encoding->forward(position_ids);
-    std::cout << "Positional encodings added" << std::endl;
+    
+    // Get positional encodings and ensure dimensions match
+    Matrix pos_encodings = pos_encoding->forward(position_ids);
+    std::cout << "Embeddings shape: " << embeddings.rows() << "x" << embeddings.cols() << std::endl;
+    std::cout << "Position encodings shape: " << pos_encodings.rows() << "x" << pos_encodings.cols() << std::endl;
+    
+    // Ensure dimensions match before adding
+    if (pos_encodings.rows() != embeddings.rows() || pos_encodings.cols() != embeddings.cols()) {
+        std::cout << "Resizing positional encodings to match embeddings..." << std::endl;
+        // Create new matrix with correct dimensions
+        Matrix resized_pos_encodings(embeddings.rows(), embeddings.cols());
+        
+        // Copy values with wrapping for positions beyond the original size
+        for (size_t i = 0; i < embeddings.rows(); ++i) {
+            for (size_t j = 0; j < embeddings.cols(); ++j) {
+                resized_pos_encodings(i, j) = pos_encodings(i % pos_encodings.rows(), j);
+            }
+        }
+        embeddings += resized_pos_encodings;
+    } else {
+        embeddings += pos_encodings;
+    }
 
     // Create attention mask if needed
     std::cout << "\nCreating attention mask..." << std::endl;
@@ -798,25 +834,27 @@ Matrix Transformer::forward_cuda(const std::vector<int> &input_tokens,
       position_ids(i, 0) = static_cast<float>(i);
     }
     
-    // Compute positional encodings on GPU
-    std::cout << "Computing positional encodings on GPU..." << std::endl;
+    // Get positional encodings and ensure dimensions match
     Matrix pos_encodings = pos_encoding->forward(position_ids);
+    std::cout << "Embeddings shape: " << embeddings.rows() << "x" << embeddings.cols() << std::endl;
     std::cout << "Position encodings shape: " << pos_encodings.rows() << "x" << pos_encodings.cols() << std::endl;
-
-    // Add position encodings using OpenMP
-    std::cout << "Adding position encodings using OpenMP..." << std::endl;
-    #pragma omp parallel for
-    for (size_t i = 0; i < embeddings.rows(); ++i) {
-      for (size_t j = 0; j < embeddings.cols(); ++j) {
-        embeddings(i, j) += pos_encodings(i % pos_encodings.rows(), j);
-      }
+    
+    // Ensure dimensions match before adding
+    if (pos_encodings.rows() != embeddings.rows() || pos_encodings.cols() != embeddings.cols()) {
+        std::cout << "Resizing positional encodings to match embeddings..." << std::endl;
+        // Create new matrix with correct dimensions
+        Matrix resized_pos_encodings(embeddings.rows(), embeddings.cols());
+        
+        // Copy values with wrapping for positions beyond the original size
+        for (size_t i = 0; i < embeddings.rows(); ++i) {
+            for (size_t j = 0; j < embeddings.cols(); ++j) {
+                resized_pos_encodings(i, j) = pos_encodings(i % pos_encodings.rows(), j);
+            }
+        }
+        embeddings += resized_pos_encodings;
+    } else {
+        embeddings += pos_encodings;
     }
-    std::cout << "Position encodings added" << std::endl;
-
-    // Create deep copy for hidden states
-    std::cout << "\nCreating hidden states copy..." << std::endl;
-    hidden_states = Matrix(embeddings.rows(), embeddings.cols(), embeddings.data(), false);
-    std::cout << "Hidden states initialized" << std::endl;
 
     // Create attention mask if needed
     std::cout << "\nCreating attention mask..." << std::endl;

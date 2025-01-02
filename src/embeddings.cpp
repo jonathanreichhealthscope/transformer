@@ -188,15 +188,23 @@ PositionalEncoding::PositionalEncoding(size_t max_seq_length,
   }
 }
 
-Matrix PositionalEncoding::forward(const Matrix &position_ids) {
-  Matrix output(position_ids.rows(), encoding_matrix_.cols());
-  for (size_t i = 0; i < position_ids.rows(); ++i) {
-    for (size_t j = 0; j < encoding_matrix_.cols(); ++j) {
-      size_t pos = static_cast<size_t>(position_ids(i, 0));
-      output(i, j) = encoding_matrix_(pos, j);
+Matrix PositionalEncoding::forward(const Matrix& position_ids) {
+    size_t seq_length = position_ids.rows();
+    Matrix encodings(seq_length, hidden_size_);
+    
+    // Generate positional encodings
+    for (size_t pos = 0; pos < seq_length; ++pos) {
+        for (size_t i = 0; i < hidden_size_; i += 2) {
+            float angle = position_ids(pos, 0) / std::pow(10000.0f, (2.0f * i) / hidden_size_);
+            encodings(pos, i) = std::sin(angle);
+            if (i + 1 < hidden_size_) {
+                encodings(pos, i + 1) = std::cos(angle);
+            }
+        }
     }
-  }
-  return output;
+    
+    std::cout << "Created positional encodings with shape: " << encodings.rows() << "x" << encodings.cols() << std::endl;
+    return encodings;
 }
 
 void PositionalEncoding::save(std::ostream &os) const {

@@ -47,13 +47,13 @@ private:
   Tensor reshape_for_attention(const Matrix& x, size_t batch_size, 
                                 size_t num_heads, size_t seq_len, size_t head_size) const;
 
-  Matrix reshape_from_attention(const Tensor &x, size_t batch_size, size_t seq_len, size_t hidden_size) const;
+  // Change the inline definition to just a declaration
+  Matrix reshape_from_attention(const Tensor& x, size_t seq_len, size_t hidden_size) const;
 
-
-Tensor compute_attention(const Matrix& Q, const Matrix& K, 
-                      const Matrix& V, const AttentionMask& mask, 
-                      size_t batch_size, size_t num_heads, 
-                      size_t seq_len, size_t head_size);
+  Tensor compute_attention(const Matrix& Q, const Matrix& K, 
+                        const Matrix& V, const AttentionMask& mask, 
+                        size_t batch_size, size_t num_heads, 
+                        size_t seq_len, size_t head_size);
 
   void validate_dimensions(const Matrix& grad_output, 
                          const Matrix& input,
@@ -115,32 +115,6 @@ Tensor compute_attention(const Matrix& Q, const Matrix& K,
        return matmul(A, B);
    }
 
-   
-   Matrix reshape_from_attention(const Matrix& x, size_t batch_size, 
-                               size_t seq_len, size_t hidden_size) const {
-       // Reshape from [batch_size * num_heads, seq_len, head_size] to 
-       // [batch_size, seq_len, hidden_size]
-       std::cout << "entered reshape_from_attention" << std::endl;
-       Matrix reshaped(batch_size, hidden_size);
-       size_t head_size = hidden_size / num_heads;
-       std::cout << "head_size: " << head_size << std::endl;    
-       std::cout << "hidden_size: " << hidden_size << std::endl;
-       std::cout << "num_heads: " << num_heads << std::endl;
-
-       for (size_t b = 0; b < batch_size; b++) {
-           for (size_t h = 0; h < num_heads; h++) {
-               for (size_t s = 0; s < seq_len; s++) {
-                   for (size_t d = 0; d < head_size; d++) {
-                       size_t src_idx = (b * num_heads + h) * seq_len + s;
-                       size_t tgt_idx = s * hidden_size + h * head_size + d;
-                       reshaped.data()[tgt_idx] = x.data()[src_idx * head_size + d];
-                   }
-               }
-           }
-       }
-       std::cout << "exiting reshape_from_attention" << std::endl;
-       return reshaped;
-   }
    
    void apply_mask(Matrix& scores, const Matrix& mask) const {
        std::cout << "Applying mask - scores shape: " << scores.rows() << "x" << scores.cols() 
