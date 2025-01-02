@@ -633,8 +633,8 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output,
 }
 
 Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size, 
-                                                size_t num_heads, size_t seq_len, 
-                                                size_t head_size) const {
+                                               size_t num_heads, size_t seq_len, 
+                                               size_t head_size) const {
     // Create a 4D tensor with shape [batch_size, num_heads, seq_len, head_size]
     Tensor reshaped(batch_size, num_heads, seq_len, head_size);
     
@@ -643,9 +643,8 @@ Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_s
         for (size_t h = 0; h < num_heads; ++h) {
             for (size_t s = 0; s < seq_len; ++s) {
                 for (size_t d = 0; d < head_size; ++d) {
-                    size_t flat_idx = b * seq_len * hidden_size + 
-                                    s * hidden_size + 
-                                    h * head_size + d;
+                    // Correct indexing for the input matrix
+                    size_t flat_idx = s * x.cols() + h * head_size + d;
                     reshaped.at(b, h, s, d) = x.data()[flat_idx];
                 }
             }
@@ -666,8 +665,9 @@ Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t batch_
         for (size_t s = 0; s < seq_len; ++s) {
             for (size_t h = 0; h < num_heads; ++h) {
                 for (size_t d = 0; d < head_size; ++d) {
-                    size_t out_idx = (b * seq_len + s) * hidden_size + h * head_size + d;
-                    reshaped.data()[out_idx] = x.at(b, h, s, d);
+                    // Correct indexing for the output matrix
+                    size_t out_idx = s * hidden_size + h * head_size + d;
+                    reshaped.data()[b * seq_len * hidden_size + out_idx] = x.at(b, h, s, d);
                 }
             }
         }
@@ -684,42 +684,45 @@ Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
     
     // Split heads
     size_t batch_size = Q.rows();
-    size_t seq_len = Q.rows();
+    size_t seq_len = Q.rows();  // For self-attention
     size_t head_size = Q.cols() / num_heads;
     
     // Debug dimensions
     std::cout << "Attention dimensions:" << std::endl;
+    std::cout << "Q: " << Q.rows() << "x" << Q.cols() << std::endl;
+    std::cout << "K: " << K.rows() << "x" << K.cols() << std::endl;
+    std::cout << "V: " << V.rows() << "x" << V.cols() << std::endl;
     std::cout << "batch_size: " << batch_size << ", seq_len: " << seq_len 
               << ", head_size: " << head_size << ", num_heads: " << num_heads << std::endl;
     
     // Reshape Q, K, V to [batch_size, num_heads, seq_len, head_dim]
-    std::cout << "Q.shape(): " << Q.shape() << std::endl;
-    std::cout << "K.shape(): " << K.shape() << std::endl;
-    std::cout << "V.shape(): " << V.shape() << std::endl;
     Tensor Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
     Tensor K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_size);
     Tensor V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
-    std::cout << "exiting reshape_for_attention" << std::endl;
     
-    // Compute attention scores with bounds checking
-    Tensor scores = Tensor::safe_tensormul(Q_reshaped, K_reshaped.transpose({0, 1, 3, 2}));
-    std::cout << "exiting safe_matmul" << std::endl;
+    // Convert tensors to matrices for attention computation
+    // Q_reshaped: [batch_size * num_heads, seq_len, head_size]
+    // K_reshaped: [batch_size * num_heads, seq_len, head_size]
+    // V_reshaped: [batch_size * num_heads, seq_len, head_size]
+    Matrix Q_mat = Q_reshaped.to_matrix();
+    Matrix K_mat = K_reshaped.to_matrix();
+    Matrix V_mat = V_reshaped.to_matrix();
     
-    // Scale attention scores with temperature scaling
-    const float temperature = std::sqrt(static_cast<float>(head_size));
-    const float scale = 1.0f / temperature;
+    // Compute attention scores: [batch_size * num_heads, seq_len, seq_len]
+    Matrix scores = matmul(Q_mat, K_mat.transpose());
+    
+    // Scale attention scores
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
     const float MAX_SCORE = 10.0f;
     
     for(size_t i = 0; i < scores.size(); i++) {
-        float val = scores.data()[i];
-        if (std::abs(val) > 1e-6f) {  // Only scale non-zero values
-            val *= scale;
-            scores.data()[i] = std::clamp(val, -MAX_SCORE, MAX_SCORE);
-        }
+        float val = scores.data()[i] * scale;
+        scores.data()[i] = std::clamp(val, -MAX_SCORE, MAX_SCORE);
     }
     
     // Apply mask if provided
     if (!mask.mask.empty()) {
+        // Expand mask for all heads
         Matrix expanded_mask(scores.rows(), scores.cols());
         for (size_t h = 0; h < num_heads; h++) {
             for (size_t i = 0; i < mask.mask.rows(); i++) {
@@ -734,8 +737,8 @@ Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
     // Apply softmax
     apply_stable_softmax(scores);
     
-    // Compute weighted sum
-    Matrix attention = safe_matmul(scores, V_reshaped);
+    // Compute weighted sum: [batch_size * num_heads, seq_len, head_size]
+    Matrix attention = matmul(scores, V_mat);
     
     // Add small epsilon to prevent exactly zero gradients
     const float EPSILON = 1e-6f;
@@ -745,5 +748,8 @@ Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
         }
     }
     
-    return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
+    // Reshape back to [batch_size, seq_len, hidden_size]
+    return reshape_from_attention(Tensor(attention, 
+        {batch_size, num_heads, seq_len, head_size}), 
+        batch_size, seq_len, hidden_size);
 }
