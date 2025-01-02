@@ -203,6 +203,7 @@ void Matrix::set_row(size_t row, const Vector &vec) {
 // Matrix operations
 Matrix Matrix::transpose() const {
   Matrix result(cols_, rows_);
+  #pragma omp parallel for collapse(2)
   for (size_t i = 0; i < rows_; ++i) {
     for (size_t j = 0; j < cols_; ++j) {
       result(j, i) = (*this)(i, j);
@@ -212,17 +213,20 @@ Matrix Matrix::transpose() const {
 }
 
 void Matrix::apply_relu() {
-  for (float &val : data_) {
-    val = std::max(0.0f, val);
+  #pragma omp parallel for simd
+  for (size_t i = 0; i < data_.size(); i++) {
+    data_[i] = std::max(0.0f, data_[i]);
   }
 }
 
 void Matrix::apply_gelu() {
   constexpr float sqrt_2_over_pi = 0.7978845608028654f;
-  for (float &val : data_) {
+  #pragma omp parallel for simd
+  for (size_t i = 0; i < data_.size(); i++) {
+    float val = data_[i];
     float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi *
-                                         (val + 0.044715f * val * val * val)));
-    val *= cdf;
+                                       (val + 0.044715f * val * val * val)));
+    data_[i] = val * cdf;
   }
 }
 
@@ -232,45 +236,46 @@ void Matrix::apply_gelu_derivative(const Matrix& x) {
         throw std::runtime_error("Matrix dimensions must match for GELU derivative");
     }
     
-    // Ensure both matrices have valid data
     if (data_.empty() || x.data_.empty()) {
         throw std::runtime_error("Empty matrix in GELU derivative");
     }
     
+    #pragma omp parallel for simd
     for (size_t i = 0; i < size(); i++) {
-        // Bounds checking
         if (i >= x.data_.size() || i >= data_.size()) {
             throw std::runtime_error("Index out of bounds in GELU derivative");
         }
         
         float val = x.data_[i];
-        // Prevent numerical instability
         val = std::clamp(val, -10.0f, 10.0f);
         
         float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * 
-                                            (val + 0.044715f * val * val * val)));
+                                          (val + 0.044715f * val * val * val)));
         float pdf = sqrt_2_over_pi * (1.0f + 3.0f * 0.044715f * val * val);
         float derivative = cdf + val * pdf * (1.0f - std::tanh(val) * std::tanh(val));
-        // Prevent numerical overflow
         derivative = std::clamp(derivative, -10.0f, 10.0f);
         data_[i] *= derivative;
     }
 }
 
 void Matrix::apply_softmax() {
+  #pragma omp parallel for
   for (size_t i = 0; i < rows_; ++i) {
     float max_val = -std::numeric_limits<float>::infinity();
+    #pragma omp simd reduction(max:max_val)
     for (size_t j = 0; j < cols_; ++j) {
       max_val = std::max(max_val, (*this)(i, j));
     }
 
     float sum = 0.0f;
+    #pragma omp simd reduction(+:sum)
     for (size_t j = 0; j < cols_; ++j) {
       float exp_val = std::exp((*this)(i, j) - max_val);
       (*this)(i, j) = exp_val;
       sum += exp_val;
     }
 
+    #pragma omp simd
     for (size_t j = 0; j < cols_; ++j) {
       (*this)(i, j) /= sum;
     }
@@ -281,6 +286,7 @@ void Matrix::add_bias(const Vector &bias) {
   if (bias.size() != cols_) {
     throw std::invalid_argument("Bias size must match matrix columns");
   }
+  #pragma omp parallel for collapse(2)
   for (size_t i = 0; i < rows_; ++i) {
     for (size_t j = 0; j < cols_; ++j) {
       (*this)(i, j) += bias[j];
@@ -293,6 +299,7 @@ Matrix &Matrix::operator+=(const Matrix &other) {
   if (rows_ != other.rows_ || cols_ != other.cols_) {
     throw std::invalid_argument("Matrix dimensions must match for addition");
   }
+  #pragma omp parallel for simd
   for (size_t i = 0; i < data_.size(); ++i) {
     data_[i] += other.data_[i];
   }
@@ -303,6 +310,7 @@ Matrix &Matrix::operator-=(const Matrix &other) {
   if (rows_ != other.rows_ || cols_ != other.cols_) {
     throw std::invalid_argument("Matrix dimensions must match for subtraction");
   }
+  #pragma omp parallel for simd
   for (size_t i = 0; i < data_.size(); ++i) {
     data_[i] -= other.data_[i];
   }
@@ -310,8 +318,9 @@ Matrix &Matrix::operator-=(const Matrix &other) {
 }
 
 Matrix &Matrix::operator*=(float scalar) {
-  for (float &val : data_) {
-    val *= scalar;
+  #pragma omp parallel for simd
+  for (size_t i = 0; i < data_.size(); i++) {
+    data_[i] *= scalar;
   }
   return *this;
 }
@@ -320,8 +329,9 @@ Matrix &Matrix::operator/=(float scalar) {
   if (scalar == 0.0f) {
     throw std::invalid_argument("Division by zero");
   }
-  for (float &val : data_) {
-    val /= scalar;
+  #pragma omp parallel for simd
+  for (size_t i = 0; i < data_.size(); i++) {
+    data_[i] /= scalar;
   }
   return *this;
 }
@@ -331,9 +341,12 @@ Matrix &Matrix::operator*=(const Matrix &other) {
     throw std::invalid_argument("Invalid matrix dimensions for multiplication");
   }
   Matrix result(rows_, other.cols_);
+  
+  #pragma omp parallel for collapse(2)
   for (size_t i = 0; i < rows_; ++i) {
     for (size_t j = 0; j < other.cols_; ++j) {
       float sum = 0.0f;
+      #pragma omp simd reduction(+:sum)
       for (size_t k = 0; k < cols_; ++k) {
         sum += (*this)(i, k) * other(k, j);
       }

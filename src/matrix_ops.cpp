@@ -120,24 +120,34 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
   std::cout << "Matrix B stats: min=" << b.min() << " max=" << b.max() << std::endl;
   
   // Check for invalid values in input matrices
+  bool has_invalid_values = false;
+  std::string error_message;
+  
+  #pragma omp parallel for collapse(2) reduction(|:has_invalid_values)
   for (size_t i = 0; i < a.rows(); ++i) {
     for (size_t j = 0; j < a.cols(); ++j) {
       if (std::isnan(a(i,j)) || std::isinf(a(i,j))) {
-        throw std::runtime_error("Invalid value in matrix A at position (" + 
-                               std::to_string(i) + "," + std::to_string(j) + 
-                               "): " + std::to_string(a(i,j)));
+        has_invalid_values = true;
       }
     }
   }
   
+  if (has_invalid_values) {
+    throw std::runtime_error("Invalid values found in matrix A");
+  }
+  
+  has_invalid_values = false;
+  #pragma omp parallel for collapse(2) reduction(|:has_invalid_values)
   for (size_t i = 0; i < b.rows(); ++i) {
     for (size_t j = 0; j < b.cols(); ++j) {
       if (std::isnan(b(i,j)) || std::isinf(b(i,j))) {
-        throw std::runtime_error("Invalid value in matrix B at position (" + 
-                               std::to_string(i) + "," + std::to_string(j) + 
-                               "): " + std::to_string(b(i,j)));
+        has_invalid_values = true;
       }
     }
+  }
+  
+  if (has_invalid_values) {
+    throw std::runtime_error("Invalid values found in matrix B");
   }
   
   float max_val = 0.0f;
@@ -148,23 +158,20 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
   const float MIN_SAFE_VAL = -1e6f;
   const float EPSILON = 1e-6f;
   
+  // Main multiplication with OpenMP parallelization
+  #pragma omp parallel for collapse(2) reduction(max:max_val)
   for (size_t i = 0; i < a.rows(); ++i) {
     for (size_t j = 0; j < b.cols(); ++j) {
       float sum = 0.0f;
+      #pragma omp simd reduction(+:sum)
       for (size_t k = 0; k < a.cols(); ++k) {
         // Clamp input values for numerical stability
         float a_val = std::clamp(a(i, k), MIN_SAFE_VAL, MAX_SAFE_VAL);
         float b_val = std::clamp(b(k, j), MIN_SAFE_VAL, MAX_SAFE_VAL);
-        
         float prod = a_val * b_val;
         
-        // Check for overflow/underflow
-        if (std::isnan(prod) || std::isinf(prod)) {
-          std::cerr << "Warning: Invalid product at position (" << i << "," << j << "," << k << ")" << std::endl;
-          std::cerr << "a_val=" << a_val << ", b_val=" << b_val << std::endl;
-          prod = 0.0f;  // Reset invalid products to zero
-        }
-        
+        // Handle invalid products without critical section
+        prod = (std::isnan(prod) || std::isinf(prod)) ? 0.0f : prod;
         sum += prod;
         
         // Clamp running sum for stability
@@ -187,13 +194,19 @@ Matrix matmul(const Matrix &a, const Matrix &b) {
   }
   
   // Check final result for invalid values
+  bool has_invalid_result = false;
+  #pragma omp parallel for collapse(2) reduction(|:has_invalid_result)
   for (size_t i = 0; i < result.rows(); ++i) {
     for (size_t j = 0; j < result.cols(); ++j) {
       if (std::isnan(result(i,j)) || std::isinf(result(i,j))) {
-        std::cerr << "Invalid value in result at (" << i << "," << j << "): " << result(i,j) << std::endl;
+        has_invalid_result = true;
         result(i,j) = 0.0f;  // Reset invalid results to zero
       }
     }
+  }
+  
+  if (has_invalid_result) {
+    std::cerr << "Warning: Invalid values in result matrix were reset to zero\n";
   }
   
   std::cout << "Matrix multiplication result dimensions: " << result.rows() << "x" << result.cols() << std::endl;
