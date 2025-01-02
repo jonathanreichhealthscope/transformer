@@ -8,9 +8,21 @@
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),
       embedding_dim_(embedding_dim) {
-  // Initialize weights with smaller values for better stability
-  float scale = std::sqrt(1.0f / embedding_dim_);  // Xavier initialization
+  // Current initialization is good, but let's add bounds checking
+  float scale = std::sqrt(1.0f / embedding_dim_);
   weights_.randomize(-scale, scale);
+  
+  // Add validation
+  bool all_zero = true;
+  for(size_t i = 0; i < std::min(size_t(10), weights_.size()); i++) {
+    if(weights_.data()[i] != 0.0f) {
+      all_zero = false;
+      break;
+    }
+  }
+  if(all_zero) {
+    throw std::runtime_error("Embedding weights initialization failed - all values are zero");
+  }
 }
 
 Matrix TokenEmbedding::forward(const std::vector<int> &tokens) {

@@ -125,6 +125,19 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens,
   // Get embeddings using cuBLAS for matrix operations
   token_embedding->forward_cuda(input_tokens, embeddings);
 
+  // Validate embeddings are non-zero
+  bool embeddings_zero = true;
+  for(size_t i = 0; i < std::min(size_t(10), embeddings.size()); i++) {
+    if(embeddings.data()[i] != 0.0f) {
+      embeddings_zero = false;
+      break;
+    }
+  }
+  if(embeddings_zero) {
+    std::cerr << "Error: Initial embeddings are all zero!\n";
+    throw std::runtime_error("Embeddings initialization failed");
+  }
+
   // Add positional encodings
   Matrix position_ids(input_tokens.size(), 1);
   for (size_t i = 0; i < input_tokens.size(); ++i) {

@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <iostream>
@@ -46,6 +47,13 @@ public:
   // Data access
   float *data() { return data_.data(); }
   const float *data() const { return data_.data(); }
+  float min() const {
+    return *std::min_element(data_.begin(), data_.end());
+  }
+
+  float max() const {
+    return *std::max_element(data_.begin(), data_.end());
+  }
 
   // Additional operations from components.cpp
   Vector row(size_t row) const;
@@ -133,6 +141,7 @@ public:
     size_ = new_size;
   }
 };
+
 
 // Non-member operators
 Matrix operator+(const Matrix &a, const Matrix &b);

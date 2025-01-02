@@ -1,4 +1,5 @@
 #include "../include/attention.hpp"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 
@@ -89,13 +90,47 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
 
 Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                    const std::optional<KVCache> &kv_cache) {
+  // Debug input values
+  std::cerr << "Input matrix x stats before projection:\n";
+  std::cerr << "x size: " << x.size() << ", x(0,0): " << x(0,0) << "\n";
+  std::cerr << "x min: " << x.min() << ", x max: " << x.max() << "\n";
+  std::cerr << "query_proj size: " << query_proj.size() << ", query_proj(0,0): " << query_proj(0,0) << "\n";
+
   // Project input to Q, K, V
   Matrix Q = matmul(x, query_proj);
   Matrix K = matmul(x, key_proj);
   Matrix V = matmul(x, value_proj);
-  std::cout << "Q: " << *Q.data() << std::endl;
-  std::cout << "K: " << *K.data() << std::endl;
-  std::cout << "V: " << *V.data() << std::endl;
+
+  // Validate matrix multiplication results
+  if(Q.size() == 0 || K.size() == 0 || V.size() == 0) {
+    throw std::runtime_error("Q, K, or V matrices have zero size after projection");
+  }
+
+  std::cerr << "After projection:\n";
+  std::cerr << "Q size: " << Q.size() << ", Q(0,0): " << Q(0,0) << "\n";
+  std::cerr << "K size: " << K.size() << ", K(0,0): " << K(0,0) << "\n";
+  std::cerr << "V size: " << V.size() << ", V(0,0): " << V(0,0) << "\n";
+
+  // Add validation
+  bool q_all_zero = true;
+  bool k_all_zero = true;
+  bool v_all_zero = true;
+
+  for(size_t i = 0; i < std::min(size_t(10), Q.size()); i++) {
+    if(Q.data()[i] != 0.0f) q_all_zero = false;
+    if(K.data()[i] != 0.0f) k_all_zero = false; 
+    if(V.data()[i] != 0.0f) v_all_zero = false;
+  }
+
+  if(q_all_zero || k_all_zero || v_all_zero) {
+    std::cerr << "Warning: Q, K, or V matrices contain all zeros after projection\n";
+    std::cerr << "Input matrix stats:\n";
+    std::cerr << "x min: " << x.min() << " max: " << x.max() << "\n";
+    std::cerr << "Projection matrix stats:\n";
+    std::cerr << "query_proj min: " << query_proj.min() << " max: " << query_proj.max() << "\n";
+    std::cerr << "key_proj min: " << key_proj.min() << " max: " << key_proj.max() << "\n";
+    std::cerr << "value_proj min: " << value_proj.min() << " max: " << value_proj.max() << "\n";
+  }
 
   // Apply RoPE if enabled
   if (use_rope) {
@@ -173,6 +208,18 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size, size_t num_heads,
   key_proj = Matrix(hidden_size, num_heads * head_dim);
   value_proj = Matrix(hidden_size, num_heads * head_dim);
   output_proj = Matrix(num_heads * head_dim, hidden_size);
+
+  // Use larger initialization scale to prevent tiny values
+  float scale = sqrt(6.0f / (hidden_size + head_dim * num_heads));  // He initialization
+  query_proj.randomize(-scale, scale);
+  key_proj.randomize(-scale, scale);
+  value_proj.randomize(-scale, scale);
+  output_proj.randomize(-scale, scale);
+
+  // Validate initialization
+  if(query_proj.max() == 0.0f || key_proj.max() == 0.0f || value_proj.max() == 0.0f) {
+    throw std::runtime_error("Attention projection matrices failed to initialize");
+  }
 
   // Initialize RoPE buffers if needed
   if (use_rope) {
