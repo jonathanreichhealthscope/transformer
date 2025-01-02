@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include "attention.hpp"
 
 Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
   std::cout << "\n=== MultiHeadAttention::apply_rope START ===" << std::endl;
@@ -674,9 +675,8 @@ Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t batch_
     return reshaped;
 }
 
-Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, 
-                                          const Matrix& V, const AttentionMask& mask) {
-    // ... (earlier validation code remains the same)
+Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, 
+                                          const Matrix& V, const AttentionMask& mask, size_t batch_size, size_t num_heads, size_t seq_len, size_t head_size) {
     
     // Reshape inputs to 4D tensors
     Tensor Q_4d = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_size);
@@ -684,7 +684,7 @@ Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
     Tensor V_4d = reshape_for_attention(V, batch_size, num_heads, seq_len, head_size);
     
     // Compute attention scores using tensor operations
-    Tensor scores = Q_4d.matmul(K_4d.transpose({0, 1, 3, 2}));  // [batch, heads, seq, seq]
+    Tensor scores = Q_4d.tensormul(K_4d.transpose({0, 1, 3, 2}));  // [batch, heads, seq, seq]
     
     // Scale attention scores
     float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
@@ -702,11 +702,7 @@ Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K,
     
     // Compute weighted sum
     Tensor attention = Tensor(scores.to_matrix(), {batch_size, num_heads, seq_len, seq_len})
-                          .matmul(V_4d);
-    
+                          .tensormul(V_4d);
     // Reshape back to matrix
-    return reshape_from_attention(attention, batch_size, seq_len, hidden_size);
+    Matrix result = reshape_from_attention(attention, batch_size, seq_len, head_size * num_heads);
 }
-
-
-   

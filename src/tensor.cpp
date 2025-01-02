@@ -119,44 +119,50 @@ Tensor Tensor::transpose(const std::vector<size_t>& axes) const {
 }
 
 Tensor Tensor::tensormul(const Tensor& other) const {
-    // Implement tensor multiplication
-    // This is a basic implementation for batched matrix multiplication
     if (dims_.size() != other.dims_.size()) {
         throw std::runtime_error("Tensor ranks must match for multiplication");
     }
     
-    if (dims_.size() == 3) {
-        if (dims_[2] != other.dims_[1]) {
-            throw std::runtime_error("Invalid dimensions for tensor multiplication");
+    if (dims_.size() == 4) {
+        // For 4D tensors [batch, heads, seq, hidden]
+        if (dims_[0] != other.dims_[0] || dims_[1] != other.dims_[1]) {
+            throw std::runtime_error("Batch and head dimensions must match");
+        }
+        if (dims_[3] != other.dims_[2]) {
+            throw std::runtime_error("Inner dimensions mismatch for multiplication");
         }
         
-        Tensor result(dims_[0], dims_[1], other.dims_[2]);
+        // Result dimensions: [batch, heads, seq_len1, seq_len2]
+        Tensor result(dims_[0], dims_[1], dims_[2], other.dims_[3]);
         
-        // Perform batched matrix multiplication
+        // Perform batched matrix multiplication for each batch and head
         for (size_t b = 0; b < dims_[0]; ++b) {
-            Matrix m1(dims_[1], dims_[2]);
-            Matrix m2(other.dims_[1], other.dims_[2]);
-            
-            // Extract matrices for this batch
-            for (size_t i = 0; i < dims_[1]; ++i) {
-                for (size_t j = 0; j < dims_[2]; ++j) {
-                    m1(i, j) = at(b, i, j);
+            for (size_t h = 0; h < dims_[1]; ++h) {
+                // Create temporary matrices for this batch and head
+                Matrix m1(dims_[2], dims_[3]);
+                Matrix m2(other.dims_[2], other.dims_[3]);
+                
+                // Fill matrices
+                for (size_t i = 0; i < dims_[2]; ++i) {
+                    for (size_t j = 0; j < dims_[3]; ++j) {
+                        m1(i, j) = at(b, h, i, j);
+                    }
                 }
-            }
-            
-            for (size_t i = 0; i < other.dims_[1]; ++i) {
-                for (size_t j = 0; j < other.dims_[2]; ++j) {
-                    m2(i, j) = other.at(b, i, j);
+                
+                for (size_t i = 0; i < other.dims_[2]; ++i) {
+                    for (size_t j = 0; j < other.dims_[3]; ++j) {
+                        m2(i, j) = other.at(b, h, i, j);
+                    }
                 }
-            }
-            
-            // Multiply matrices
-            Matrix res = matmul(m1, m2);
-            
-            // Store result
-            for (size_t i = 0; i < res.rows(); ++i) {
-                for (size_t j = 0; j < res.cols(); ++j) {
-                    result.at(b, i, j) = res(i, j);
+                
+                // Multiply matrices
+                Matrix res = matmul(m1, m2);
+                
+                // Store result
+                for (size_t i = 0; i < res.rows(); ++i) {
+                    for (size_t j = 0; j < res.cols(); ++j) {
+                        result.at(b, h, i, j) = res(i, j);
+                    }
                 }
             }
         }
@@ -206,9 +212,7 @@ size_t Tensor::compute_transposed_index(const std::vector<size_t>& indices,
 Tensor Tensor::safe_tensormul(const Tensor& A, const Tensor& B) {
     // Validate tensor ranks match
     if (A.rank() != B.rank()) {
-        throw std::runtime_error("Tensor ranks must match for multiplication: " +
-                               std::to_string(A.rank()) + " != " + 
-                               std::to_string(B.rank()));
+        throw std::runtime_error("Tensor ranks must match for multiplication");
     }
     
     // For 4D tensors [batch, heads, seq, hidden]
@@ -220,12 +224,10 @@ Tensor Tensor::safe_tensormul(const Tensor& A, const Tensor& B) {
         
         // Check multiplication compatibility
         if (A.dim(3) != B.dim(2)) {
-            throw std::runtime_error("Inner dimensions mismatch: " +
-                                   std::to_string(A.dim(3)) + " != " + 
-                                   std::to_string(B.dim(2)));
+            throw std::runtime_error("Inner dimensions mismatch");
         }
         
-        return A.matmul(B);
+        return A.tensormul(B);
     }
     
     throw std::runtime_error("Unsupported tensor rank for safe_tensormul");

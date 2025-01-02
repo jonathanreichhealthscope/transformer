@@ -41,9 +41,8 @@ public:
     // Basic operations
     Tensor transpose(const std::vector<size_t>& axes) const;
     Tensor tensormul(const Tensor& other) const;
-    Tensor matmul(const Matrix& first, const Matrix& second) const;
     
-    // Safe tensor multiplication with dimension checks
+    // Static methods
     static Tensor safe_tensormul(const Tensor& A, const Tensor& B);
     
     // Helper method to compute transposed index
