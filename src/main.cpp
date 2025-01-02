@@ -22,6 +22,8 @@
 #include <vector>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
+#include <sstream>
 
 // Add necessary forward declarations and structures
 class Tokenizer;
@@ -256,6 +258,60 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
   return training_pairs;
 }
 
+void analyze_token_mappings(const std::vector<std::pair<std::string, std::string>>& training_data, 
+                          const Tokenizer& tokenizer) {
+    std::cout << "\n=== Analyzing Token Mappings ===\n";
+    
+    // Track statistics
+    size_t total_words = 0;
+    size_t unknown_tokens = 0;
+    std::unordered_map<std::string, int> unknown_words;
+    
+    for (const auto& pair : training_data) {
+        // Analyze input string
+        std::istringstream input_ss(pair.first);
+        std::string word;
+        while (input_ss >> word) {
+            total_words++;
+            std::vector<int> tokens = tokenizer.encode(word);
+            for (int token : tokens) {
+                if (tokenizer.decode({token}) == "<unk>") {
+                    unknown_tokens++;
+                    unknown_words[word]++;
+                }
+            }
+        }
+        
+        // Analyze target string
+        std::istringstream target_ss(pair.second);
+        while (target_ss >> word) {
+            total_words++;
+            std::vector<int> tokens = tokenizer.encode(word);
+            for (int token : tokens) {
+                if (tokenizer.decode({token}) == "<unk>") {
+                    unknown_tokens++;
+                    unknown_words[word]++;
+                }
+            }
+        }
+    }
+    
+    // Print statistics
+    std::cout << "\nToken Mapping Statistics:\n";
+    std::cout << "Total words processed: " << total_words << "\n";
+    std::cout << "Unknown token occurrences: " << unknown_tokens << " (" 
+              << (100.0f * unknown_tokens / total_words) << "%)\n\n";
+    
+    if (!unknown_words.empty()) {
+        std::cout << "Words mapped to <unk> token:\n";
+        for (const auto& [word, count] : unknown_words) {
+            std::cout << "'" << word << "': " << count << " times\n";
+        }
+    }
+    
+    std::cout << "\n=== End Token Mapping Analysis ===\n\n";
+}
+
 int main(int argc, char *argv[]) {
   std::cout << "entering main" << std::endl;
   // Initialize logger
@@ -318,7 +374,15 @@ int main(int argc, char *argv[]) {
     }
 
     // Get training data
-    auto training_data = create_training_data();
+    std::vector<std::pair<std::string, std::string>> training_data = create_training_data();
+    
+    // Analyze token mappings
+    analyze_token_mappings(training_data, *tokenizer);
+    
+    // Print vocabulary for inspection
+    std::cout << "\n=== Full Vocabulary Mapping ===\n";
+    tokenizer->print_vocabulary_mappings();
+    std::cout << "\n";
 
     // Training parameters
     const size_t checkpoint_frequency = 2; // Save checkpoint every 2 epochs
