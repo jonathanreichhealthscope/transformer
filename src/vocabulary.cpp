@@ -309,7 +309,54 @@ void Vocabulary::initialize_basic_vocabulary() {
       "crew", "teams", "assistants", "handlers", "technicians",
       
       // Facilities and rooms
-      "examination", "consultation", "therapy", "radiology", "filing"
+      "examination", "consultation", "therapy", "radiology", "filing",
+
+      // Adding missing professional and role-related nouns
+      "aircraft", "baggage", "instructor", "instructors", "aviation", "mechanic",
+      "mechanics", "controller", "controllers", "attendant", "attendants",
+      "analyst", "analysts", "researcher", "researchers", "geologist", "geologists",
+      "developer", "developers", "rescuer", "rescuers", "medic", "medics",
+      "chemist", "chemists", "designer", "designers", "therapist", "therapists",
+      "barista", "baristas", "paramedic", "paramedics", "climber", "climbers",
+      "runner", "runners", "sous", "teacher", "teachers", "biologist", "biologists",
+      "skater", "skaters", "pilgrim", "pilgrims", "attorney", "attorneys",
+      "scientist", "scientists", "ranger", "rangers", "prosecutor", "prosecutors",
+      "professor", "professors", "bartender", "bartenders", "worshipper", "worshippers",
+      "priest", "priests", "pilot", "pilots", "scholar", "scholars", "pupil", "pupils",
+      "firefighter", "firefighters", "inventor", "inventors", "officer", "officers",
+      "musician", "musicians", "astronomer", "astronomers", "programmer", "programmers",
+      "dancer", "dancers", "actor", "actors", "doctor", "doctors", "spectator",
+      "spectators", "bowler", "bowlers", "clerk", "clerks", "tutor", "tutors",
+      "baker", "bakers", "gamer", "gamers", "artist", "artists", "monk", "monks",
+      "performer", "performers", "dj", "djs", "expert", "experts", "comedian",
+      "comedians", "surgeon", "surgeons", "judge", "judges", "radiologist",
+      "radiologists", "patient", "patients", "paralegal", "paralegals", "nurse",
+      "nurses", "specialist", "specialists", "pharmacist", "pharmacists",
+      "technician", "technicians", "boxer", "boxers", "police", "dentist",
+      "dentists", "navigator", "navigators", "psychiatrist", "psychiatrists",
+      "athlete", "athletes", "swimmer", "swimmers", "player", "players", "golfer",
+      "golfers", "chef", "chefs", "sommelier", "sommeliers", "butcher", "butchers",
+      "waiter", "waiters", "guard", "guards", "believer", "believers", "mediator",
+      "mediators", "lawyer", "lawyers", "witness", "witnesses", "reporter",
+      "reporters", "physicist", "physicists",
+
+      // Adding missing animal-related nouns
+      "duck", "ducks", "bird", "birds", "wolf", "wolves", "bear", "fish",
+      "dog", "rabbit", "rabbits", "eagle", "eagles", "lion", "cat",
+
+      // Adding missing place and facility-related nouns
+      "seminary", "concert", "tournament", "alley", "patisserie",
+
+      // Adding missing abstract/activity nouns
+      "traffic", "shade", "lives", "prep", "testing", "driving", "bowling",
+      "coffee",
+
+      // Adding missing organizational/group nouns
+      "congregation", "congregations", "audience", "audiences",
+
+      // Adding missing specialized terms
+      "air", "flight", "data", "defense", "ground", "legal", "operating",
+      "dressing", "chambers"
   };
 
   // Add all words to vocabulary
