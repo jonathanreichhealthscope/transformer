@@ -17,6 +17,10 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size,
     : w1(hidden_size, intermediate_size), w2(intermediate_size, hidden_size),
       b1(intermediate_size), b2(hidden_size), dropout_prob(dropout) {
 
+  std::cout << "FeedForward dimensions:" << std::endl;
+  std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
+  std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
+
   // Initialize weights with Xavier/Glorot initialization
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -111,9 +115,22 @@ Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
         throw std::runtime_error("No cached intermediate values found for backward pass");
     }
     
+    std::cout << "FeedForward::backward dimensions:" << std::endl;
+    std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+    std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
+    std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
+    
     // Validate dimensions
-    if (grad_output.cols() != w2.cols() || input.cols() != w1.cols()) {
-        throw std::runtime_error("Dimension mismatch in feed forward backward pass");
+    if (grad_output.cols() != w2.cols()) {
+        throw std::runtime_error("Dimension mismatch: grad_output.cols (" + 
+                                std::to_string(grad_output.cols()) + 
+                                ") != w2.cols (" + std::to_string(w2.cols()) + ")");
+    }
+    if (input.cols() != w1.rows()) {
+        throw std::runtime_error("Dimension mismatch: input.cols (" + 
+                                std::to_string(input.cols()) + 
+                                ") != w1.rows (" + std::to_string(w1.rows()) + ")");
     }
     
     std::cout << "Feed forward cache dimensions: " << intermediate_cache.rows() 
@@ -124,14 +141,14 @@ Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
     
     std::cout << "Computing d_intermediate..." << std::endl;
     Matrix d_intermediate = matmul(grad_output, w2.transpose());
+    std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
+    
     std::cout << "Applying GELU derivative..." << std::endl;
     d_intermediate.apply_gelu_derivative(cache_copy);
     
     std::cout << "Computing grad_input..." << std::endl;
     Matrix grad_input = matmul(d_intermediate, w1.transpose());
-    
-    // Clear cache after use
-    intermediate_cache = Matrix();
+    std::cout << "grad_input dims: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
     
     return grad_input;
 }

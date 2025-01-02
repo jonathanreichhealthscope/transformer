@@ -543,22 +543,22 @@ void Transformer::load(std::istream &is) {
 Matrix TransformerLayer::backward(const Matrix& grad_output, 
                                 const Matrix& input,
                                 const Matrix& target_distribution) {
-    // Validate inputs
     if (grad_output.empty() || input.empty()) {
         throw std::runtime_error("Empty matrices in transformer backward pass");
     }
     
     std::cout << "Starting backward pass..." << std::endl;
+    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+    std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
     
     // Make copies to prevent modification of inputs
     Matrix grad_copy = grad_output;
     Matrix input_copy = input;
     
     std::cout << "Forward pass for normalization..." << std::endl;
-    // Forward passes to get normalized values
     Matrix ffn_input = input_copy;
     Matrix ffn_normalized = ffn_ln->forward(ffn_input);
-    Matrix attn_normalized = attention_ln->forward(input_copy);
+    std::cout << "ffn_normalized dims: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
     
     std::cout << "Starting feed forward backward..." << std::endl;
     try {
@@ -569,7 +569,7 @@ Matrix TransformerLayer::backward(const Matrix& grad_output,
         std::cout << "Layer norm 2 backward complete..." << std::endl;
         
         Matrix d_residual1 = d_ln2;
-        Matrix d_attn = self_attention->backward(d_residual1, attn_normalized, target_distribution);
+        Matrix d_attn = self_attention->backward(d_residual1, input_copy, target_distribution);
         std::cout << "Self attention backward complete..." << std::endl;
         
         Matrix d_ln1 = attention_ln->backward(d_attn, input_copy);
