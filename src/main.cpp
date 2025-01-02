@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) {
     // Configure the transformer
     TransformerConfig config;
     config.vocab_size = 50000;
-    config.hidden_size = 768;
+    config.hidden_size = 360;
     config.num_heads = 12;
     config.num_layers = 6;
     config.use_cuda = false;
