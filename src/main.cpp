@@ -36,8 +36,6 @@ struct TrainingExample {
 };
 
 // Configuration constants
-const size_t BATCH_SIZE = 32;
-const size_t num_epochs = 10;
 const float INITIAL_LEARNING_RATE = 0.001f;
 const float MIN_LEARNING_RATE = 1e-6f;
 const float MAX_LEARNING_RATE = 0.1f;
@@ -335,7 +333,7 @@ int main(int argc, char *argv[]) {
     TransformerConfig config;
     config.vocab_size = actual_vocab_size;
     config.hidden_size = 360;
-    config.num_heads = 6;
+    config.num_heads = 12;
     config.num_layers = 6;
     config.use_cuda = false;
     config.use_flash_attention = false;
@@ -344,11 +342,15 @@ int main(int argc, char *argv[]) {
     config.window_size = 256;
     config.use_fp16 = false;
     config.head_dim = config.hidden_size / config.num_heads;  // Add explicit head_dim calculation
+    config.batch_size = 5;  // Set the batch size
+    config.num_epochs = 10;  // Set the number of epochs
 
     std::cout << "Initializing transformer with configuration:\n"
               << "- Hidden size: " << config.hidden_size << "\n"
               << "- Attention heads: " << config.num_heads << "\n"
               << "- Layers: " << config.num_layers << "\n"
+              << "- Batch size: " << config.batch_size << "\n"
+              << "- Number of epochs: " << config.num_epochs << "\n"
               << "- Using Flash Attention: " << std::boolalpha
               << config.use_flash_attention << "\n"
               << "- Using RoPE: " << config.use_rope << "\n"
@@ -396,14 +398,14 @@ int main(int argc, char *argv[]) {
     // Training loop
     size_t global_step = 0;
     Matrix last_hidden_states;
-    for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
-        std::cout << "Epoch " << epoch + 1 << "/" << num_epochs << "\n";
+    for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
+        std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
         float epoch_loss = 0.0f;
-        size_t total_batches = (training_data.size() + BATCH_SIZE - 1) / BATCH_SIZE;
+        size_t total_batches = (training_data.size() + config.batch_size - 1) / config.batch_size;
         
         for (size_t batch = 0; batch < total_batches; ++batch) {
-            size_t start_idx = batch * BATCH_SIZE;
-            size_t end_idx = std::min(start_idx + BATCH_SIZE, training_data.size());
+            size_t start_idx = batch * config.batch_size;
+            size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
             
             // Create batch with validation
             std::vector<std::vector<int>> input_batch;
@@ -491,7 +493,7 @@ int main(int argc, char *argv[]) {
                       << ", LR: " << learning_rate << ")" << std::flush;
         }
         
-        std::cout << "\nCompleted epoch " << epoch + 1 << "/" << num_epochs 
+        std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs 
                   << " (Loss: " << epoch_loss/total_batches << ")" << std::endl;
         
         // Save checkpoint

@@ -38,10 +38,13 @@ public:
   bool use_fp16;
   bool use_gradient_checkpointing;
   size_t memory_pool_size;
+  size_t batch_size;
+  size_t num_epochs;
 
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
-                    size_t num_heads = 12);
+                    size_t num_heads = 12, size_t batch_size = 1,
+                    size_t num_epochs = 10);
 
   friend bool operator!=(const TransformerConfig &lhs,
                          const TransformerConfig &rhs) {
@@ -52,7 +55,9 @@ public:
            lhs.use_flash_attention != rhs.use_flash_attention ||
            lhs.use_rope != rhs.use_rope ||
            lhs.use_sliding_window != rhs.use_sliding_window ||
-           lhs.window_size != rhs.window_size;
+           lhs.window_size != rhs.window_size ||
+           lhs.batch_size != rhs.batch_size ||
+           lhs.num_epochs != rhs.num_epochs;
   }
 };
 

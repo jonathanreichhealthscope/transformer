@@ -741,7 +741,7 @@ Matrix MultiHeadAttention::reshape_for_attention(const Matrix& x,
         
         // Create reshaped matrix
         std::cout << "\nCreating reshaped matrix..." << std::endl;
-        Matrix reshaped(batch_size * head_size * seq_length, num_heads, 0.0f);
+        Matrix reshaped(batch_size * num_heads * seq_length, head_size, 0.0f);
         std::cout << "Reshaped matrix created: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
         
         // Verify reshaped matrix

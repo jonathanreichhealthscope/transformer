@@ -13,13 +13,15 @@ extern cublasHandle_t cublas_handle;
 // TransformerConfig implementation
 TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
                                      size_t hidden_size, size_t num_layers,
-                                     size_t num_heads)
+                                     size_t num_heads, size_t batch_size,
+                                     size_t num_epochs)
     : vocab_size(vocab_size), max_seq_length(max_seq_length),
       hidden_size(hidden_size), num_layers(num_layers), num_heads(num_heads),
       head_dim(hidden_size / num_heads), intermediate_size(4 * hidden_size),
       dropout_prob(0.1f), use_flash_attention(true), use_rope(true),
       use_sliding_window(false), window_size(512), use_gqa(false),
-      num_kv_heads(num_heads), use_cuda(true) {
+      num_kv_heads(num_heads), use_cuda(true), batch_size(batch_size),
+      num_epochs(num_epochs) {
   std::cout << "entering TransformerConfig constructor" << std::endl;
   if (hidden_size % num_heads != 0) {
     throw std::invalid_argument(
@@ -337,7 +339,7 @@ void Transformer::train(const std::vector<std::vector<int>> &input_tokens,
                         const std::vector<std::vector<int>> &target_tokens,
                         size_t num_epochs, float learning_rate) {
   std::cout << "entering Transformer::train" << std::endl;
-  const size_t batch_size = 32; // Fixed batch size
+  const size_t batch_size = config.batch_size;  // Use batch_size from config
 
   for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
 // Process batches
@@ -684,16 +686,17 @@ void Transformer::save(std::ostream &os) const {
 
 void Transformer::load(std::istream &is) {
   // Read config
-  size_t vocab_size, max_seq_length, hidden_size, num_layers, num_heads;
+  size_t vocab_size, max_seq_length, hidden_size, num_layers, num_heads, batch_size;
   std::cout << "Reading config" << std::endl;
   is.read(reinterpret_cast<char *>(&vocab_size), sizeof(vocab_size));
   is.read(reinterpret_cast<char *>(&max_seq_length), sizeof(max_seq_length));
   is.read(reinterpret_cast<char *>(&hidden_size), sizeof(hidden_size));
   is.read(reinterpret_cast<char *>(&num_layers), sizeof(num_layers));
   is.read(reinterpret_cast<char *>(&num_heads), sizeof(num_heads));
+  is.read(reinterpret_cast<char *>(&batch_size), sizeof(batch_size));
 
   TransformerConfig config(vocab_size, max_seq_length, hidden_size, num_layers,
-                         num_heads);
+                         num_heads, batch_size);
 
   // Load layers
   layers.clear();
