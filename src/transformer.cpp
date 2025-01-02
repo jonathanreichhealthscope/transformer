@@ -486,29 +486,74 @@ void Transformer::backward_pass(const std::vector<Matrix> &activations,
 }
 
 void Transformer::update_parameters(float learning_rate) {
-  std::cout << "entering Transformer::update_parameters" << std::endl;
-  // Get all trainable parameters and their gradients
-  auto &params = this->parameters();
-  std::cout << "parameters size: " << params.size() << std::endl;
-  // Simple SGD update
-  for (size_t i = 0; i < params.size(); ++i) {
-    Matrix &param = params[i];
-    std::cout << "parameter shape: " << param.rows() << "x" << param.cols() << std::endl;
-    // Assuming you have stored gradients somewhere
-    std::cout << "NO GRADIENTS STORED" << std::endl;
-    // Matrix& grad = parameter_gradients[i];
-
-    // Update rule: param = param - learning_rate * grad
-    for (size_t row = 0; row < param.rows(); ++row) {
-      for (size_t col = 0; col < param.cols(); ++col) {
-        // param(row, col) -= learning_rate * grad(row, col);
-        // For now, just add a placeholder update
-        std::cout << "PLACEHOLDER UPDATE" << std::endl;
-        param(row, col) -=
-            learning_rate * 0.01f; // Replace with actual gradient
-      }
+    std::cout << "\n=== Transformer::update_parameters START ===" << std::endl;
+    
+    // Get all trainable parameters and their gradients
+    auto& params = this->parameters();
+    auto& grads = this->parameter_gradients();
+    
+    if (params.size() != grads.size()) {
+        throw std::runtime_error("Parameter and gradient size mismatch: " + 
+                               std::to_string(params.size()) + " vs " + 
+                               std::to_string(grads.size()));
     }
-  }
+    
+    std::cout << "Updating " << params.size() << " parameter matrices" << std::endl;
+    
+    // Implement Adam optimizer
+    const float beta1 = 0.9f;
+    const float beta2 = 0.999f;
+    const float epsilon = 1e-8f;
+    
+    // Initialize momentum and velocity if not already done
+    if (momentum_buffers.empty()) {
+        momentum_buffers.resize(params.size());
+        velocity_buffers.resize(params.size());
+        for (size_t i = 0; i < params.size(); i++) {
+            momentum_buffers[i] = Matrix(params[i].rows(), params[i].cols(), 0.0f);
+            velocity_buffers[i] = Matrix(params[i].rows(), params[i].cols(), 0.0f);
+        }
+    }
+    
+    // Update each parameter matrix
+    for (size_t i = 0; i < params.size(); i++) {
+        Matrix& param = params[i];
+        const Matrix& grad = grads[i];
+        Matrix& momentum = momentum_buffers[i];
+        Matrix& velocity = velocity_buffers[i];
+        
+        if (param.rows() != grad.rows() || param.cols() != grad.cols()) {
+            throw std::runtime_error("Parameter and gradient dimension mismatch at index " + 
+                                   std::to_string(i));
+        }
+        
+        std::cout << "Updating parameter matrix " << i << " with shape: " 
+                  << param.rows() << "x" << param.cols() << std::endl;
+        
+        // Update rule with Adam optimizer
+        for (size_t j = 0; j < param.size(); j++) {
+            // Update momentum
+            momentum.data()[j] = beta1 * momentum.data()[j] + (1.0f - beta1) * grad.data()[j];
+            
+            // Update velocity
+            velocity.data()[j] = beta2 * velocity.data()[j] + 
+                               (1.0f - beta2) * grad.data()[j] * grad.data()[j];
+            
+            // Compute bias-corrected estimates
+            float m_hat = momentum.data()[j] / (1.0f - std::pow(beta1, update_step + 1));
+            float v_hat = velocity.data()[j] / (1.0f - std::pow(beta2, update_step + 1));
+            
+            // Update parameter
+            param.data()[j] -= learning_rate * m_hat / (std::sqrt(v_hat) + epsilon);
+            
+            // Add gradient clipping
+            if (param.data()[j] > 5.0f) param.data()[j] = 5.0f;
+            if (param.data()[j] < -5.0f) param.data()[j] = -5.0f;
+        }
+    }
+    
+    update_step++;
+    std::cout << "=== Transformer::update_parameters END ===\n" << std::endl;
 }
 
 void Transformer::save_model(const std::string &path) const {
@@ -1007,8 +1052,10 @@ Transformer &Transformer::operator=(const Transformer &other) {
   return *this;
 }
 
-void Transformer::backward(const Matrix &grad_output, const std::vector<int> &input_tokens) {
+void Transformer::backward(const Matrix &grad_output, const std::vector<int> &input_tokens, float learning_rate) {
     try {
+        std::cout << "\n=== Transformer::backward START ===" << std::endl;
+        
         // Add gradient scaling factor
         const float grad_scale = 16.0f;  // Start with larger scale to combat vanishing gradients
         Matrix scaled_grad = grad_output;
@@ -1018,7 +1065,7 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
             scaled_grad.data()[i] *= grad_scale;
         }
         
-        // Rest of the clipping and normalization logic...
+        // Gradient clipping and normalization
         const float max_grad_norm = 1.0f;
         Matrix clipped_grad = scaled_grad;
         
@@ -1041,7 +1088,60 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
         for (size_t i = 0; i < clipped_grad.size(); ++i) {
             clipped_grad.data()[i] *= dynamic_scale;
         }
-        // TO-DO - rest of the backward pass implementation
+
+        // Get cached activations for each layer
+        std::vector<Matrix> layer_activations;
+        layer_activations.reserve(layers.size());
+        for (size_t i = 0; i < layers.size(); ++i) {
+            if (!GradientCheckpoint::has_activation(std::to_string(i))) {
+                throw std::runtime_error("Missing activation cache for layer " + std::to_string(i));
+            }
+            layer_activations.push_back(GradientCheckpoint::get_activation(std::to_string(i)));
+        }
+
+        // Backward through final layer norm
+        Matrix current_grad = final_ln->backward(clipped_grad, layer_activations.back());
+
+        // Backward through transformer layers in reverse order
+        for (int i = layers.size() - 1; i >= 0; --i) {
+            std::cout << "Processing backward pass for layer " << i << std::endl;
+            
+            // Get the input to this layer from cached activations
+            const Matrix& layer_input = layer_activations[i];
+            
+            // Create target distribution for attention mechanism
+            Matrix target_distribution(layer_input.rows(), layer_input.cols(), 0.0f);
+            // Fill target distribution based on input tokens if needed
+            // This is used by attention mechanism for computing gradients
+            
+            // Backward through transformer layer
+            current_grad = layers[i]->backward(current_grad, layer_input, target_distribution);
+            
+            // Apply gradient clipping per layer if needed
+            float layer_grad_norm = 0.0f;
+            for (size_t j = 0; j < current_grad.size(); ++j) {
+                layer_grad_norm += current_grad.data()[j] * current_grad.data()[j];
+            }
+            layer_grad_norm = std::sqrt(layer_grad_norm);
+            
+            if (layer_grad_norm > max_grad_norm) {
+                float scale_factor = max_grad_norm / (layer_grad_norm + 1e-6f);
+                for (size_t j = 0; j < current_grad.size(); ++j) {
+                    current_grad.data()[j] *= scale_factor;
+                }
+            }
+        }
+
+        // Backward through embeddings
+        token_embedding->backward(current_grad, input_tokens);
+        // Note: PositionalEncoding doesn't need backward pass since it's fixed
+        // The gradients are automatically propagated through the addition
+        // operation in the forward pass
+
+        update_parameters(learning_rate);
+
+        std::cout << "=== Transformer::backward END ===\n" << std::endl;
+        
     } catch (const std::exception& e) {
         std::cerr << "\nERROR in transformer backward pass: " << e.what() << std::endl;
         std::cerr << "=== Transformer::backward FAILED ===\n" << std::endl;

@@ -172,6 +172,26 @@ private:
                      const Matrix &loss_grad);
   void update_parameters(float learning_rate);
 
+  std::vector<Matrix> momentum_buffers;
+  std::vector<Matrix> velocity_buffers;
+  size_t update_step = 0;
+  
+  // Add method to get parameter gradients
+  std::vector<Matrix>& parameter_gradients() {
+    if (!parameter_grads.has_value()) {
+      parameter_grads = std::vector<Matrix>();
+      // Initialize gradients for all parameters
+      auto& params = parameters();
+      parameter_grads->reserve(params.size());
+      for (const auto& param : params) {
+        parameter_grads->emplace_back(param.rows(), param.cols(), 0.0f);
+      }
+    }
+    return parameter_grads.value();
+  }
+  
+  std::optional<std::vector<Matrix>> parameter_grads;
+
 public:
   Transformer() = default;
   explicit Transformer(const TransformerConfig &config);
@@ -219,8 +239,7 @@ public:
   Transformer(Transformer &&other) noexcept = default;
   Transformer &operator=(Transformer &&other) noexcept = default;
 
-  void backward(const Matrix &grad_output,
-                const std::vector<int> &input_tokens);
+  void backward(const Matrix &grad_output, const std::vector<int> &input_tokens, float learning_rate);
 
   const Matrix& get_hidden_states() const { return hidden_states; }
   LanguageModelHead* get_lm_head() { return lm_head.get(); }

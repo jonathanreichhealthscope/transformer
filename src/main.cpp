@@ -12,7 +12,6 @@
 #include "../include/utils/tensor_cache.hpp"
 #include "../include/vocabulary.hpp"
 #include "../include/matrix.hpp"
-#include "../include/gradient_tape.hpp"
 #include "../include/preprocessing.hpp"
 #include <chrono>
 #include <filesystem>
@@ -526,7 +525,7 @@ int main(int argc, char *argv[]) {
             learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step++);
             
             // Apply gradients
-            transformer.backward(accumulated_gradients, input_batch[0]);
+            transformer.backward(accumulated_gradients, input_batch[0], learning_rate);
             
             // Update loss tracking
             prev_loss = batch_loss;
