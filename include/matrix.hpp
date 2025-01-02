@@ -22,56 +22,38 @@ private:
   bool owns_data_ = true;
 
 public:
-  // Constructors
+  // Constructor declarations only
   Matrix();
   Matrix(size_t rows, size_t cols, float init_val = 0.0f);
   Matrix(size_t rows, size_t cols, float *external_data);
   Matrix(size_t rows, size_t cols, float *external_data, bool is_owner);
-  Matrix(const Matrix& other) 
-      : data_(other.data_), 
-        rows_(other.rows_), 
-        cols_(other.cols_),
-        shape_(std::make_tuple(other.rows_, other.cols_)),
-        owns_data_(true) {}
-  Matrix(Matrix&& other) noexcept
-      : data_(std::move(other.data_)), 
-        rows_(other.rows_), 
-        cols_(other.cols_),
-        shape_(std::make_tuple(other.rows_, other.cols_)),
-        owns_data_(other.owns_data_) {
-        other.rows_ = 0;
-        other.cols_ = 0;
-        other.shape_ = std::make_tuple(0, 0);
-        other.owns_data_ = false;
-  }
+  Matrix(const Matrix& other);
+  Matrix(Matrix&& other) noexcept;
 
-  // Size-related methods
+  // Assignment operators
+  Matrix& operator=(const Matrix& other);
+  Matrix& operator=(Matrix&& other) noexcept;
+
+  // Rest of the class interface
   size_t rows() const { return rows_; }
   size_t cols() const { return cols_; }
   size_t size() const { return data_.size(); }
   size_t bytes() const { return size() * sizeof(float); }
-  std::tuple<size_t, size_t> shape() const {
-    return std::make_tuple(rows_, cols_);
-  }
-  // Matrix operations
+  std::tuple<size_t, size_t> shape() const { return shape_; }
+  bool empty() const { return data_.empty(); }
+  
+  // Data access
+  float *data() { return data_.data(); }
+  const float *data() const { return data_.data(); }
+  float min() const { return *std::min_element(data_.begin(), data_.end()); }
+  float max() const { return *std::max_element(data_.begin(), data_.end()); }
+
+  // Matrix operations declarations
   void resize(size_t new_rows, size_t new_cols);
   float &operator()(size_t row, size_t col);
   const float &operator()(size_t row, size_t col) const;
   float &at(size_t row, size_t col);
   const float &at(size_t row, size_t col) const;
-
-  // Data access
-  float *data() { return data_.data(); }
-  const float *data() const { return data_.data(); }
-  float min() const {
-    return *std::min_element(data_.begin(), data_.end());
-  }
-
-  float max() const {
-    return *std::max_element(data_.begin(), data_.end());
-  }
-
-  // Additional operations from components.cpp
   Vector row(size_t row) const;
   void set_row(size_t row, const Vector &vec);
   Matrix transpose() const;
@@ -89,38 +71,6 @@ public:
   static Matrix load(std::istream &is);
   void randomize(float min_val, float max_val);
   Vector row_sum() const;
-
-  // Add empty() method
-  bool empty() const { return data_.empty(); }
-
-  // Add assignment operator
-  Matrix& operator=(const Matrix& other) {
-      if (this != &other) {
-          data_ = other.data_;
-          rows_ = other.rows_;
-          cols_ = other.cols_;
-          shape_ = std::make_tuple(other.rows_, other.cols_);
-          owns_data_ = true;
-      }
-      return *this;
-  }
-  
-  // Add move assignment operator
-  Matrix& operator=(Matrix&& other) noexcept {
-      if (this != &other) {
-          data_ = std::move(other.data_);
-          rows_ = other.rows_;
-          cols_ = other.cols_;
-          shape_ = std::make_tuple(other.rows_, other.cols_);
-          owns_data_ = other.owns_data_;
-          
-          other.rows_ = 0;
-          other.cols_ = 0;
-          other.shape_ = std::make_tuple(0, 0);
-          other.owns_data_ = false;
-      }
-      return *this;
-  }
 };
 
 // Make to_vector inline to allow multiple definitions

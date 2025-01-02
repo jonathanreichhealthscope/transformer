@@ -4,26 +4,124 @@
 #include <random>
 #include <string>
 // Constructor implementations
-Matrix::Matrix() : rows_(0), cols_(0) {}
+Matrix::Matrix() : rows_(0), cols_(0), shape_(std::make_tuple(0, 0)) {}
 
-Matrix::Matrix(size_t rows, size_t cols, float init_val)
-    : data_(rows * cols, init_val), rows_(rows), cols_(cols) {}
-
-Matrix::Matrix(size_t rows, size_t cols, float *external_data)
-    : rows_(rows), cols_(cols) {
-  data_.assign(external_data, external_data + (rows * cols));
+Matrix::Matrix(size_t rows, size_t cols, float init_val) {
+  // Check for zero dimensions
+  if (rows == 0 || cols == 0) {
+    throw std::runtime_error("Matrix dimensions cannot be zero");
+  }
+  
+  // Check for overflow in size calculation
+  if (rows > SIZE_MAX / cols) {
+    throw std::runtime_error("Matrix dimensions too large - would cause overflow");
+  }
+  
+  // Check total size is reasonable
+  size_t total_size = rows * cols;
+  if (total_size > 1000000000) { // 1 billion elements max
+    throw std::runtime_error("Matrix dimensions too large - exceeds maximum allowed size");
+  }
+  
+  try {
+    data_.resize(total_size, init_val);
+  } catch (const std::bad_alloc& e) {
+    throw std::runtime_error("Failed to allocate memory for matrix: " + std::string(e.what()));
+  } catch (const std::length_error& e) {
+    throw std::runtime_error("Matrix dimensions too large: " + std::string(e.what()));
+  }
+  
+  rows_ = rows;
+  cols_ = cols;
+  shape_ = std::make_tuple(rows, cols);
+  owns_data_ = true;
 }
 
-Matrix::Matrix(size_t rows, size_t cols, float* external_data, bool is_owner) 
-    : rows_(rows), cols_(cols), shape_(std::make_tuple(rows, cols)), owns_data_(is_owner) {
-    if (is_owner) {
-        // If we own the data, copy it to our vector
-        data_.assign(external_data, external_data + (rows * cols));
-    } else {
-        // If we don't own the data, just point to it
-        data_ = std::vector<float>(external_data, external_data + (rows * cols));
+Matrix::Matrix(size_t rows, size_t cols, float *external_data)
+    : data_(external_data, external_data + rows * cols),
+      rows_(rows),
+      cols_(cols),
+      shape_(std::make_tuple(rows, cols)),
+      owns_data_(false) {}
+
+Matrix::Matrix(size_t rows, size_t cols, float* external_data, bool is_owner)
+    : data_(external_data, external_data + rows * cols),
+      rows_(rows),
+      cols_(cols),
+      shape_(std::make_tuple(rows, cols)),
+      owns_data_(is_owner) {}
+
+Matrix::Matrix(const Matrix& other) {
+  if (other.empty()) {
+    rows_ = 0;
+    cols_ = 0;
+    shape_ = std::make_tuple(0, 0);
+    owns_data_ = true;
+    return;
+  }
+  
+  try {
+    data_ = other.data_;
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    shape_ = other.shape_;
+    owns_data_ = true;
+  } catch (const std::exception& e) {
+    throw std::runtime_error("Failed to copy matrix: " + std::string(e.what()));
+  }
+}
+
+Matrix::Matrix(Matrix&& other) noexcept
+    : data_(std::move(other.data_)), 
+      rows_(other.rows_), 
+      cols_(other.cols_),
+      shape_(std::make_tuple(other.rows_, other.cols_)),
+      owns_data_(other.owns_data_) {
+      other.rows_ = 0;
+      other.cols_ = 0;
+      other.shape_ = std::make_tuple(0, 0);
+      other.owns_data_ = false;
+}
+
+Matrix& Matrix::operator=(const Matrix& other) {
+  if (this != &other) {
+    if (other.empty()) {
+      data_.clear();
+      rows_ = 0;
+      cols_ = 0;
+      shape_ = std::make_tuple(0, 0);
+      owns_data_ = true;
+      return *this;
     }
-} 
+    
+    try {
+      data_ = other.data_;
+      rows_ = other.rows_;
+      cols_ = other.cols_;
+      shape_ = other.shape_;
+      owns_data_ = true;
+    } catch (const std::exception& e) {
+      throw std::runtime_error("Failed to assign matrix: " + std::string(e.what()));
+    }
+  }
+  return *this;
+}
+
+Matrix& Matrix::operator=(Matrix&& other) noexcept {
+  if (this != &other) {
+    data_ = std::move(other.data_);
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    shape_ = std::make_tuple(other.rows_, other.cols_);
+    owns_data_ = other.owns_data_;
+    
+    other.rows_ = 0;
+    other.cols_ = 0;
+    other.shape_ = std::make_tuple(0, 0);
+    other.owns_data_ = false;
+  }
+  return *this;
+}
 
 // Basic operations
 void Matrix::resize(size_t new_rows, size_t new_cols) {
