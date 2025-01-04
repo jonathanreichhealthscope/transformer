@@ -136,33 +136,29 @@ Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& tok
 // Helper function to compute loss for next-token prediction
 float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
     float loss = 0.0f;
-    const float epsilon = 1e-6f;
+    const float epsilon = 1e-10f;
     
     for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max logit for numerical stability
         float max_logit = -std::numeric_limits<float>::infinity();
         for (size_t j = 0; j < logits.cols(); j++) {
             max_logit = std::max(max_logit, logits(i, j));
         }
         
+        // Compute softmax with improved numerical stability
         float sum_exp = 0.0f;
         std::vector<float> probs(logits.cols());
         
-        // Compute softmax with improved stability
         for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] = std::exp(std::min(logits(i, j) - max_logit, 87.0f));
+            probs[j] = std::exp(logits(i, j) - max_logit);
             sum_exp += probs[j];
         }
         
-        sum_exp = std::max(sum_exp, epsilon);
-        
-        // Compute cross-entropy loss for all tokens
+        // Compute cross-entropy loss
         for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] /= sum_exp;
-            probs[j] = std::min(std::max(probs[j], epsilon), 1.0f - epsilon);
-            
-            // Use all target probabilities
+            probs[j] /= (sum_exp + epsilon);
             if (targets(i, j) > 0.0f) {
-                loss -= targets(i, j) * std::log(probs[j]);
+                loss -= targets(i, j) * std::log(probs[j] + epsilon);
             }
         }
     }
@@ -374,8 +370,14 @@ int main(int argc, char *argv[]) {
 
     // Initialize components
     Transformer transformer(config);
-    auto lm_head = std::make_unique<LanguageModelHead>(config.vocab_size,
-                                                       config.hidden_size);
+    size_t vocab_size = tokenizer->vocab_size();
+    std::cout << "Actual vocabulary size from tokenizer: " << vocab_size << std::endl;
+
+    // Update config with actual vocab size
+    config.vocab_size = vocab_size;
+
+    // Initialize language model head with correct vocab size
+    auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, vocab_size);
 
     // Setup advanced components
     TensorCache<Matrix> activation_cache(1024, CacheReplacementPolicy::ARC);
@@ -486,6 +488,7 @@ int main(int argc, char *argv[]) {
             }
             
             // Forward pass with the flattened batch
+            transformer.set_training(true);  // Ensure training mode is on
             Matrix hidden_states = transformer.forward(flattened_batch);
             Matrix logits = lm_head->project_to_vocab(hidden_states);
             
@@ -500,65 +503,63 @@ int main(int argc, char *argv[]) {
                 }
             }
             
-            // Compute loss using only the final token predictions
+            // Compute loss and its gradients
             float batch_loss = compute_batch_loss(final_logits, target_distribution);
             
-            // Compute gradients for the entire batch
-            // Reshape gradients to match hidden states dimensions
-            Matrix gradients(hidden_states.rows(), hidden_states.cols(), 0.0f);
-            
-            // Compute gradients using SAM for the entire batch
-            std::vector<Matrix> param_grads;
-            param_grads.reserve(transformer.getLayers().size());
-            sam_optimizer->compute_parameter_gradients(hidden_states, target_distribution, param_grads);
-            
-            // Combine parameter gradients and ensure proper dimensions
-            for (const auto& grad : param_grads) {
-                if (grad.rows() == gradients.rows() && grad.cols() == gradients.cols()) {
-                    for (size_t j = 0; j < grad.size(); j++) {
-                        gradients.data()[j] += grad.data()[j];
-                    }
-                } else {
-                    std::cerr << "Warning: Gradient dimension mismatch. Expected: " 
-                             << gradients.rows() << "x" << gradients.cols() 
-                             << ", Got: " << grad.rows() << "x" << grad.cols() << std::endl;
+            // Compute softmax gradients for each sequence in the batch
+            Matrix loss_gradients = Matrix(logits.rows(), logits.cols(), 0.0f);
+            for (size_t i = 0; i < current_batch_size; i++) {
+                size_t seq_end_idx = (i + 1) * max_seq_len - 1;
+                if (seq_end_idx >= logits.rows()) continue;
+                
+                // Compute softmax for this sequence's logits
+                std::vector<float> sequence_logits;
+                float max_logit = -std::numeric_limits<float>::infinity();
+                
+                for (size_t j = 0; j < config.vocab_size; j++) {
+                    float logit = logits(seq_end_idx, j);
+                    sequence_logits.push_back(logit);
+                    max_logit = std::max(max_logit, logit);
+                }
+                
+                float sum_exp = 0.0f;
+                std::vector<float> exp_logits(config.vocab_size);
+                
+                for (size_t j = 0; j < config.vocab_size; j++) {
+                    exp_logits[j] = std::exp(sequence_logits[j] - max_logit);
+                    sum_exp += exp_logits[j];
+                }
+                
+                // Compute gradients for cross-entropy loss
+                for (size_t j = 0; j < config.vocab_size; j++) {
+                    float softmax_output = exp_logits[j] / sum_exp;
+                    loss_gradients(seq_end_idx, j) = 
+                        (softmax_output - target_distribution(i, j)) / current_batch_size;
                 }
             }
             
-            // Scale gradients by batch size
-            float scale = 1.0f / current_batch_size;
-            for (size_t i = 0; i < gradients.size(); i++) {
-                gradients.data()[i] *= scale;
-            }
-            
-            // Add dimension checks before backward pass
-            if (gradients.rows() != hidden_states.rows() || gradients.cols() != hidden_states.cols()) {
-                std::cerr << "Error: Gradient dimensions (" << gradients.rows() << "x" << gradients.cols() 
-                         << ") don't match hidden states (" << hidden_states.rows() << "x" 
-                         << hidden_states.cols() << ")" << std::endl;
-                continue;  // Skip this batch if dimensions don't match
-            }
-            
-            // Update learning rate
+            // Update learning rate based on loss
             float loss_ratio = batch_loss / (prev_loss + 1e-10f);
             learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step);
-            global_step++;
             
-            // Backward pass with the entire batch
-            transformer.backward(gradients, flattened_batch, learning_rate);
+            // Backpropagate through the model
+            Matrix lm_head_gradients = lm_head->backward(loss_gradients);
+            transformer.backward(lm_head_gradients, flattened_batch, learning_rate);
             
-            // Update loss tracking
+            // Update tracking variables
             prev_loss = batch_loss;
             epoch_loss += batch_loss;
+            global_step++;
             
             // Print progress
-            std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
-                      << " in epoch " << epoch + 1 
-                      << " (Loss: " << batch_loss 
-                      << ", LR: " << learning_rate 
-                      << ", Step: " << global_step
-                      << ", Batch Size: " << current_batch_size
-                      << ")" << std::flush;
+            if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
+                std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
+                         << " in epoch " << epoch + 1 
+                         << " (Loss: " << batch_loss 
+                         << ", Avg Loss: " << epoch_loss/(batch+1)
+                         << ", LR: " << learning_rate 
+                         << ")" << std::flush;
+            }
         }
         
         std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs 

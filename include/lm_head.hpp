@@ -15,7 +15,7 @@ private:
   size_t hidden_size_;
   Matrix hidden_states;
   void backward_linear(const Matrix& grad_output);
-  Matrix forward_impl(const Matrix &hidden_states) const;
+  Matrix forward_impl(const Matrix &hidden_states);
 
 public:
   LanguageModelHead(size_t hidden_size, size_t vocab_size, float dropout = 0.1)
@@ -44,8 +44,9 @@ public:
   }
 
   Matrix forward(const Matrix &hidden_states) {
+    // Store hidden states for backward pass
     this->hidden_states = hidden_states;
-    return forward_impl(hidden_states);
+    return project_to_vocab(hidden_states);
   }
 
   Matrix backward_pass(const Matrix &grad_output, const Matrix &hidden_states) {
@@ -149,9 +150,9 @@ public:
 
   Vector &get_bias() { return bias; }
 
-  Matrix project_to_vocab(const Matrix &hidden_states) const;
+  Matrix project_to_vocab(const Matrix &hidden_states);
 
   const Matrix &get_projection() const { return projection; }
 
-  void backward(const Matrix& grad_output, const Matrix& target_distribution);
+  Matrix backward(const Matrix& grad_output, const Matrix& target_distribution = Matrix());
 };
