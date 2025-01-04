@@ -34,7 +34,8 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
 TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
     : kv_cache(config.max_seq_length), 
       config(config),
-      layer_idx(idx) {
+      layer_idx(idx),
+      training(false) {
   std::cout << "entering TransformerLayer constructor" << std::endl;
   // Initialize attention layer
   self_attention = std::make_unique<MultiHeadAttention>(
@@ -50,106 +51,58 @@ TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
   // Initialize feed-forward network
   feed_forward = std::make_unique<FeedForward>(
       config.hidden_size, config.intermediate_size, config.dropout_prob);
+  attention_dropout = std::make_unique<Dropout>(config.dropout_rate);
+  ffn_dropout = std::make_unique<Dropout>(config.dropout_rate);
   std::cout << "exiting TransformerLayer constructor" << std::endl;
 }
 
 Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
                                const std::optional<KVCache> &kv_cache) {
     std::cout << "=== TransformerLayer::forward START ===" << std::endl;
-    std::cout << "Input matrix shape: " << input.rows() << "x" << input.cols() << std::endl;
     
     // Layer norm before attention
-    std::cout << "Applying attention layer normalization..." << std::endl;
     Matrix normalized = attention_ln->forward(input);
-    std::cout << "Normalized matrix shape: " << normalized.rows() << "x" << normalized.cols() << std::endl;
     
-    // Cache the normalized input for backward pass
-    std::cout << "Caching normalized input for layer " << layer_idx << std::endl;
-    GradientCheckpoint::cache_activation(std::to_string(layer_idx), normalized);
+    // Cache the normalized input for attention backward pass
+    std::string attn_key = "attn_norm_" + std::to_string(layer_idx);
+    GradientCheckpoint::cache_activation(attn_key, normalized);
     
     // Self attention
-    std::cout << "Applying self attention..." << std::endl;
     Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
-    std::cout << "Attention output shape: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
-    
-    // Scale residual connection to prevent value explosion
-    const float residual_scale = 0.5f;
-    std::cout << "Scaling residual connection with factor " << residual_scale << std::endl;
-    for(size_t i = 0; i < attention_output.size(); i++) {
-        attention_output.data()[i] *= residual_scale;
+    if (training) {
+        attention_output = attention_dropout->forward(attention_output, true);
     }
-    
-    // Check dimensions before first residual connection
-    std::cout << "About to add attention output (" << attention_output.rows() << "x" << attention_output.cols() 
-              << ") with input (" << input.rows() << "x" << input.cols() << ")" << std::endl;
-    
-    if (attention_output.rows() != input.rows() || attention_output.cols() != input.cols()) {
-        throw std::runtime_error("Dimension mismatch in first residual connection: attention_output(" + 
-                               std::to_string(attention_output.rows()) + "," + 
-                               std::to_string(attention_output.cols()) + ") != input(" +
-                               std::to_string(input.rows()) + "," +
-                               std::to_string(input.cols()) + ")");
-    }
-    
-    // Add first residual connection
-    std::cout << "Adding first residual connection..." << std::endl;
-    Matrix residual1 = attention_output + input;
-    std::cout << "First residual shape: " << residual1.rows() << "x" << residual1.cols() << std::endl;
-    
-    // Layer norm before feed forward
-    std::cout << "Applying feed forward layer normalization..." << std::endl;
-    Matrix ffn_normalized = ffn_ln->forward(residual1);
-    std::cout << "FFN normalized shape: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
+    Matrix residual = attention_output + normalized;
+    Matrix norm1 = attention_ln->forward(residual);
     
     // Cache the normalized input for feed forward backward pass
-    std::cout << "Caching FFN normalized input for layer " << layer_idx << std::endl;
-    GradientCheckpoint::cache_activation(std::to_string(layer_idx) + "_ffn", ffn_normalized);
-    std::cout << "Cached FFN activation successfully" << std::endl;
+    std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
+    GradientCheckpoint::cache_activation(ffn_key, norm1);
     
     // Feed forward
-    std::cout << "Applying feed forward network..." << std::endl;
-    Matrix ffn_output = feed_forward->forward(ffn_normalized);
-    std::cout << "FFN output shape: " << ffn_output.rows() << "x" << ffn_output.cols() << std::endl;
-    
-    // Scale second residual connection
-    std::cout << "Scaling second residual connection..." << std::endl;
-    for(size_t i = 0; i < ffn_output.size(); i++) {
-        ffn_output.data()[i] *= residual_scale;
+    Matrix ff_output = feed_forward->forward(norm1);
+    if (training) {
+        ff_output = ffn_dropout->forward(ff_output, true);
     }
-    std::cout << "Scaled FFN output" << std::endl;
+    residual = ff_output + norm1;
     
-    // Check dimensions before second residual connection
-    std::cout << "About to add FFN output (" << ffn_output.rows() << "x" << ffn_output.cols() 
-              << ") with residual1 (" << residual1.rows() << "x" << residual1.cols() << ")" << std::endl;
-    
-    if (ffn_output.rows() != residual1.rows() || ffn_output.cols() != residual1.cols()) {
-        throw std::runtime_error("Dimension mismatch in second residual connection: ffn_output(" + 
-                               std::to_string(ffn_output.rows()) + "," + 
-                               std::to_string(ffn_output.cols()) + ") != residual1(" +
-                               std::to_string(residual1.rows()) + "," +
-                               std::to_string(residual1.cols()) + ")");
-    }
-    
-    std::cout << "Adding second residual connection..." << std::endl;
-    Matrix residual2 = ffn_output + residual1;
-    std::cout << "Second residual shape: " << residual2.rows() << "x" << residual2.cols() << std::endl;
-    
-    std::cout << "=== TransformerLayer::forward END ===" << std::endl;
-    return residual2;
+    return ffn_ln->forward(residual);
 }
 
-Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input, const Matrix &target_distribution) {
+Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input,
+                                const Matrix &target_distribution) {
     std::cout << "=== TransformerLayer::backward START ===" << std::endl;
     std::cout << "Grad output dimensions: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
     std::cout << "Input dimensions: " << input.rows() << "x" << input.cols() << std::endl;
     
     try {
         // Get the cached normalized input for feed forward
-        Matrix ffn_normalized = GradientCheckpoint::get_activation(std::to_string(layer_idx) + "_ffn");
-        std::cout << "FFN normalized dimensions: " << ffn_normalized.rows() << "x" << ffn_normalized.cols() << std::endl;
+        std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
+        Matrix ffn_normalized = GradientCheckpoint::get_activation(ffn_key);
         
         // Backward through feed forward network
-        Matrix ffn_grad = feed_forward->backward(grad_output, ffn_normalized);
+        Matrix ff_dropout_grad = training ? ffn_dropout->backward(grad_output) : grad_output;
+        Matrix ffn_grad = feed_forward->backward(ff_dropout_grad, ffn_normalized);
         std::cout << "FFN grad dimensions: " << ffn_grad.rows() << "x" << ffn_grad.cols() << std::endl;
         
         // Backward through feed forward layer norm
@@ -173,11 +126,12 @@ Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input
         std::cout << "Residual grad dimensions after first addition: " << residual_grad.rows() << "x" << residual_grad.cols() << std::endl;
         
         // Get the cached normalized input for attention
-        Matrix attn_normalized = GradientCheckpoint::get_activation(std::to_string(layer_idx));
-        std::cout << "Attention normalized dimensions: " << attn_normalized.rows() << "x" << attn_normalized.cols() << std::endl;
+        std::string attn_key = "attn_norm_" + std::to_string(layer_idx);
+        Matrix attn_normalized = GradientCheckpoint::get_activation(attn_key);
         
-        // Backward through self attention with the normalized input
-        Matrix attention_grad = self_attention->backward(residual_grad, attn_normalized, target_distribution);
+        // Backward through self attention
+        Matrix attn_dropout_grad = training ? attention_dropout->backward(residual_grad) : residual_grad;
+        Matrix attention_grad = self_attention->backward(attn_dropout_grad, attn_normalized, target_distribution);
         std::cout << "Attention grad dimensions: " << attention_grad.rows() << "x" << attention_grad.cols() << std::endl;
         
         // Backward through attention layer norm
@@ -318,8 +272,23 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
         std::cout << "After layer " << i << " grad dimensions: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
     }
     
-    // Update parameters
-    update_parameters(learning_rate);
+    // Update parameters with L2 regularization
+    for (auto& param : parameters()) {
+        // L2 regularization gradient
+        Matrix l2_grad = param;
+        l2_grad *= config.weight_decay;
+        
+        // Get corresponding gradient
+        auto& param_grads = parameter_gradients();
+        size_t param_idx = &param - &parameters()[0];  // Get index of current parameter
+        Matrix& param_grad = param_grads[param_idx];
+        
+        // Combine with existing gradients
+        param_grad += l2_grad;
+        
+        // Update parameters
+        param -= param_grad * learning_rate;
+    }
     
     std::cout << "=== Transformer::backward END ===\n" << std::endl;
 }

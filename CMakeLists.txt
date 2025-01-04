@@ -31,14 +31,6 @@ endif()
 # Find required packages
 find_package(OpenMP)
 
-# Download and build sentencepiece
-FetchContent_Declare(
-    sentencepiece
-    URL https://github.com/google/sentencepiece/archive/refs/tags/v0.1.97.tar.gz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-FetchContent_MakeAvailable(sentencepiece)
-
 # Download and build nlohmann/json
 FetchContent_Declare(
     json
@@ -52,12 +44,10 @@ if(CUDAToolkit_FOUND)
     include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 endif()
 include_directories(${CMAKE_SOURCE_DIR}/include)
-include_directories(${sentencepiece_SOURCE_DIR}/src)
 
 # Core source files
 set(CORE_SOURCES
     src/components.cpp
-    src/matrix_ops.cpp
     src/vector_ops.cpp
     src/logger.cpp
     src/model_saver.cpp
@@ -139,7 +129,6 @@ add_executable(transformer src/main.cpp)
 # Link libraries
 target_link_libraries(transformer_lib
     PUBLIC
-    sentencepiece
     nlohmann_json::nlohmann_json
 )
 

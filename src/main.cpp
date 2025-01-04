@@ -1,32 +1,6 @@
-#include "../include/attention.hpp"
-#ifdef CUDA_AVAILABLE
-#include "../include/cuda/cuda_init.cuh"
-#endif
-#include "../include/lm_head.hpp"
-#include "../include/logger.hpp"
-#include "../include/model_saver.hpp"
-#include "../include/optimizer/sam.hpp"
-#include "../include/quantization.hpp"
-#include "../include/tokenizer.hpp"
-#include "../include/transformer.hpp"
-#include "../include/utils/tensor_cache.hpp"
-#include "../include/vocabulary.hpp"
-#include "../include/matrix.hpp"
-#include "../include/preprocessing.hpp"
-#include <chrono>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-#include <random>
-#include <vector>
-#include <cmath>
-#include <limits>
-#include <unordered_map>
-#include <sstream>
+#include "../include/main.hpp"
 
 // Add necessary forward declarations and structures
-class Tokenizer;
 std::unique_ptr<Tokenizer> tokenizer;
 
 // Define training example structure
@@ -45,13 +19,14 @@ const size_t WARMUP_STEPS = 100;
 float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 
-// Add at the top of main.cpp
-struct GradientState {
-    Matrix momentum;
-    Matrix velocity;
-    float beta1 = 0.9f;
-    float beta2 = 0.999f;
-    float epsilon = 1e-8f;
+// Define the special character map (definition)
+const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP = {
+    {'\n', "<newline>"},
+    {'\t', "<tab>"},
+    {'.', "<period>"},
+    {'!', "<exclamation>"},
+    {'?', "<question>"},
+    {',', "<comma>"}
 };
 
 // Helper function to clip gradients
@@ -79,35 +54,26 @@ void clip_gradients(std::vector<Matrix>& gradients, float threshold) {
 
 // Helper function to adjust learning rate
 float adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
-    const size_t WARMUP_STEPS = 1000;  // Longer warmup period
-    const float PEAK_LR = 1e-4;        // Peak learning rate
-    const float MIN_LR = 1e-6;         // Minimum learning rate
+    const size_t WARMUP_STEPS = 50;        // Reduced from 1000
+    const float PEAK_LR = 5e-4;            // Increased from 1e-4 for smaller batches
+    const float MIN_LR = 1e-5;             // Increased from 1e-6
     
     // Warmup phase
     if (step < WARMUP_STEPS) {
-        // Linear warmup to peak learning rate
         return MIN_LR + (PEAK_LR - MIN_LR) * (static_cast<float>(step) / WARMUP_STEPS);
     }
     
     // Cosine decay after warmup
-    const size_t DECAY_STEPS = 50000;  // Longer decay period
+    const size_t DECAY_STEPS = 5000;       // Reduced from 50000
     float progress = static_cast<float>(step - WARMUP_STEPS) / DECAY_STEPS;
-    progress = std::min(1.0f, progress);  // Cap progress at 1.0
+    progress = std::min(1.0f, progress);
     
-    // Cosine decay from peak_lr to min_lr
     float decay_factor = 0.5f * (1.0f + std::cos(progress * M_PI));
     float lr = MIN_LR + (PEAK_LR - MIN_LR) * decay_factor;
     
-    // Adjust based on loss if needed
+    // More aggressive learning rate reduction on loss spikes
     if (loss_ratio > LOSS_SPIKE_THRESHOLD) {
-        lr *= 0.5f;  // Reduce learning rate if loss spikes
-    }
-    
-    // Debug output
-    if (step % 100 == 0) {
-        std::cout << "\nLR Debug - Step: " << step 
-                  << ", Progress: " << progress 
-                  << ", Decay Factor: " << decay_factor << std::endl;
+        lr *= 0.1f;  // Reduced more aggressively from 0.5f
     }
     
     return std::clamp(lr, MIN_LR, PEAK_LR);
@@ -131,33 +97,36 @@ bool validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size, 
 }
 
 // Helper function to create target distribution for next-token prediction
-Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& token_sequences, size_t vocab_size) {
+Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& token_sequences, 
+                                      const Tokenizer& tokenizer,
+                                      size_t vocab_size) {
     if (token_sequences.empty()) {
         throw std::runtime_error("Cannot create target distribution from empty batch");
     }
     
-    // Create batch matrix (batch_size x vocab_size) for one-hot encoded targets
     Matrix distribution(token_sequences.size(), vocab_size, 0.0f);
     
-    // Process each sequence in the batch
     for (size_t batch_idx = 0; batch_idx < token_sequences.size(); batch_idx++) {
         const auto& tokens = token_sequences[batch_idx];
         
-        // Validate tokens
         if (tokens.empty()) {
-            throw std::runtime_error("Empty token sequence in batch at position " + std::to_string(batch_idx));
+            throw std::runtime_error("Empty token sequence in batch at position " + 
+                                   std::to_string(batch_idx));
         }
         
-        // For next-token prediction, use the last token as the target
-        int target_token = tokens.back();
+        // Skip special tokens when looking for the target
+        size_t target_idx = tokens.size() - 1;
+        while (target_idx > 0 && tokenizer.is_special_token(tokens[target_idx])) {
+            target_idx--;
+        }
         
+        int target_token = tokens[target_idx];
         if (target_token < 0 || target_token >= static_cast<int>(vocab_size)) {
             throw std::runtime_error("Token " + std::to_string(target_token) + 
                 " is out of vocabulary range [0, " + std::to_string(vocab_size) + 
                 ") at batch position " + std::to_string(batch_idx));
         }
         
-        // Set one-hot encoding for the target token
         distribution(batch_idx, target_token) = 1.0f;
     }
     
@@ -167,38 +136,33 @@ Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& tok
 // Helper function to compute loss for next-token prediction
 float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
     float loss = 0.0f;
-    const float epsilon = 1e-6f;  // Increased epsilon for better stability
+    const float epsilon = 1e-6f;
     
     for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max logit for numerical stability
-        float max_logit = logits(i, 0);
+        float max_logit = -std::numeric_limits<float>::infinity();
         for (size_t j = 0; j < logits.cols(); j++) {
             max_logit = std::max(max_logit, logits(i, j));
         }
         
-        // Compute softmax with improved numerical stability
         float sum_exp = 0.0f;
         std::vector<float> probs(logits.cols());
         
-        // First pass: compute exponentials
+        // Compute softmax with improved stability
         for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] = std::exp(std::min(logits(i, j) - max_logit, 87.0f));  // Prevent exp overflow
+            probs[j] = std::exp(std::min(logits(i, j) - max_logit, 87.0f));
             sum_exp += probs[j];
         }
         
-        // Second pass: normalize and compute loss
-        sum_exp = std::max(sum_exp, epsilon);  // Ensure non-zero denominator
+        sum_exp = std::max(sum_exp, epsilon);
         
+        // Compute cross-entropy loss for all tokens
         for (size_t j = 0; j < logits.cols(); j++) {
             probs[j] /= sum_exp;
-            
-            // Ensure probability is in valid range
             probs[j] = std::min(std::max(probs[j], epsilon), 1.0f - epsilon);
             
-            // Compute cross-entropy loss for the target token
+            // Use all target probabilities
             if (targets(i, j) > 0.0f) {
-                loss -= std::log(probs[j]);
-                break;  // Since it's one-hot encoded, we can break after finding the target
+                loss -= targets(i, j) * std::log(probs[j]);
             }
         }
     }
@@ -223,10 +187,31 @@ void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
 
 void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
                            size_t k = 5) {
-  std::cout << "entering print_top_predictions" << std::endl;
-  std::vector<std::pair<float, int>> scores;
+  // Get the last row of logits
+  std::vector<float> last_logits;
   for (size_t i = 0; i < logits.cols(); ++i) {
-    scores.push_back({logits(logits.rows() - 1, i), static_cast<int>(i)});
+    last_logits.push_back(logits(logits.rows() - 1, i));
+  }
+
+  // Apply softmax with numerical stability
+  float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
+  std::vector<float> probs(last_logits.size());
+  float sum_exp = 0.0f;
+  
+  for (size_t i = 0; i < last_logits.size(); ++i) {
+    probs[i] = std::exp(last_logits[i] - max_logit);
+    sum_exp += probs[i];
+  }
+  
+  // Normalize to get probabilities
+  for (float& prob : probs) {
+    prob /= sum_exp;
+  }
+
+  // Create scores with probabilities instead of raw logits
+  std::vector<std::pair<float, int>> scores;
+  for (size_t i = 0; i < probs.size(); ++i) {
+    scores.push_back({probs[i], static_cast<int>(i)});
   }
 
   std::partial_sort(
@@ -237,9 +222,8 @@ void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
   for (size_t i = 0; i < k; ++i) {
     std::string token = tokenizer.decode({scores[i].second});
     std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
-              << std::setprecision(4) << std::exp(scores[i].first) << ")\n";
+              << std::setprecision(4) << scores[i].first << ")\n";
   }
-  std::cout << "exiting print_top_predictions" << std::endl;
 }
 
 std::vector<std::pair<std::string, std::string>> create_training_data() {
@@ -281,39 +265,42 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
   return training_pairs;
 }
 
+// Update the analyze_token_mappings function
 void analyze_token_mappings(const std::vector<std::pair<std::string, std::string>>& training_data, 
                           const Tokenizer& tokenizer) {
     std::cout << "\n=== Analyzing Token Mappings ===\n";
     
-    // Track statistics
     size_t total_words = 0;
     size_t unknown_tokens = 0;
     std::unordered_map<std::string, int> unknown_words;
     
     for (const auto& pair : training_data) {
-        // Analyze input string
-        std::istringstream input_ss(pair.first);
-        std::string word;
-        while (input_ss >> word) {
-            total_words++;
-            std::vector<int> tokens = tokenizer.encode(word);
-            for (int token : tokens) {
+        // Preprocess and analyze input string
+        std::string processed_input = pair.first;
+        tokenizer.preprocess_text(processed_input);
+        std::vector<int> tokens = tokenizer.encode(processed_input);
+        
+        for (int token : tokens) {
+            if (!tokenizer.is_special_token(token)) {
+                total_words++;
                 if (tokenizer.decode({token}) == "<unk>") {
                     unknown_tokens++;
-                    unknown_words[word]++;
+                    unknown_words[tokenizer.decode({token})]++;
                 }
             }
         }
         
-        // Analyze target string
-        std::istringstream target_ss(pair.second);
-        while (target_ss >> word) {
-            total_words++;
-            std::vector<int> tokens = tokenizer.encode(word);
-            for (int token : tokens) {
+        // Preprocess and analyze target string
+        std::string processed_target = pair.second;
+        tokenizer.preprocess_text(processed_target);
+        tokens = tokenizer.encode(processed_target);
+        
+        for (int token : tokens) {
+            if (!tokenizer.is_special_token(token)) {
+                total_words++;
                 if (tokenizer.decode({token}) == "<unk>") {
                     unknown_tokens++;
-                    unknown_words[word]++;
+                    unknown_words[tokenizer.decode({token})]++;
                 }
             }
         }
@@ -348,6 +335,7 @@ int main(int argc, char *argv[]) {
     // Initialize tokenizer first to get vocab size
     auto tokenizer = std::make_unique<Tokenizer>();
     tokenizer->print_vocabulary_mappings(); // Print initial mappings
+    tokenizer->clear_cache();  // We need to add this method to Tokenizer class
     
     // Get vocabulary size from the tokenizer
     size_t actual_vocab_size = tokenizer->vocab_size();
@@ -357,18 +345,20 @@ int main(int argc, char *argv[]) {
     // Configure the transformer with actual vocab size
     TransformerConfig config;
     config.vocab_size = actual_vocab_size;
-    config.hidden_size = 360;
-    config.num_heads = 12;
-    config.num_layers = 6;
+    config.hidden_size = 128;        // Reduced from 360 to prevent overfitting
+    config.num_heads = 4;            // Reduced from 12 to match smaller hidden size
+    config.num_layers = 3;           // Reduced from 6 to prevent overfitting
     config.use_cuda = false;
     config.use_flash_attention = true;
     config.use_rope = true;
     config.use_sliding_window = true;
-    config.window_size = 256;
+    config.window_size = 128;        // Reduced from 256 since we have shorter sequences
     config.use_fp16 = false;
-    config.head_dim = config.hidden_size / config.num_heads;  // Add explicit head_dim calculation
-    config.batch_size = 8;  // Set the batch size
-    config.num_epochs = 10;  // Set the number of epochs
+    config.head_dim = config.hidden_size / config.num_heads;
+    config.batch_size = 4;           // Reduced from 8 due to small dataset
+    config.num_epochs = 30;          // Increased from 10 to allow more training iterations
+    config.dropout_rate = 0.2f;      // Add dropout to prevent overfitting
+    config.weight_decay = 0.01f;     // Add L2 regularization
 
     std::cout << "Initializing transformer with configuration:\n"
               << "- Hidden size: " << config.hidden_size << "\n"
@@ -453,10 +443,18 @@ int main(int argc, char *argv[]) {
             bool batch_valid = true;
             for (size_t j = start_idx; j < end_idx; ++j) {
                 const auto& [input_str, target_str] = training_data[j];
-                std::vector<int> input_tokens = tokenizer->encode(input_str);
-                std::vector<int> curr_target_tokens = tokenizer->encode(target_str);
-                std::cout << "input_tokens: " << input_str << std::endl;
-                std::cout << "curr_target_tokens: " << target_str << std::endl;
+                
+                // Preprocess both input and target
+                std::string processed_input = input_str;
+                std::string processed_target = target_str;
+                
+                tokenizer->preprocess_text(processed_input);
+                tokenizer->preprocess_text(processed_target);
+                
+                std::vector<int> input_tokens = tokenizer->encode(processed_input);
+                std::vector<int> curr_target_tokens = tokenizer->encode(processed_target);
+                
+                // Validate sequences
                 if (!validate_input_sequence(input_tokens, config.vocab_size) || 
                     !validate_input_sequence(curr_target_tokens, config.vocab_size)) {
                     std::cerr << "Invalid sequence at position " << j << std::endl;
@@ -466,7 +464,7 @@ int main(int argc, char *argv[]) {
                 
                 // Pad sequences to max_seq_len
                 while (input_tokens.size() < max_seq_len) {
-                    input_tokens.push_back(0);  // 0 as padding token
+                    input_tokens.push_back(tokenizer->get_pad_token_id());
                 }
                 
                 input_batch.push_back(input_tokens);
@@ -476,7 +474,7 @@ int main(int argc, char *argv[]) {
             if (!batch_valid) continue;  // Skip invalid batches
             
             // Create target distribution for entire batch
-            Matrix target_distribution = create_batch_target_distribution(target_tokens, config.vocab_size);
+            Matrix target_distribution = create_batch_target_distribution(target_tokens, *tokenizer, config.vocab_size);
             
             // Process the batch as a single sequence
             std::vector<int> flattened_batch;
@@ -579,9 +577,9 @@ int main(int argc, char *argv[]) {
         if ((epoch + 1) % 2 == 0) {
             // Test multiple different contexts
             std::vector<std::string> test_inputs = {
-                "I go to",                  // Basic location
-                "Surgeons operate in the",  // Medical context
-                "Athletes train in the",    // Sports context
+                "I go to",                  
+                "Surgeons operate in the",  
+                "Athletes train in the",    
                 "Musicians perform in the", // Entertainment context
                 "Students research in the", // Educational context
                 "Chefs cook in the",        // Culinary context
@@ -598,11 +596,18 @@ int main(int argc, char *argv[]) {
 
             for (const auto &test_input : test_inputs) {
                 std::cout << "\nTesting: '" << test_input << "'\n";
-                std::vector<int> test_tokens = tokenizer->encode(test_input);
+                // Add preprocessing step
+                std::string processed_input = test_input;
+                tokenizer->preprocess_text(processed_input);
+                std::vector<int> test_tokens = tokenizer->encode(processed_input);
                 Matrix test_hidden = transformer.forward(test_tokens);
                 Matrix test_logits = lm_head->forward(test_hidden);
                 print_top_predictions(test_logits, *tokenizer, 5);
             }
+        }
+
+        if ((epoch + 1) % 5 == 0) {  // Clear cache every 5 epochs
+            tokenizer->clear_cache();
         }
     }
 

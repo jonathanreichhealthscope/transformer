@@ -511,58 +511,48 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
     return final_output;
 }
 
-Matrix MultiHeadAttention::backward(const Matrix& grad_output, 
-                                 const Matrix& input,
-                                 const Matrix& target_distribution) {
-    std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
+Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input, const Matrix& target_distribution) {
+    validate_dimensions(grad_output, input, target_distribution);
     
-    // Store intermediate values from forward pass
-    Matrix Q = matmul(input, query_proj);
-    Matrix K = matmul(input, key_proj);
-    Matrix V = matmul(input, value_proj);
+    // Initialize gradients if not already done
+    if (query_proj_grad.empty()) {
+        query_proj_grad = Matrix(query_proj.rows(), query_proj.cols(), 0.0f);
+        key_proj_grad = Matrix(key_proj.rows(), key_proj.cols(), 0.0f);
+        value_proj_grad = Matrix(value_proj.rows(), value_proj.cols(), 0.0f);
+        output_proj_grad = Matrix(output_proj.rows(), output_proj.cols(), 0.0f);
+    }
     
-    // Compute attention scores
-    Matrix scores = matmul(Q, K.transpose());
-    scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
-    scores.apply_softmax();
+    // Compute gradients for attention mechanism
+    Matrix d_query = compute_query_gradients(grad_output, input);
+    Matrix d_key = compute_key_gradients(grad_output, input);
+    Matrix d_value = compute_value_gradients(grad_output, input);
     
-    // Compute attention output
-    Matrix attention_output = matmul(scores, V);
+    // Combine gradients
+    Matrix d_input = combine_gradients(d_query, d_key, d_value);
     
-    // Compute gradients for output projection
-    output_proj_grad = matmul(grad_output.transpose(), attention_output);
-    output_bias_grad = grad_output.row_sum();
+    // Update projection gradients
+    query_proj_grad += matmul(input.transpose(), d_query);
+    key_proj_grad += matmul(input.transpose(), d_key);
+    value_proj_grad += matmul(input.transpose(), d_value);
+    output_proj_grad += matmul(grad_output.transpose(), input);
     
-    // Backpropagate through output projection
-    Matrix d_attention = matmul(grad_output, output_proj.transpose());
+    // Update bias gradients
+    Vector d_query_bias = d_query.row_sum();
+    Vector d_key_bias = d_key.row_sum();
+    Vector d_value_bias = d_value.row_sum();
+    Vector d_output_bias = grad_output.row_sum();
     
-    // Backpropagate through attention mechanism
-    Matrix d_values = matmul(scores.transpose(), d_attention);
-    Matrix d_scores = matmul(d_attention, V.transpose());
+    // Update bias gradients element by element
+    for (size_t i = 0; i < query_bias_grad.size(); ++i) {
+        query_bias_grad[i] += d_query_bias[i];
+        key_bias_grad[i] += d_key_bias[i];
+        value_bias_grad[i] += d_value_bias[i];
+    }
     
-    // Scale gradient of scores
-    d_scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
+    for (size_t i = 0; i < output_bias_grad.size(); ++i) {
+        output_bias_grad[i] += d_output_bias[i];
+    }
     
-    // Compute gradients for value projection
-    value_proj_grad = matmul(input.transpose(), d_values);
-    value_bias_grad = d_values.row_sum();
-    
-    // Compute gradients for key projection
-    Matrix d_keys = matmul(d_scores.transpose(), Q);
-    key_proj_grad = matmul(input.transpose(), d_keys);
-    key_bias_grad = d_keys.row_sum();
-    
-    // Compute gradients for query projection
-    Matrix d_query = matmul(d_scores, K);
-    query_proj_grad = matmul(input.transpose(), d_query);
-    query_bias_grad = d_query.row_sum();
-    
-    // Return gradient with respect to input
-    Matrix d_input = matmul(d_query, query_proj.transpose()) + 
-                    matmul(d_keys, key_proj.transpose()) +
-                    matmul(d_values, value_proj.transpose());
-    
-    std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
     return d_input;
 }
 

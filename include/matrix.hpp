@@ -75,6 +75,19 @@ public:
   Vector row_sum() const;
   void fill(float value);
   void fill(const Matrix &m, float value);
+
+  // Add element-wise multiplication (Hadamard product)
+  Matrix hadamard(const Matrix& other) const {
+    if (rows() != other.rows() || cols() != other.cols()) {
+      throw std::runtime_error("Matrix dimensions must match for hadamard product");
+    }
+    
+    Matrix result(rows(), cols());
+    for (size_t i = 0; i < size(); ++i) {
+      result.data()[i] = data()[i] * other.data()[i];
+    }
+    return result;
+  }
 };
 
 // Make to_vector inline to allow multiple definitions
@@ -88,10 +101,8 @@ private:
   size_t size_;
 
 public:
-  // Add default constructor
-  Vector() : size_(0) {}
-
-  // Existing constructors
+  // Constructors (declarations only)
+  Vector();
   Vector(size_t size, float default_value = 0.0f);
   Vector(const std::initializer_list<float> &list);
   template <typename Iterator>
@@ -103,14 +114,20 @@ public:
   const float *data() const { return data_.data(); }
   size_t size() const { return size_; }
 
-  Vector fill(float value) {
-    std::fill(data_.begin(), data_.end(), value);
-    return *this;
-  }
-
   // Element access
   float &operator[](size_t i) { return data_[i]; }
   const float &operator[](size_t i) const { return data_[i]; }
+
+  // Modified operator+= to handle gradients properly
+  Vector& operator+=(const Vector &other) {
+    if (size_ != other.size()) {
+      throw std::invalid_argument("Vector dimensions must match for addition");
+    }
+    for (size_t i = 0; i < size_; ++i) {
+      data_[i] += other.data_[i];
+    }
+    return *this;
+  }
 
   // Iterator access
   auto begin() { return data_.begin(); }
@@ -118,11 +135,15 @@ public:
   auto begin() const { return data_.begin(); }
   auto end() const { return data_.end(); }
 
-  // Serialization
-  void save(std::ostream &os) const;
-  static Vector load(std::istream &is);
-
-  // Add randomize method
+  // Utility functions
+  bool empty() const { return data_.empty(); }
+  void resize(size_t new_size) {
+    data_.resize(new_size);
+    size_ = new_size;
+  }
+  void fill(float value) {
+    std::fill(data_.begin(), data_.end(), value);
+  }
   void randomize(float min_val, float max_val) {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -132,13 +153,10 @@ public:
     }
   }
 
-  // Add resize method
-  void resize(size_t new_size) {
-    data_.resize(new_size);
-    size_ = new_size;
-  }
+  // Serialization
+  void save(std::ostream &os) const;
+  static Vector load(std::istream &is);
 };
-
 
 // Non-member operators
 Matrix operator+(const Matrix &a, const Matrix &b);

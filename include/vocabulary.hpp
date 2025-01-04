@@ -30,4 +30,8 @@ public:
 
   void print_vocabulary_mappings() const;
   bool verify_mappings() const;
+
+  bool has_token(const std::string& token) const {
+      return token_to_id.find(token) != token_to_id.end();
+  }
 };

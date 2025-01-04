@@ -1,4 +1,6 @@
-#include "../include/components.hpp"
+#include "../include/matrix.hpp"
+
+Vector::Vector() : size_(0) {}
 
 Vector::Vector(size_t size, float default_value)
     : data_(size, default_value), size_(size) {}

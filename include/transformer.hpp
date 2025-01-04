@@ -9,6 +9,7 @@
 #include "layer_norm.hpp"
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
+#include "dropout.hpp"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -38,6 +39,8 @@ public:
   size_t memory_pool_size;
   size_t batch_size;
   size_t num_epochs;
+  float dropout_rate;
+  float weight_decay;
 
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
@@ -65,9 +68,12 @@ private:
   std::unique_ptr<LayerNorm> attention_ln;
   std::unique_ptr<LayerNorm> ffn_ln;
   std::unique_ptr<FeedForward> feed_forward;
+  std::unique_ptr<Dropout> attention_dropout;
+  std::unique_ptr<Dropout> ffn_dropout;
   KVCache kv_cache;
   TransformerConfig config;
   size_t layer_idx;
+  bool training = false;
 
 public:
   virtual ~TransformerLayer() = default;
@@ -150,6 +156,10 @@ public:
     }
     return *this;
   }
+
+  void set_training(bool mode) {
+    training = mode;
+  }
 };
 
 class Transformer {
@@ -196,6 +206,8 @@ private:
     }
     return parameter_grads.value();
   }
+
+  bool training = false;
 
 public:
   Transformer() = default;
@@ -248,4 +260,11 @@ public:
 
   const Matrix& get_hidden_states() const { return hidden_states; }
   LanguageModelHead* get_lm_head() { return lm_head.get(); }
+
+  void set_training(bool mode) { 
+    training = mode;
+    for (auto& layer : layers) {
+      layer->set_training(mode);
+    }
+  }
 };

@@ -301,7 +301,7 @@ void Matrix::fill(float value) {
   std::fill(data_.begin(), data_.end(), value);
 }
 
-// Operator implementations
+
 Matrix &Matrix::operator+=(const Matrix &other) {
   if (rows_ != other.rows_ || cols_ != other.cols_) {
     throw std::invalid_argument("Matrix dimensions must match for addition");
@@ -313,16 +313,6 @@ Matrix &Matrix::operator+=(const Matrix &other) {
   return *this;
 }
 
-Matrix &Matrix::operator-=(const Matrix &other) {
-  if (rows_ != other.rows_ || cols_ != other.cols_) {
-    throw std::invalid_argument("Matrix dimensions must match for subtraction");
-  }
-  #pragma omp parallel for simd
-  for (size_t i = 0; i < data_.size(); ++i) {
-    data_[i] -= other.data_[i];
-  }
-  return *this;
-}
 
 Matrix &Matrix::operator*=(float scalar) {
   #pragma omp parallel for simd
@@ -362,6 +352,17 @@ Matrix &Matrix::operator*=(const Matrix &other) {
   }
   *this = std::move(result);
   return *this;
+}
+
+Matrix& Matrix::operator-=(const Matrix &other) {
+    if (rows_ != other.rows_ || cols_ != other.cols_) {
+        throw std::invalid_argument("Matrix dimensions must match for subtraction");
+    }
+    #pragma omp parallel for simd
+    for (size_t i = 0; i < data_.size(); ++i) {
+        data_[i] -= other.data_[i];
+    }
+    return *this;
 }
 
 // Serialization
