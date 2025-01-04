@@ -293,6 +293,13 @@ public:
       
       return params;
   }
+  
+  // Get parameter gradients
+  const Parameters& parameter_gradients() const { return param_gradients; }
+
+private:
+  Parameters params;         // Trainable parameters
+  Parameters param_gradients;  // Parameter gradients
 };
 
 // Add sliding window attention

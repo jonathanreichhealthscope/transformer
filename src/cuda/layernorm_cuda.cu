@@ -1,6 +1,10 @@
+#define USE_CUDA
+#include <cuda_runtime.h>
+#include "../../include/layer_norm.hpp"
 #include "../../include/cuda/cuda_check.cuh"
 #include "../../include/cuda/cuda_utils.cuh"
-#include "../../include/layernorm.hpp"
+
+#ifdef USE_CUDA
 
 __global__ void layernorm_backward_kernel(const float *grad_output,
                                           const float *input,
@@ -54,7 +58,9 @@ __global__ void layernorm_backward_kernel(const float *grad_output,
 Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
                                 const Matrix &input) const {
   const int batch_size = input.rows();
-  const int hidden_size = input.cols();
+  const int hidden_size = get_hidden_size();
+  const float eps = get_eps();
+  const Vector& gamma = get_gamma();
 
   // Allocate device memory
   float *d_grad_output, *d_input, *d_gamma;
@@ -73,7 +79,7 @@ Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
                         cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(d_input, input.data(), input.size() * sizeof(float),
                         cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(d_gamma, gamma_.data(), hidden_size * sizeof(float),
+  CUDA_CHECK(cudaMemcpy(d_gamma, gamma.data(), hidden_size * sizeof(float),
                         cudaMemcpyHostToDevice));
 
   // Launch kernel
@@ -84,7 +90,7 @@ Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
 
   layernorm_backward_kernel<<<grid_size, block_size, shared_mem_size>>>(
       d_grad_output, d_input, d_gamma, d_grad_input, d_grad_gamma, d_grad_beta,
-      hidden_size, batch_size, eps_);
+      hidden_size, batch_size, eps);
 
   // Create result matrix and copy gradients back
   Matrix grad_input(batch_size, hidden_size);
@@ -112,3 +118,5 @@ Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
 
   return grad_input;
 }
+
+#endif // USE_CUDA

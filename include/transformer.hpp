@@ -6,7 +6,7 @@
 #include "feed_forward.hpp"
 #include "gradient_checkpoint.hpp"
 #include "half_precision.hpp"
-#include "layernorm.hpp"
+#include "layer_norm.hpp"
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
 #include <functional>
@@ -14,8 +14,6 @@
 #include <vector>
 
 // Forward declarations
-class TokenEmbedding;
-class PositionalEncoding;
 class TransformerLayer;
 
 class TransformerConfig {

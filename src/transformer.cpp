@@ -211,34 +211,34 @@ Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
-    std::cout << "\n=== Transformer::constructor START ===" << std::endl;
-    
+  std::cout << "\n=== Transformer::constructor START ===" << std::endl;
+  
     // Initialize token embedding
-    token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
-    
-    // Initialize positional encoding
-    pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
-    
-    // Initialize transformer layers
-    layers.reserve(config.num_layers);
+  token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
+
+  // Initialize positional encoding
+  pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
+
+  // Initialize transformer layers
+  layers.reserve(config.num_layers);
     m_kv_caches.reserve(config.num_layers);
-    for (size_t i = 0; i < config.num_layers; ++i) {
+  for (size_t i = 0; i < config.num_layers; ++i) {
         layers.push_back(std::make_unique<TransformerLayer>(config, i));
         m_kv_caches.emplace_back(config.max_seq_length);
-    }
-    
-    // Initialize final layer normalization
-    final_ln = std::make_unique<LayerNorm>(config.hidden_size);
-    
-    std::cout << "=== Transformer::constructor END ===\n" << std::endl;
+  }
+
+  // Initialize final layer normalization
+  final_ln = std::make_unique<LayerNorm>(config.hidden_size);
+
+  std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
 Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache) {
-    std::cout << "\n=== Transformer::forward START ===" << std::endl;
-    
+  std::cout << "\n=== Transformer::forward START ===" << std::endl;
+  
     // Get embeddings
     Matrix embeddings = token_embedding->forward(input_tokens);
-    
+
     // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
     for (size_t i = 0; i < input_tokens.size(); ++i) {
@@ -260,14 +260,14 @@ Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache
         hidden_states = layers[i]->forward(hidden_states, mask, 
             use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
     }
-    
+
     // Final layer normalization
     hidden_states = final_ln->forward(hidden_states);
-    
+
     // Store activations for backward pass
     last_hidden_states = hidden_states;
     m_layer_activations = std::move(activations);
-    
+
     std::cout << "=== Transformer::forward END ===\n" << std::endl;
     return hidden_states;
 }
@@ -299,8 +299,8 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
     current_grad = final_ln->backward(current_grad, last_activation);
     std::cout << "After final LN grad dimensions: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
     
-    // Backward through layers in reverse order
-    for (int i = layers.size() - 1; i >= 0; --i) {
+  // Backward through layers in reverse order
+  for (int i = layers.size() - 1; i >= 0; --i) {
         std::cout << "\nProcessing layer " << i << std::endl;
         const Matrix& layer_input = m_layer_activations[i];
         std::cout << "Layer input dimensions: " << layer_input.rows() << "x" << layer_input.cols() << std::endl;
@@ -343,27 +343,38 @@ void Transformer::update_parameters(float learning_rate) {
     
     // Update Vector parameters for each layer
     for (auto& layer : layers) {
-        // Update attention biases
+        // Update attention parameters
         auto& attn_params = layer->self_attention->parameters();
-        for (auto& bias : attn_params.vectors) {
+        auto& attn_grads = layer->self_attention->parameter_gradients();
+        
+        // Update attention biases using computed gradients
+        for (size_t i = 0; i < attn_params.vectors.size(); ++i) {
+            auto& bias = attn_params.vectors[i];
+            const auto& bias_grad = attn_grads.vectors[i];
             for (size_t j = 0; j < bias.get().size(); ++j) {
-                bias.get().data()[j] -= learning_rate * 0.01f; // Small constant gradient for biases
+                bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
             }
         }
         
-        // Update layer norm parameters
+        // Update layer norm parameters using computed gradients
         auto& ln_params = layer->attention_ln->parameters();
-        for (auto& param : ln_params) {
+        auto& ln_grads = layer->attention_ln->parameter_gradients();
+        for (size_t i = 0; i < ln_params.size(); ++i) {
+            auto& param = ln_params[i];
+            const auto& grad = ln_grads[i];
             for (size_t j = 0; j < param.get().size(); ++j) {
-                param.get().data()[j] -= learning_rate * 0.01f; // Small constant gradient for layer norm
+                param.get().data()[j] -= learning_rate * grad.get().data()[j];
             }
         }
         
-        // Update feed forward biases
+        // Update feed forward parameters using computed gradients
         auto& ffn_params = layer->feed_forward->parameters();
-        for (auto& bias : ffn_params.vectors) {
+        auto& ffn_grads = layer->feed_forward->parameter_gradients();
+        for (size_t i = 0; i < ffn_params.vectors.size(); ++i) {
+            auto& bias = ffn_params.vectors[i];
+            const auto& bias_grad = ffn_grads.vectors[i];
             for (size_t j = 0; j < bias.get().size(); ++j) {
-                bias.get().data()[j] -= learning_rate * 0.01f; // Small constant gradient for biases
+                bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
             }
         }
     }

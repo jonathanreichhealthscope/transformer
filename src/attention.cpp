@@ -142,13 +142,20 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     std::cout << "=== MultiHeadAttention::forward START ===" << std::endl;
     std::cout << "Input shape: " << x.rows() << "x" << x.cols() << std::endl;
     
-    const size_t batch_size = static_cast<size_t>(x.rows());
-    const size_t seq_len = static_cast<size_t>(x.rows());  // For causal attention, sequence length is same as batch size
+    // Calculate true batch size and sequence length
+    const size_t seq_len = mask.mask.rows();  // Get sequence length from mask
+    const size_t batch_size = x.rows() / seq_len;  // Calculate batch size
+    
+    std::cout << "Calculated dimensions:" << std::endl;
+    std::cout << "- batch_size: " << batch_size << std::endl;
+    std::cout << "- seq_len: " << seq_len << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+    std::cout << "- head_dim: " << head_dim << std::endl;
     
     // Project input to Q, K, V
-    Matrix Q = matmul(x, query_proj);  // Shape: (batch_size, hidden_size)
-    Matrix K = matmul(x, key_proj);    // Shape: (batch_size, hidden_size)
-    Matrix V = matmul(x, value_proj);  // Shape: (batch_size, hidden_size)
+    Matrix Q = matmul(x, query_proj);  // Shape: (batch_size * seq_len, hidden_size)
+    Matrix K = matmul(x, key_proj);    // Shape: (batch_size * seq_len, hidden_size)
+    Matrix V = matmul(x, value_proj);  // Shape: (batch_size * seq_len, hidden_size)
     
     std::cout << "Q shape: " << Q.rows() << "x" << Q.cols() << std::endl;
     std::cout << "K shape: " << K.rows() << "x" << K.cols() << std::endl;
@@ -547,11 +554,35 @@ Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_s
     return reshaped;
 }
 
-Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t seq_len, size_t hidden_size) const {
-    size_t batch_size = x.dims()[0];  // Get batch size from first dimension
-    Matrix reshaped(batch_size, hidden_size);
+Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t batch_size, size_t hidden_size) const {
+    std::cout << "=== reshape_from_attention START ===" << std::endl;
     
-    // ... rest of the implementation ...
+    // Get dimensions from tensor
+    const auto& dims = x.dims();
+    size_t seq_len = dims[2];  // Third dimension is sequence length
+    
+    // Output should have shape (batch_size * seq_len, hidden_size)
+    Matrix reshaped(batch_size * seq_len, hidden_size);
+    
+    // Reshape from [batch_size, num_heads, seq_len, head_dim] to [batch_size * seq_len, hidden_size]
+    for (size_t b = 0; b < batch_size; ++b) {
+        for (size_t s = 0; s < seq_len; ++s) {
+            for (size_t h = 0; h < num_heads; ++h) {
+                for (size_t d = 0; d < head_dim; ++d) {
+                    // Calculate output position
+                    size_t out_row = b * seq_len + s;
+                    size_t out_col = h * head_dim + d;
+                    
+                    // Get value from tensor
+                    reshaped(out_row, out_col) = x.at(b, h, s, d);
+                }
+            }
+        }
+    }
+    
+    std::cout << "Reshaped output dimensions: " << reshaped.rows() << "x" << reshaped.cols() << std::endl;
+    std::cout << "=== reshape_from_attention END ===" << std::endl;
+    
     return reshaped;
 }
 
