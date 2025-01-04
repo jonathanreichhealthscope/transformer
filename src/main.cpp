@@ -491,42 +491,57 @@ int main(int argc, char *argv[]) {
             // Create target distribution for entire batch
             Matrix target_distribution = create_batch_target_distribution(target_tokens, config.vocab_size);
             
-            // Create batched input matrix
-            Matrix batched_input(current_batch_size * max_seq_len, config.hidden_size);
-            for (size_t i = 0; i < current_batch_size; ++i) {
-                for (size_t j = 0; j < max_seq_len; ++j) {
-                    // Copy token embeddings to batched input
-                    size_t flat_idx = i * max_seq_len + j;
-                    int token = input_batch[i][j];
-                    // Assuming you have a method to get token embeddings
-                    Matrix token_embedding = transformer.get_token_embedding(token);
-                    for (size_t k = 0; k < config.hidden_size; ++k) {
-                        batched_input(flat_idx, k) = token_embedding(0, k);
+            // Process the batch as a single sequence
+            std::vector<int> flattened_batch;
+            flattened_batch.reserve(current_batch_size * max_seq_len);
+            
+            // Flatten the batch into a single sequence
+            for (const auto& sequence : input_batch) {
+                flattened_batch.insert(flattened_batch.end(), sequence.begin(), sequence.end());
+            }
+            
+            // Forward pass with the flattened batch
+            Matrix hidden_states = transformer.forward(flattened_batch);
+            Matrix logits = lm_head->project_to_vocab(hidden_states);
+            
+            // Reshape logits to match target distribution
+            Matrix reshaped_logits(current_batch_size, config.vocab_size);
+            // Take the last token's logits for each sequence in the batch
+            for (size_t i = 0; i < current_batch_size; i++) {
+                size_t seq_end_idx = (i + 1) * max_seq_len - 1;  // Index of last token in sequence
+                for (size_t j = 0; j < config.vocab_size; j++) {
+                    if (seq_end_idx < logits.rows()) {
+                        reshaped_logits(i, j) = logits(seq_end_idx, j);
+                    } else {
+                        std::cerr << "Warning: Sequence end index " << seq_end_idx 
+                                 << " exceeds logits rows " << logits.rows() << std::endl;
+                        reshaped_logits(i, j) = 0.0f;  // Safe fallback
                     }
                 }
             }
             
-            // Forward pass with batched input
-            Matrix hidden_states = transformer.forward(batched_input);
-            Matrix logits = lm_head->project_to_vocab(hidden_states);
-            
-            // Compute loss for the entire batch
-            float batch_loss = compute_batch_loss(logits, target_distribution);
+            // Compute loss for the entire batch using reshaped logits
+            float batch_loss = compute_batch_loss(reshaped_logits, target_distribution);
             
             // Compute gradients for the entire batch
-            Matrix gradients(hidden_states.rows(), hidden_states.cols());
+            // Reshape gradients to match hidden states dimensions
+            Matrix gradients(hidden_states.rows(), hidden_states.cols(), 0.0f);
             
             // Compute gradients using SAM for the entire batch
             std::vector<Matrix> param_grads;
             param_grads.reserve(transformer.getLayers().size());
             sam_optimizer->compute_parameter_gradients(hidden_states, target_distribution, param_grads);
             
-            // Combine parameter gradients
+            // Combine parameter gradients and ensure proper dimensions
             for (const auto& grad : param_grads) {
                 if (grad.rows() == gradients.rows() && grad.cols() == gradients.cols()) {
                     for (size_t j = 0; j < grad.size(); j++) {
                         gradients.data()[j] += grad.data()[j];
                     }
+                } else {
+                    std::cerr << "Warning: Gradient dimension mismatch. Expected: " 
+                             << gradients.rows() << "x" << gradients.cols() 
+                             << ", Got: " << grad.rows() << "x" << grad.cols() << std::endl;
                 }
             }
             
@@ -536,13 +551,21 @@ int main(int argc, char *argv[]) {
                 gradients.data()[i] *= scale;
             }
             
+            // Add dimension checks before backward pass
+            if (gradients.rows() != hidden_states.rows() || gradients.cols() != hidden_states.cols()) {
+                std::cerr << "Error: Gradient dimensions (" << gradients.rows() << "x" << gradients.cols() 
+                         << ") don't match hidden states (" << hidden_states.rows() << "x" 
+                         << hidden_states.cols() << ")" << std::endl;
+                continue;  // Skip this batch if dimensions don't match
+            }
+            
             // Update learning rate
             float loss_ratio = batch_loss / (prev_loss + 1e-10f);
             learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step);
             global_step++;
             
             // Backward pass with the entire batch
-            transformer.backward(gradients, batched_input, learning_rate);
+            transformer.backward(gradients, flattened_batch, learning_rate);
             
             // Update loss tracking
             prev_loss = batch_loss;
