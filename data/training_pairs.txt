@@ -126,4 +126,396 @@ Navigators plan in the|briefing room
 Aviation engineers test in the|wind tunnel
 Flight instructors teach in the|simulator
 Baggage handlers work in the|cargo hold
-Aircraft technicians maintain in the|service bay 
+Aircraft technicians maintain in the|service bay
+Artists sketch in the|drawing room
+Sculptors work in the|studio
+Photographers shoot in the|darkroom
+Illustrators draw in the|art room
+Painters create in the|atelier
+Ceramicists mold in the|pottery studio
+Weavers work at the|loom
+Jewelers craft in the|workshop
+Glassblowers shape in the|hot shop
+Printmakers work in the|print studio
+Gardeners work in the|greenhouse
+Florists arrange in the|flower shop
+Landscapers design in the|yard
+Botanists study in the|conservatory
+Farmers work in the|field
+Beekeepers tend in the|apiary
+Vintners work in the|vineyard
+Ranchers work on the|ranch
+Shepherds watch in the|pasture
+Foresters manage in the|woods
+Archaeologists dig at the|site
+Historians research in the|archive
+Curators work in the|museum
+Anthropologists study in the|field
+Paleontologists excavate at the|dig
+Archivists organize in the|repository
+Librarians catalog in the|library
+Conservators restore in the|workshop
+Researchers analyze in the|laboratory
+Scholars study in the|reading room
+Booksellers work in the|bookstore
+Cashiers work at the|register
+Stockers organize in the|warehouse
+Managers supervise in the|office
+Salespeople assist in the|showroom
+Customers shop in the|mall
+Security guards patrol in the|building
+Janitors clean in the|hallway
+Receptionists greet at the|desk
+Secretaries type in the|office
+Accountants calculate in the|cubicle
+Auditors review in the|boardroom
+Consultants present in the|meeting room
+Executives meet in the|conference room
+Interns learn in the|workplace
+Recruiters interview in the|office
+HR managers work in the|department
+Marketers brainstorm in the|agency
+Advertisers create in the|studio
+Copywriters write in the|office
+Journalists report from the|newsroom
+Editors work in the|publishing house
+Writers compose in the|study
+Novelists write in the|home office
+Poets create in the|garden
+Screenwriters work in the|studio
+Directors film on the|set
+Producers work in the|production office
+Cinematographers shoot on the|location
+Makeup artists prepare in the|trailer
+Costume designers work in the|wardrobe
+Set designers build on the|stage
+Props masters organize in the|storage room
+Sound engineers mix in the|booth
+Lighting technicians work on the|catwalk
+Camera operators film from the|platform
+Stunt performers practice in the|gym
+Special effects artists work in the|workshop
+Animators draw in the|studio
+Voice actors record in the|booth
+Composers write in the|music room
+Musicians rehearse in the|practice room
+Conductors lead in the|concert hall
+Singers perform on the|stage
+Guitarists play in the|studio
+Pianists practice in the|music room
+Violinists perform in the|recital hall
+Drummers practice in the|basement
+Band members jam in the|garage
+Orchestra members play in the|pit
+Choir members sing in the|chapel
+Organists play in the|church
+Bell ringers work in the|tower
+Street performers entertain on the|sidewalk
+Buskers perform in the|subway
+Magicians perform on the|stage
+Acrobats practice in the|circus
+Jugglers perform in the|tent
+Clowns entertain at the|carnival
+Ringmasters announce in the|big top
+Trapeze artists swing in the|air
+Lion tamers perform in the|cage
+Elephant trainers work in the|arena
+Zoo keepers work in the|enclosure
+Veterinarians treat in the|clinic
+Animal trainers work in the|facility
+Pet groomers work in the|salon
+Dog walkers meet in the|park
+Cat sitters visit at the|house
+Horse trainers work in the|stable
+Jockeys race on the|track
+Stable hands work in the|barn
+Farriers work in the|smithy
+Carpenters build in the|workshop
+Plumbers work in the|basement
+Electricians wire in the|building
+Painters work on the|scaffold
+Roofers work on the|roof
+Masons build with the|stone
+Welders work in the|shop
+Glaziers install in the|window
+Tile setters work on the|floor
+Cabinet makers build in the|shop
+Upholsterers work in the|studio
+Interior designers plan in the|office
+Decorators work in the|room
+Furniture makers build in the|workshop
+Seamstresses sew in the|studio
+Tailors work in the|shop
+Fashion designers create in the|atelier
+Pattern makers work in the|studio
+Models walk on the|runway
+Stylists work in the|salon
+Hairdressers cut in the|salon
+Barbers work in the|shop
+Manicurists work in the|nail salon
+Massage therapists work in the|spa
+Aestheticians treat in the|salon
+Yoga instructors teach in the|studio
+Personal trainers work in the|gym
+Fitness instructors lead in the|class
+Nutritionists consult in the|office
+Dietitians work in the|clinic
+Life coaches meet in the|office
+Career counselors advise in the|center
+Financial advisors meet in the|office
+Insurance agents work in the|agency
+Real estate agents show the|house
+Property managers work in the|building
+Landlords inspect the|apartment
+Maintenance workers fix in the|building
+Superintendents work in the|basement
+Security officers monitor from the|desk
+Dispatchers work in the|control room
+Emergency operators work at the|call center
+911 operators respond from the|dispatch center
+Firefighters slide down the|pole
+Paramedics rush to the|scene
+Police officers patrol in the|car
+Detectives investigate at the|crime scene
+Crime scene investigators work at the|site
+Forensic scientists analyze in the|lab
+Ballistics experts test in the|range
+DNA analysts work in the|laboratory
+Toxicologists test in the|lab
+Medical examiners work in the|morgue
+Pathologists examine in the|laboratory
+Coroners investigate at the|scene
+Evidence technicians process in the|lab
+Surveillance operators monitor from the|room
+Security analysts work in the|office
+Cyber security experts work in the|server room
+Network administrators manage from the|office
+System engineers work in the|data center
+Database administrators work in the|server room
+Software architects design in the|office
+UX designers create in the|studio
+Web developers code in the|office
+Mobile developers program in the|workspace
+Game developers create in the|studio
+QA testers work in the|lab
+Technical writers document in the|office
+Support specialists help from the|desk
+IT managers oversee from the|office
+Project managers coordinate from the|workspace
+Scrum masters facilitate in the|room
+Product owners decide in the|office
+Business analysts work in the|department
+Data scientists analyze in the|lab
+Machine learning engineers code in the|office
+AI researchers experiment in the|laboratory
+Robotics engineers build in the|workshop
+Hardware engineers design in the|lab
+Electronics technicians repair in the|shop
+Circuit designers work in the|lab
+PCB fabricators work in the|clean room
+Semiconductor engineers work in the|fab
+Clean room technicians work in the|facility
+Quality control inspectors check in the|factory
+Assembly line workers work on the|line
+Production managers oversee from the|floor
+Industrial engineers optimize in the|plant
+Safety inspectors check the|workplace
+OSHA inspectors evaluate the|site
+Environmental engineers monitor the|facility
+Waste management workers operate the|plant
+Recycling workers sort at the|center
+Sustainability experts consult in the|office
+Energy auditors inspect the|building
+Solar installers work on the|roof
+Wind turbine technicians climb the|tower
+Hydroelectric operators work at the|dam
+Nuclear engineers work in the|plant
+Power plant operators monitor the|control room
+Grid operators manage from the|center
+Utility workers repair in the|field
+Linemen work on the|poles
+Cable installers work in the|neighborhood
+Telephone technicians repair on the|pole
+Internet installers work in the|house
+Satellite technicians install on the|roof
+Radio operators broadcast from the|station
+TV producers work in the|studio
+News anchors report from the|desk
+Weather forecasters present in the|studio
+Sports commentators announce from the|booth
+Traffic reporters monitor from the|helicopter
+Field reporters broadcast from the|scene
+Camera operators film from the|truck
+Sound technicians mix in the|van
+Broadcast engineers work in the|control room
+Station managers work in the|office
+Radio DJs broadcast from the|booth
+Podcast hosts record in the|studio
+Audio engineers mix in the|booth
+Video editors work in the|suite
+Motion graphics artists create in the|studio
+Color graders work in the|dark room
+Post-production supervisors work in the|facility
+Visual effects artists create in the|studio
+3D modelers work in the|office
+Texture artists work in the|studio
+Riggers work in the|animation studio
+Character animators work at the|desk
+Background artists paint in the|studio
+Storyboard artists draw in the|room
+Concept artists sketch in the|studio
+Art directors oversee from the|office
+Creative directors lead from the|studio
+Production designers work on the|set
+Location scouts search in the|field
+Casting directors audition in the|room
+Talent agents work in the|office
+Publicists work from the|agency
+Marketing managers plan in the|office
+Social media managers post from the|desk
+Content creators work in the|studio
+Influencers stream from the|room
+Streamers broadcast from the|setup
+Professional gamers compete from the|station
+Esports players practice in the|facility
+Tournament organizers manage from the|venue
+Event planners coordinate from the|office
+Wedding planners arrange at the|venue
+Party planners organize at the|location
+Conference organizers manage at the|center
+Exhibition curators arrange in the|gallery
+Museum directors oversee from the|office
+Gallery owners work in the|space
+Art dealers sell from the|gallery
+Auctioneers present in the|auction house
+Appraisers evaluate in the|office
+Antique dealers work in the|shop
+Collectors display in the|showroom
+Restorers work in the|studio
+Preservationists protect in the|facility
+Conservationists work in the|field
+Park rangers patrol in the|wilderness
+Wildlife biologists study in the|habitat
+Marine biologists research in the|ocean
+Oceanographers work on the|ship
+Ship captains navigate from the|bridge
+Sailors work on the|deck
+Fishermen work on the|boat
+Coast guards patrol in the|waters
+Harbor masters work in the|port
+Dock workers load at the|pier
+Longshoremen work on the|docks
+Crane operators work in the|cab
+Forklift drivers work in the|warehouse
+Logistics managers coordinate from the|office
+Supply chain analysts work in the|office
+Inventory managers work in the|warehouse
+Shipping clerks work in the|mailroom
+Postal workers deliver on the|route
+Mail carriers walk on the|street
+Package handlers work in the|sorting facility
+Delivery drivers work on the|road
+Truck drivers travel on the|highway
+Bus drivers transport on the|street
+Taxi drivers work in the|city
+Rideshare drivers pick up from the|curb
+Chauffeurs wait in the|parking lot
+Valets park at the|entrance
+Parking attendants work in the|garage
+Traffic officers work on the|street
+Meter readers walk on the|sidewalk
+Road workers repair on the|street
+Construction workers build at the|site
+Crane operators work in the|cab
+Bulldozer operators work on the|site
+Excavator operators dig at the|site
+Paving crews work on the|road
+Bridge builders work on the|span
+Tunnel workers dig in the|shaft
+Mining engineers work in the|mine
+Geologists study in the|field
+Surveyors work on the|site
+Cartographers work in the|office
+GIS specialists work at the|computer
+Urban planners design in the|office
+Architects design in the|studio
+Landscape architects plan in the|office
+Civil engineers work in the|field
+Structural engineers analyze in the|office
+Environmental scientists study in the|field
+Climate scientists research in the|lab
+Meteorologists forecast from the|station
+Hydrologists study in the|field
+Soil scientists analyze in the|lab
+Agricultural scientists work in the|field
+Food scientists test in the|lab
+Flavor chemists work in the|laboratory
+Quality testers work in the|facility
+Safety inspectors check the|plant
+Compliance officers inspect the|facility
+Regulators monitor from the|office
+Auditors review in the|workplace
+Risk managers assess from the|office
+Insurance adjusters inspect at the|site
+Claims processors work in the|office
+Benefits coordinators work in the|department
+Payroll specialists work in the|office
+Tax preparers work in the|office
+Bookkeepers work at the|desk
+Billing specialists work in the|office
+Collections agents work in the|call center
+Credit analysts work in the|office
+Loan officers meet in the|bank
+Bank tellers work at the|counter
+Financial managers work in the|office
+Investment bankers work on the|trading floor
+Stock brokers trade from the|desk
+Market analysts work in the|office
+Economists research in the|institution
+Statisticians analyze in the|office
+Mathematicians work in the|department
+Cryptographers work in the|secure room
+Code breakers work in the|facility
+Security analysts work in the|office
+Intelligence analysts work in the|agency
+Diplomats work in the|embassy
+Ambassadors meet in the|consulate
+Translators work in the|booth
+Interpreters work in the|conference
+Language teachers instruct in the|classroom
+ESL teachers teach in the|school
+Speech therapists work in the|clinic
+Audiologists test in the|office
+Optometrists examine in the|clinic
+Ophthalmologists operate in the|surgery center
+Neurologists examine in the|office
+Cardiologists treat in the|hospital
+Oncologists consult in the|center
+Pediatricians treat in the|office
+Obstetricians deliver in the|hospital
+Anesthesiologists work in the|operating room
+Emergency physicians work in the|ER
+Family doctors practice in the|clinic
+Nurse practitioners treat in the|office
+Physician assistants work in the|clinic
+Medical technicians work in the|laboratory
+Phlebotomists draw blood in the|lab
+X-ray technicians work in the|imaging room
+MRI technicians operate in the|imaging center
+Ultrasound technicians work in the|exam room
+Physical therapists treat in the|clinic
+Occupational therapists work in the|facility
+Speech pathologists treat in the|office
+Respiratory therapists work in the|hospital
+Dialysis technicians work in the|center
+Pharmacy technicians work in the|drugstore
+Opticians work in the|shop
+Dental hygienists clean in the|office
+Dental assistants work in the|clinic
+Orthodontists treat in the|office
+Oral surgeons operate in the|surgical center
+Endodontists treat in the|office
+Periodontists work in the|clinic
+Prosthodontists work in the|office
+Lab technicians work in the|dental lab
+Dental lab workers craft in the|laboratory 

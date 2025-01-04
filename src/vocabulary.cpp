@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <fstream>
+#include <unordered_set>
+
 
 Vocabulary::Vocabulary() {
   // Initialize special tokens first (guaranteed IDs)
@@ -195,7 +198,7 @@ void Vocabulary::initialize_basic_vocabulary() {
       "wise",      "wonderful", "worried",    "young"};
 
   // Common nouns
-  std::vector<std::string> nouns = {
+  std::vector<std::string> nouns_vec = {
       // People and roles
       "person", "people", "family", "friend", "parent", "mother", "father",
       "child", "baby", "teacher", "student", "doctor", "worker", "artist",
@@ -359,6 +362,11 @@ void Vocabulary::initialize_basic_vocabulary() {
       "dressing", "chambers"
   };
 
+  // Store nouns in the set for quick lookup
+  for (const auto& noun : nouns_vec) {
+      nouns.insert(noun);
+  }
+
   // Add all words to vocabulary
   std::vector<std::string> all_words;
   all_words.insert(all_words.end(), articles.begin(), articles.end());
@@ -367,7 +375,7 @@ void Vocabulary::initialize_basic_vocabulary() {
   all_words.insert(all_words.end(), verbs.begin(), verbs.end());
   all_words.insert(all_words.end(), connectors.begin(), connectors.end());
   all_words.insert(all_words.end(), adjectives.begin(), adjectives.end());
-  all_words.insert(all_words.end(), nouns.begin(), nouns.end());
+  all_words.insert(all_words.end(), nouns_vec.begin(), nouns_vec.end());
 
   // Sort and remove duplicates
   std::sort(all_words.begin(), all_words.end());
@@ -424,4 +432,16 @@ bool Vocabulary::verify_mappings() const {
     }
   }
   return valid;
+}
+
+bool Vocabulary::is_noun(const std::string& token) const {
+    return nouns.find(token) != nouns.end();
+}
+
+void Vocabulary::load_nouns(const std::string& noun_file_path) {
+    std::ifstream file(noun_file_path);
+    std::string line;
+    while (std::getline(file, line)) {
+        nouns.insert(line);
+    }
 }

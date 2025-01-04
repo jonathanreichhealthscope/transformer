@@ -30,6 +30,8 @@ public:
     // Add getter for pad token
     int get_pad_token_id() const { return vocab->get_pad_token_id(); }
     
+    const Vocabulary& get_vocabulary() const { return *vocab; }
+    
 private:
     std::unique_ptr<Vocabulary> vocab;
     mutable std::unordered_map<std::string, std::vector<int>> encoding_cache;

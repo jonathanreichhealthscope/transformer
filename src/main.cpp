@@ -208,15 +208,23 @@ void print_top_predictions(const Matrix &logits, const Tokenizer &tokenizer,
   // Create scores with probabilities instead of raw logits
   std::vector<std::pair<float, int>> scores;
   for (size_t i = 0; i < probs.size(); ++i) {
-    scores.push_back({probs[i], static_cast<int>(i)});
+    std::string token = tokenizer.decode({static_cast<int>(i)});
+    if (tokenizer.get_vocabulary().is_noun(token)) {
+        scores.push_back({probs[i], static_cast<int>(i)});
+    }
   }
 
-  std::partial_sort(
-      scores.begin(), scores.begin() + k, scores.end(),
-      [](const auto &a, const auto &b) { return a.first > b.first; });
+  // Sort only if we have predictions
+  if (!scores.empty()) {
+      std::partial_sort(
+          scores.begin(), 
+          scores.begin() + std::min(k, scores.size()), 
+          scores.end(),
+          [](const auto &a, const auto &b) { return a.first > b.first; });
+  }
 
-  std::cout << "\nTop " << k << " predictions:\n";
-  for (size_t i = 0; i < k; ++i) {
+  std::cout << "\nTop " << k << " noun predictions:\n";
+  for (size_t i = 0; i < std::min(k, scores.size()); ++i) {
     std::string token = tokenizer.decode({scores[i].second});
     std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
               << std::setprecision(4) << scores[i].first << ")\n";
@@ -285,7 +293,7 @@ void analyze_token_mappings(const std::vector<std::pair<std::string, std::string
         for (int token : tokens) {
             if (!tokenizer.is_special_token(token)) {
                 total_words++;
-                if (tokenizer.decode({token}) == "") {
+                if (tokenizer.decode({token}) == "<unk>") {
                     unknown_tokens++;
                     unknown_words[tokenizer.decode({token})]++;
                 }
@@ -300,7 +308,7 @@ void analyze_token_mappings(const std::vector<std::pair<std::string, std::string
         for (int token : tokens) {
             if (!tokenizer.is_special_token(token)) {
                 total_words++;
-                if (tokenizer.decode({token}) == "") {
+                if (tokenizer.decode({token}) == "<unk>") {
                     unknown_tokens++;
                     unknown_words[tokenizer.decode({token})]++;
                 }
@@ -315,7 +323,7 @@ void analyze_token_mappings(const std::vector<std::pair<std::string, std::string
               << (100.0f * unknown_tokens / total_words) << "%)\n\n";
     
     if (!unknown_words.empty()) {
-        std::cout << "Words mapped to ] token:\n";
+        std::cout << "Words mapped to <unk> token:\n";
         for (const auto& [word, count] : unknown_words) {
             std::cout << "'" << word << "': " << count << " times\n";
         }

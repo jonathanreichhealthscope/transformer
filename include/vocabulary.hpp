@@ -2,11 +2,13 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <unordered_set>
 
 class Vocabulary {
 private:
   std::unordered_map<std::string, int> token_to_id;
   std::vector<std::string> id_to_token;
+  std::unordered_set<std::string> nouns;
   int unk_token_id;
   int pad_token_id;
   int bos_token_id;
@@ -34,4 +36,7 @@ public:
   bool has_token(const std::string& token) const {
       return token_to_id.find(token) != token_to_id.end();
   }
+
+  bool is_noun(const std::string& token) const;
+  void load_nouns(const std::string& noun_file_path);
 };
