@@ -449,15 +449,24 @@ int main(int argc, char *argv[]) {
         for (size_t batch = 0; batch < total_batches; ++batch) {
             size_t start_idx = batch * config.batch_size;
             size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
+            size_t current_batch_size = end_idx - start_idx;
             
             // Create batch with validation
             std::vector<std::vector<int>> input_batch;
             std::vector<std::vector<int>> target_tokens;
             
-            // Fill and validate batch
+            // Find maximum sequence length in this batch
+            size_t max_seq_len = 0;
+            for (size_t j = start_idx; j < end_idx; ++j) {
+                const auto& [input_str, target_str] = training_data[j];
+                std::vector<int> input_tokens = tokenizer->encode(input_str);
+                max_seq_len = std::max(max_seq_len, input_tokens.size());
+            }
+            
+            // Fill and validate batch with padding
             bool batch_valid = true;
             for (size_t j = start_idx; j < end_idx; ++j) {
-                const auto &[input_str, target_str] = training_data[j];
+                const auto& [input_str, target_str] = training_data[j];
                 std::vector<int> input_tokens = tokenizer->encode(input_str);
                 std::vector<int> curr_target_tokens = tokenizer->encode(target_str);
                 
@@ -468,87 +477,84 @@ int main(int argc, char *argv[]) {
                     break;
                 }
                 
+                // Pad sequences to max_seq_len
+                while (input_tokens.size() < max_seq_len) {
+                    input_tokens.push_back(0);  // 0 as padding token
+                }
+                
                 input_batch.push_back(input_tokens);
                 target_tokens.push_back(curr_target_tokens);
             }
             
             if (!batch_valid) continue;  // Skip invalid batches
             
-            // Create target distribution for entire batch at once
+            // Create target distribution for entire batch
             Matrix target_distribution = create_batch_target_distribution(target_tokens, config.vocab_size);
             
-            // Forward pass with gradient accumulation
-            Matrix accumulated_gradients(config.hidden_size, config.vocab_size, 0.0f);
-            float batch_loss = 0.0f;
-            
-            for (size_t i = 0; i < input_batch.size(); ++i) {
-                // Forward pass
-                Matrix hidden_states = transformer.forward(input_batch[i]);
-                Matrix logits = lm_head->project_to_vocab(hidden_states);
-                
-                // Initialize accumulated_gradients with correct dimensions to match hidden_states
-                if (i == 0) {
-                    // Initialize with correct dimensions: should match hidden_states shape
-                    accumulated_gradients = Matrix(hidden_states.rows(), hidden_states.cols(), 0.0f);
-                }
-                
-                // Extract corresponding row from target distribution
-                Matrix target_slice(logits.rows(), target_distribution.cols());
-                for (size_t j = 0; j < target_distribution.cols(); j++) {
-                    for (size_t r = 0; r < logits.rows(); r++) {
-                        target_slice(r, j) = target_distribution(i, j);
-                    }
-                }
-                
-                // Compute loss and gradients
-                float sample_loss = compute_batch_loss(logits, target_slice);
-                batch_loss += sample_loss;
-                
-                // Compute gradients using SAM
-                std::vector<Matrix> param_grads;
-                param_grads.reserve(transformer.getLayers().size());
-                sam_optimizer->compute_parameter_gradients(hidden_states, target_slice, param_grads);
-                
-                // Accumulate gradients with proper dimensions
-                for (const auto& grad : param_grads) {
-                    // Ensure grad dimensions match hidden_states before accumulating
-                    if (grad.rows() == accumulated_gradients.rows() && 
-                        grad.cols() == accumulated_gradients.cols()) {
-                        for (size_t j = 0; j < grad.size(); j++) {
-                            accumulated_gradients.data()[j] += grad.data()[j];
-                        }
-                    } else {
-                        std::cout << "Skipping gradient with mismatched dimensions. Expected: " 
-                                  << accumulated_gradients.rows() << "x" << accumulated_gradients.cols()
-                                  << ", Got: " << grad.rows() << "x" << grad.cols() << std::endl;
+            // Create batched input matrix
+            Matrix batched_input(current_batch_size * max_seq_len, config.hidden_size);
+            for (size_t i = 0; i < current_batch_size; ++i) {
+                for (size_t j = 0; j < max_seq_len; ++j) {
+                    // Copy token embeddings to batched input
+                    size_t flat_idx = i * max_seq_len + j;
+                    int token = input_batch[i][j];
+                    // Assuming you have a method to get token embeddings
+                    Matrix token_embedding = transformer.get_token_embedding(token);
+                    for (size_t k = 0; k < config.hidden_size; ++k) {
+                        batched_input(flat_idx, k) = token_embedding(0, k);
                     }
                 }
             }
             
-            // Average gradients
-            float scale = 1.0f / input_batch.size();
-            for (size_t i = 0; i < accumulated_gradients.size(); i++) {
-                accumulated_gradients.data()[i] *= scale;
+            // Forward pass with batched input
+            Matrix hidden_states = transformer.forward(batched_input);
+            Matrix logits = lm_head->project_to_vocab(hidden_states);
+            
+            // Compute loss for the entire batch
+            float batch_loss = compute_batch_loss(logits, target_distribution);
+            
+            // Compute gradients for the entire batch
+            Matrix gradients(hidden_states.rows(), hidden_states.cols());
+            
+            // Compute gradients using SAM for the entire batch
+            std::vector<Matrix> param_grads;
+            param_grads.reserve(transformer.getLayers().size());
+            sam_optimizer->compute_parameter_gradients(hidden_states, target_distribution, param_grads);
+            
+            // Combine parameter gradients
+            for (const auto& grad : param_grads) {
+                if (grad.rows() == gradients.rows() && grad.cols() == gradients.cols()) {
+                    for (size_t j = 0; j < grad.size(); j++) {
+                        gradients.data()[j] += grad.data()[j];
+                    }
+                }
+            }
+            
+            // Scale gradients by batch size
+            float scale = 1.0f / current_batch_size;
+            for (size_t i = 0; i < gradients.size(); i++) {
+                gradients.data()[i] *= scale;
             }
             
             // Update learning rate
             float loss_ratio = batch_loss / (prev_loss + 1e-10f);
             learning_rate = adjust_learning_rate(learning_rate, loss_ratio, global_step);
-            global_step++;  // Increment after using it
+            global_step++;
             
-            // Apply gradients
-            transformer.backward(accumulated_gradients, input_batch[0], learning_rate);
+            // Backward pass with the entire batch
+            transformer.backward(gradients, batched_input, learning_rate);
             
             // Update loss tracking
             prev_loss = batch_loss;
             epoch_loss += batch_loss;
             
-            // Print progress with learning rate
+            // Print progress
             std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
                       << " in epoch " << epoch + 1 
                       << " (Loss: " << batch_loss 
                       << ", LR: " << learning_rate 
-                      << ", Step: " << global_step  // Add step counter to output
+                      << ", Step: " << global_step
+                      << ", Batch Size: " << current_batch_size
                       << ")" << std::flush;
         }
         

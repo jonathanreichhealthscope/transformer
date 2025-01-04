@@ -474,110 +474,58 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
 }
 
 Matrix MultiHeadAttention::backward(const Matrix& grad_output,
-                                  const Matrix& input,
-                                  const Matrix& target_distribution) {
+                                const Matrix& input,
+                                const Matrix& target_distribution) {
     std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
+    std::cout << "Gradient output shape: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+    std::cout << "Input shape: " << input.rows() << "x" << input.cols() << std::endl;
     
-    try {
-        // Store dimensions for debugging
-        std::cout << "Configuration:" << std::endl;
-        std::cout << "- Hidden size: " << hidden_size << std::endl;
-        std::cout << "- Num heads: " << num_heads << std::endl;
-        std::cout << "- Head dim: " << head_dim << std::endl;
-        
-        std::cout << "\nInput dimensions:" << std::endl;
-        std::cout << "- Gradient output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cout << "- Input: " << input.rows() << "x" << input.cols() << std::endl;
-        std::cout << "- Target distribution: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
-        
-        // Create local copy of gradient that we can modify
-        std::cout << "\nCreating local gradient copy..." << std::endl;
-        Matrix grad = grad_output;
-        std::cout << "Local gradient shape: " << grad.rows() << "x" << grad.cols() << std::endl;
-        
-        // Add gradient norm check with adaptive scaling
-        std::cout << "Computing gradient norm..." << std::endl;
-        float grad_norm = 0.0f;
-        for(size_t i = 0; i < grad.size(); i++) {
-            grad_norm += grad.data()[i] * grad.data()[i];
+    // Handle dimension mismatch between input and gradients
+    size_t effective_seq_len = std::min(grad_output.rows(), input.rows());
+    
+    // Create properly sized matrices for computation
+    Matrix resized_grad(effective_seq_len, grad_output.cols());
+    Matrix resized_input(effective_seq_len, input.cols());
+    
+    // Copy the data we can use
+    for (size_t i = 0; i < effective_seq_len; ++i) {
+        for (size_t j = 0; j < grad_output.cols(); ++j) {
+            resized_grad(i, j) = grad_output(i, j);
         }
-        grad_norm = std::sqrt(grad_norm);
-        std::cout << "Initial gradient norm: " << grad_norm << std::endl;
-        
-        const float MIN_GRAD_NORM = 1e-4f;  // Increased minimum gradient norm
-        if (grad_norm < MIN_GRAD_NORM) {
-            std::cout << "WARNING: Small gradient norm detected, applying scaling" << std::endl;
-            // Scale up gradients to prevent vanishing
-            float scale = MIN_GRAD_NORM / (grad_norm + 1e-8f);
-            std::cout << "Scaling factor: " << scale << std::endl;
-            for(size_t i = 0; i < grad.size(); i++) {
-                grad.data()[i] *= scale;
-            }
-            std::cout << "Gradient scaled up" << std::endl;
+        for (size_t j = 0; j < input.cols(); ++j) {
+            resized_input(i, j) = input(i, j);
         }
-
-        // Validate dimensions
-        std::cout << "\nValidating dimensions..." << std::endl;
-        validate_dimensions(grad, input, target_distribution);
-        std::cout << "Dimension validation passed" << std::endl;
-        
-        // Compute gradients with numerical stability
-        std::cout << "\nComputing query gradients..." << std::endl;
-        Matrix dQ = compute_query_gradients(grad, input);
-        std::cout << "Query gradients shape: " << dQ.rows() << "x" << dQ.cols() << std::endl;
-        
-        std::cout << "Computing key gradients..." << std::endl;
-        Matrix dK = compute_key_gradients(grad, input);
-        std::cout << "Key gradients shape: " << dK.rows() << "x" << dK.cols() << std::endl;
-        
-        std::cout << "Computing value gradients..." << std::endl;
-        Matrix dV = compute_value_gradients(grad, input);
-        std::cout << "Value gradients shape: " << dV.rows() << "x" << dV.cols() << std::endl;
-        
-        // Stabilize gradients
-        std::cout << "\nStabilizing gradients..." << std::endl;
-        auto stabilize_gradients = [](Matrix& grad) {
-            const float MAX_GRAD = 1.0f;
-            const float EPSILON = 1e-6f;
-            size_t clipped_count = 0;
-            size_t epsilon_count = 0;
-            
-            for(size_t i = 0; i < grad.size(); i++) {
-                if (std::abs(grad.data()[i]) > MAX_GRAD) {
-                    grad.data()[i] = std::clamp(grad.data()[i], -MAX_GRAD, MAX_GRAD);
-                    clipped_count++;
-                }
-                if (std::abs(grad.data()[i]) < EPSILON) {
-                    grad.data()[i] = grad.data()[i] < 0 ? -EPSILON : EPSILON;
-                    epsilon_count++;
-                }
-            }
-            
-            std::cout << "- Clipped " << clipped_count << " values to [-" << MAX_GRAD << ", " << MAX_GRAD << "]" << std::endl;
-            std::cout << "- Applied epsilon to " << epsilon_count << " small values" << std::endl;
-        };
-        
-        std::cout << "Stabilizing query gradients..." << std::endl;
-        stabilize_gradients(dQ);
-        std::cout << "Stabilizing key gradients..." << std::endl;
-        stabilize_gradients(dK);
-        std::cout << "Stabilizing value gradients..." << std::endl;
-        stabilize_gradients(dV);
-
-        // Combine gradients
-        std::cout << "\nCombining gradients..." << std::endl;
-        Matrix combined = combine_gradients(dQ, dK, dV);
-        std::cout << "Combined gradients shape: " << combined.rows() << "x" << combined.cols() << std::endl;
-        std::cout << "Combined gradients range: [" << combined.min() << ", " << combined.max() << "]" << std::endl;
-        
-        std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
-        return combined;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "\nERROR in attention backward: " << e.what() << std::endl;
-        std::cerr << "=== MultiHeadAttention::backward FAILED ===\n" << std::endl;
-        throw;
     }
+    
+    // Compute gradients with properly sized matrices
+    Matrix dQ = compute_query_gradients(resized_grad, resized_input);
+    Matrix dK = compute_key_gradients(resized_grad, resized_input);
+    Matrix dV = compute_value_gradients(resized_grad, resized_input);
+    
+    // Combine gradients
+    Matrix combined = combine_gradients(dQ, dK, dV);
+    
+    // Create output matrix with original input dimensions
+    Matrix output(input.rows(), input.cols(), 0.0f);
+    
+    // Copy computed gradients to output
+    for (size_t i = 0; i < effective_seq_len; ++i) {
+        for (size_t j = 0; j < output.cols(); ++j) {
+            output(i, j) = combined(i, j);
+        }
+    }
+    
+    // Fill remaining rows with zeros if input was larger
+    for (size_t i = effective_seq_len; i < input.rows(); ++i) {
+        for (size_t j = 0; j < output.cols(); ++j) {
+            output(i, j) = 0.0f;
+        }
+    }
+    
+    std::cout << "Output gradient shape: " << output.rows() << "x" << output.cols() << std::endl;
+    std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
+    
+    return output;
 }
 
 Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size, 

@@ -168,12 +168,13 @@ void TokenEmbedding::backward(const Matrix &grad_output,
   std::cout << "Applying gradients with dimensions check...\n";
   for (size_t i = 0; i < weights_.rows(); i++) {
     for (size_t j = 0; j < weights_.cols(); j++) {
+      weights_(i, j) -= learning_rate * weight_grads(i, j);
       if (weight_grads(i, j) != 0.0f) {
         std::cout << "Non-zero gradient at position (" << i << "," << j
                   << "): " << weight_grads(i, j) << "\n";
       }
-      weights_(i, j) -= learning_rate * weight_grads(i, j);
     }
+
   }
   std::cout << "Gradient application complete\n";
 }
