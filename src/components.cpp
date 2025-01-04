@@ -294,6 +294,13 @@ void Matrix::add_bias(const Vector &bias) {
   }
 }
 
+void Matrix::fill(float value) {
+  if (data_.empty()) {
+    throw std::runtime_error("Cannot fill empty matrix");
+  }
+  std::fill(data_.begin(), data_.end(), value);
+}
+
 // Operator implementations
 Matrix &Matrix::operator+=(const Matrix &other) {
   if (rows_ != other.rows_ || cols_ != other.cols_) {

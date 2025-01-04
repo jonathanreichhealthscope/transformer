@@ -288,6 +288,12 @@ public:
   struct Parameters {
       std::vector<std::reference_wrapper<Matrix>> matrices;
       std::vector<std::reference_wrapper<Vector>> vectors;
+
+      // Add iterator support
+      auto begin() { return matrices.begin(); }
+      auto end() { return matrices.end(); }
+      auto begin() const { return matrices.begin(); }
+      auto end() const { return matrices.end(); }
   };
 
   Parameters& parameters() {

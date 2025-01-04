@@ -167,7 +167,7 @@ Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& tok
 // Helper function to compute loss for next-token prediction
 float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
     float loss = 0.0f;
-    const float epsilon = 1e-10f;
+    const float epsilon = 1e-6f;  // Increased epsilon for better stability
     
     for (size_t i = 0; i < logits.rows(); i++) {
         // Find max logit for numerical stability
@@ -176,24 +176,28 @@ float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
             max_logit = std::max(max_logit, logits(i, j));
         }
         
-        // Compute softmax
+        // Compute softmax with improved numerical stability
         float sum_exp = 0.0f;
         std::vector<float> probs(logits.cols());
         
+        // First pass: compute exponentials
         for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] = std::exp(logits(i, j) - max_logit);
+            probs[j] = std::exp(std::min(logits(i, j) - max_logit, 87.0f));  // Prevent exp overflow
             sum_exp += probs[j];
         }
         
-        // Normalize probabilities
-        for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] /= (sum_exp + epsilon);
-        }
+        // Second pass: normalize and compute loss
+        sum_exp = std::max(sum_exp, epsilon);  // Ensure non-zero denominator
         
-        // Compute cross-entropy loss for the target token
         for (size_t j = 0; j < logits.cols(); j++) {
-            if (targets(i, j) > 0.0f) {  // This is our target token
-                loss -= std::log(probs[j] + epsilon);
+            probs[j] /= sum_exp;
+            
+            // Ensure probability is in valid range
+            probs[j] = std::min(std::max(probs[j], epsilon), 1.0f - epsilon);
+            
+            // Compute cross-entropy loss for the target token
+            if (targets(i, j) > 0.0f) {
+                loss -= std::log(probs[j]);
                 break;  // Since it's one-hot encoded, we can break after finding the target
             }
         }

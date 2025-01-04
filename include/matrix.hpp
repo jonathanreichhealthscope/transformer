@@ -73,6 +73,8 @@ public:
   static Matrix load(std::istream &is);
   void randomize(float min_val, float max_val);
   Vector row_sum() const;
+  void fill(float value);
+  void fill(const Matrix &m, float value);
 };
 
 // Make to_vector inline to allow multiple definitions

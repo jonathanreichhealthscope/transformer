@@ -12,6 +12,7 @@ class PositionalEncoding;
 class TokenEmbedding {
 private:
   Matrix weights_;
+  mutable Matrix weights_grad_;
   size_t vocab_size_;
   size_t embedding_dim_;
 
@@ -29,19 +30,41 @@ public:
   // Accessors
   const Matrix &get_embedding_table() const { return weights_; }
   Matrix &get_embedding_table() { return weights_; }
+  const Matrix &get_gradient_table() const { return weights_grad_; }
+  Matrix &get_gradient_table() { return weights_grad_; }
   size_t get_vocab_size() const { return vocab_size_; }
   size_t get_embedding_dim() const { return embedding_dim_; }
+
+  // Parameter and gradient access
+  struct Parameters {
+    std::vector<std::reference_wrapper<Matrix>> matrices;
+
+    // Add iterator support
+    auto begin() { return matrices.begin(); }
+    auto end() { return matrices.end(); }
+    auto begin() const { return matrices.begin(); }
+    auto end() const { return matrices.end(); }
+  };
+
+  Parameters& parameters() {
+    params_.matrices.clear();
+    params_.matrices.emplace_back(weights_);
+    return params_;
+  }
+
+  const Parameters& parameter_gradients() const {
+    param_gradients_.matrices.clear();
+    param_gradients_.matrices.emplace_back(std::ref(const_cast<Matrix&>(weights_grad_)));
+    return param_gradients_;
+  }
 
   // Serialization
   void save(std::ostream &os) const;
   static std::unique_ptr<TokenEmbedding> load(std::istream &is);
 
-  std::vector<std::reference_wrapper<Matrix>>& parameters() {
-    static std::vector<std::reference_wrapper<Matrix>> params;
-    params.clear();
-    params.emplace_back(weights_);
-    return params;
-  }
+private:
+  Parameters params_;
+  mutable Parameters param_gradients_;
 };
 
 class PositionalEncoding {

@@ -90,27 +90,9 @@ Matrix FeedForward::forward(const Matrix &x) {
     intermediate.apply_gelu();
     std::cout << "intermediate after gelu: " << intermediate.shape() << std::endl;
     
-    // Deep copy for cache
-    std::cout << "deep copying intermediate for cache" << std::endl;
-    try {
-        // Create a new matrix for the cache
-        Matrix new_cache(intermediate.rows(), intermediate.cols());
-        
-        // Copy data element by element to avoid memory issues
-        for(size_t i = 0; i < intermediate.rows(); ++i) {
-            for(size_t j = 0; j < intermediate.cols(); ++j) {
-                new_cache(i, j) = intermediate(i, j);
-            }
-        }
-        
-        // Only after successful copy, assign to intermediate_cache
-        intermediate_cache = std::move(new_cache);
-                 
-        std::cout << "intermediate_cache shape: " << intermediate_cache.shape() << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Error during cache operation: " << e.what() << std::endl;
-        std::cerr << "Attempting to continue without caching..." << std::endl;
-    }
+    // Store intermediate values for backward pass
+    intermediate_cache = intermediate;  // Direct assignment instead of deep copy
+    std::cout << "intermediate_cache shape: " << intermediate_cache.shape() << std::endl;
     
     Matrix output = matmul(intermediate, w2);
     std::cout << "output shape: " << output.shape() << std::endl;

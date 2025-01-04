@@ -6,11 +6,14 @@
 #include <string>
 
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
-    : weights_(vocab_size, embedding_dim), vocab_size_(vocab_size),
+    : weights_(vocab_size, embedding_dim),
+      weights_grad_(vocab_size, embedding_dim),
+      vocab_size_(vocab_size),
       embedding_dim_(embedding_dim) {
-  // Current initialization is good, but let's add bounds checking
+  // Initialize weights with scaled random values
   float scale = std::sqrt(0.2f / embedding_dim_);
   weights_.randomize(-scale, scale);
+  weights_grad_.fill(0.0f);
   
   // Add validation
   bool all_zero = true;
