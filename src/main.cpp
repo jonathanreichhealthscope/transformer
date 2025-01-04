@@ -130,50 +130,13 @@ bool validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size, 
     return true;
 }
 
-// Helper function to compute loss with improved numerical stability
-float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
-    float loss = 0.0f;
-    const float epsilon = 1e-10f;
-    
-    // Add temperature scaling to soften the probability distribution
-    const float temperature = 0.8f;  // Adjust between 0.5 and 1.0
-    
-    for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max logit for numerical stability
-        float max_logit = logits(i, 0);
-        for (size_t j = 0; j < logits.cols(); j++) {
-            max_logit = std::max(max_logit, logits(i, j));
-        }
-        
-        // Compute softmax with temperature scaling
-        float sum_exp = 0.0f;
-        std::vector<float> scaled_probs(logits.cols());
-        
-        for (size_t j = 0; j < logits.cols(); j++) {
-            scaled_probs[j] = std::exp((logits(i, j) - max_logit) / temperature);
-            sum_exp += scaled_probs[j];
-        }
-        
-        // Compute cross-entropy with label smoothing
-        const float smoothing_factor = 0.1f;
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float prob = scaled_probs[j] / (sum_exp + epsilon);
-            float smooth_target = targets(i, j) * (1.0f - smoothing_factor) + 
-                                (smoothing_factor / logits.cols());
-            loss -= smooth_target * std::log(prob + epsilon);
-        }
-    }
-    
-    return loss / logits.rows();
-}
-
-// Helper function to create target distribution for a batch
+// Helper function to create target distribution for next-token prediction
 Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& token_sequences, size_t vocab_size) {
     if (token_sequences.empty()) {
         throw std::runtime_error("Cannot create target distribution from empty batch");
     }
     
-    // Create batch matrix (batch_size x vocab_size)
+    // Create batch matrix (batch_size x vocab_size) for one-hot encoded targets
     Matrix distribution(token_sequences.size(), vocab_size, 0.0f);
     
     // Process each sequence in the batch
@@ -185,39 +148,58 @@ Matrix create_batch_target_distribution(const std::vector<std::vector<int>>& tok
             throw std::runtime_error("Empty token sequence in batch at position " + std::to_string(batch_idx));
         }
         
-        for (int token : tokens) {
-            if (token < 0 || token >= static_cast<int>(vocab_size)) {
-                throw std::runtime_error("Token " + std::to_string(token) + 
-                    " is out of vocabulary range [0, " + std::to_string(vocab_size) + 
-                    ") at batch position " + std::to_string(batch_idx));
-            }
+        // For next-token prediction, use the last token as the target
+        int target_token = tokens.back();
+        
+        if (target_token < 0 || target_token >= static_cast<int>(vocab_size)) {
+            throw std::runtime_error("Token " + std::to_string(target_token) + 
+                " is out of vocabulary range [0, " + std::to_string(vocab_size) + 
+                ") at batch position " + std::to_string(batch_idx));
         }
         
-        // Set probabilities for this sequence
-        float weight = 1.0f / tokens.size();
-        for (int token : tokens) {
-            distribution(batch_idx, token) = weight;
-        }
-    }
-    
-    // Validate output
-    for (size_t i = 0; i < distribution.rows(); i++) {
-        float row_sum = 0.0f;
-        for (size_t j = 0; j < distribution.cols(); j++) {
-            float val = distribution(i, j);
-            if (std::isnan(val) || std::isinf(val)) {
-                throw std::runtime_error("Invalid value in target distribution at position (" + 
-                    std::to_string(i) + "," + std::to_string(j) + ")");
-            }
-            row_sum += val;
-        }
-        if (std::abs(row_sum - 1.0f) > 1e-6) {
-            throw std::runtime_error("Target distribution row " + std::to_string(i) + 
-                " does not sum to 1.0 (sum = " + std::to_string(row_sum) + ")");
-        }
+        // Set one-hot encoding for the target token
+        distribution(batch_idx, target_token) = 1.0f;
     }
     
     return distribution;
+}
+
+// Helper function to compute loss for next-token prediction
+float compute_batch_loss(const Matrix& logits, const Matrix& targets) {
+    float loss = 0.0f;
+    const float epsilon = 1e-10f;
+    
+    for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max logit for numerical stability
+        float max_logit = logits(i, 0);
+        for (size_t j = 0; j < logits.cols(); j++) {
+            max_logit = std::max(max_logit, logits(i, j));
+        }
+        
+        // Compute softmax
+        float sum_exp = 0.0f;
+        std::vector<float> probs(logits.cols());
+        
+        for (size_t j = 0; j < logits.cols(); j++) {
+            probs[j] = std::exp(logits(i, j) - max_logit);
+            sum_exp += probs[j];
+        }
+        
+        // Normalize probabilities
+        for (size_t j = 0; j < logits.cols(); j++) {
+            probs[j] /= (sum_exp + epsilon);
+        }
+        
+        // Compute cross-entropy loss for the target token
+        for (size_t j = 0; j < logits.cols(); j++) {
+            if (targets(i, j) > 0.0f) {  // This is our target token
+                loss -= std::log(probs[j] + epsilon);
+                break;  // Since it's one-hot encoded, we can break after finding the target
+            }
+        }
+    }
+    
+    return loss / logits.rows();
 }
 
 void print_matrix(const Matrix &m, const std::string &name, size_t max_rows = 5,
@@ -469,7 +451,8 @@ int main(int argc, char *argv[]) {
                 const auto& [input_str, target_str] = training_data[j];
                 std::vector<int> input_tokens = tokenizer->encode(input_str);
                 std::vector<int> curr_target_tokens = tokenizer->encode(target_str);
-                
+                std::cout << "input_tokens: " << input_str << std::endl;
+                std::cout << "curr_target_tokens: " << target_str << std::endl;
                 if (!validate_input_sequence(input_tokens, config.vocab_size) || 
                     !validate_input_sequence(curr_target_tokens, config.vocab_size)) {
                     std::cerr << "Invalid sequence at position " << j << std::endl;
@@ -504,24 +487,19 @@ int main(int argc, char *argv[]) {
             Matrix hidden_states = transformer.forward(flattened_batch);
             Matrix logits = lm_head->project_to_vocab(hidden_states);
             
-            // Reshape logits to match target distribution
-            Matrix reshaped_logits(current_batch_size, config.vocab_size);
-            // Take the last token's logits for each sequence in the batch
+            // Take only the last token's logits for each sequence in the batch
+            Matrix final_logits(current_batch_size, config.vocab_size);
             for (size_t i = 0; i < current_batch_size; i++) {
-                size_t seq_end_idx = (i + 1) * max_seq_len - 1;  // Index of last token in sequence
+                size_t seq_end_idx = (i + 1) * max_seq_len - 1;
                 for (size_t j = 0; j < config.vocab_size; j++) {
                     if (seq_end_idx < logits.rows()) {
-                        reshaped_logits(i, j) = logits(seq_end_idx, j);
-                    } else {
-                        std::cerr << "Warning: Sequence end index " << seq_end_idx 
-                                 << " exceeds logits rows " << logits.rows() << std::endl;
-                        reshaped_logits(i, j) = 0.0f;  // Safe fallback
+                        final_logits(i, j) = logits(seq_end_idx, j);
                     }
                 }
             }
             
-            // Compute loss for the entire batch using reshaped logits
-            float batch_loss = compute_batch_loss(reshaped_logits, target_distribution);
+            // Compute loss using only the final token predictions
+            float batch_loss = compute_batch_loss(final_logits, target_distribution);
             
             // Compute gradients for the entire batch
             // Reshape gradients to match hidden states dimensions
