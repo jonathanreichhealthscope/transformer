@@ -28,6 +28,7 @@ public:
     Tensor permute(const std::vector<unsigned long>& perm) const;
     Tensor tensormul(const Tensor& other) const;
     Matrix to_matrix() const;
+    Tensor fill(float value) const;
     
     // Conversion operators
     operator Matrix() const { return to_matrix(); }

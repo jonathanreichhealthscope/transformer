@@ -101,6 +101,11 @@ public:
   const float *data() const { return data_.data(); }
   size_t size() const { return size_; }
 
+  Vector fill(float value) {
+    std::fill(data_.begin(), data_.end(), value);
+    return *this;
+  }
+
   // Element access
   float &operator[](size_t i) { return data_[i]; }
   const float &operator[](size_t i) const { return data_[i]; }

@@ -331,9 +331,23 @@ void Transformer::update_parameters(float learning_rate) {
     auto& params = parameters();
     auto& grads = parameter_gradients();
     
+    std::cout << "Number of matrix parameters: " << params.size() << std::endl;
+    std::cout << "Number of matrix gradients: " << grads.size() << std::endl;
+    
     for (size_t i = 0; i < params.size(); ++i) {
         Matrix& param = params[i];
         const Matrix& grad = grads[i];
+        
+        std::cout << "Updating matrix parameter " << i << ": ";
+        std::cout << "param shape=" << param.rows() << "x" << param.cols() 
+                 << ", grad shape=" << grad.rows() << "x" << grad.cols() << std::endl;
+        
+        if (param.rows() != grad.rows() || param.cols() != grad.cols()) {
+            throw std::runtime_error("Dimension mismatch in matrix update: param(" + 
+                                   std::to_string(param.rows()) + "," + std::to_string(param.cols()) + 
+                                   ") != grad(" + std::to_string(grad.rows()) + "," + 
+                                   std::to_string(grad.cols()) + ")");
+        }
         
         // Update rule: param = param - learning_rate * grad
         for (size_t j = 0; j < param.size(); ++j) {
@@ -342,37 +356,75 @@ void Transformer::update_parameters(float learning_rate) {
     }
     
     // Update Vector parameters for each layer
-    for (auto& layer : layers) {
+    for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
+        std::cout << "\nProcessing layer " << layer_idx << std::endl;
+        auto& layer = layers[layer_idx];
+        
         // Update attention parameters
         auto& attn_params = layer->self_attention->parameters();
         auto& attn_grads = layer->self_attention->parameter_gradients();
+        
+        std::cout << "Attention vectors: " << attn_params.vectors.size() << " parameters, "
+                 << attn_grads.vectors.size() << " gradients" << std::endl;
         
         // Update attention biases using computed gradients
         for (size_t i = 0; i < attn_params.vectors.size(); ++i) {
             auto& bias = attn_params.vectors[i];
             const auto& bias_grad = attn_grads.vectors[i];
+            
+            std::cout << "Attention bias " << i << ": bias size=" << bias.get().size() 
+                     << ", grad size=" << bias_grad.get().size() << std::endl;
+            
+            if (bias.get().size() != bias_grad.get().size()) {
+                throw std::runtime_error("Dimension mismatch in attention bias update");
+            }
+            
             for (size_t j = 0; j < bias.get().size(); ++j) {
                 bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
             }
         }
         
-        // Update layer norm parameters using computed gradients
+        // Update layer norm parameters
         auto& ln_params = layer->attention_ln->parameters();
         auto& ln_grads = layer->attention_ln->parameter_gradients();
+        
+        std::cout << "Layer norm vectors: " << ln_params.size() << " parameters, "
+                 << ln_grads.size() << " gradients" << std::endl;
+        
         for (size_t i = 0; i < ln_params.size(); ++i) {
             auto& param = ln_params[i];
             const auto& grad = ln_grads[i];
+            
+            std::cout << "Layer norm param " << i << ": param size=" << param.get().size() 
+                     << ", grad size=" << grad.get().size() << std::endl;
+            
+            if (param.get().size() != grad.get().size()) {
+                throw std::runtime_error("Dimension mismatch in layer norm update");
+            }
+            
             for (size_t j = 0; j < param.get().size(); ++j) {
                 param.get().data()[j] -= learning_rate * grad.get().data()[j];
             }
         }
         
-        // Update feed forward parameters using computed gradients
+        // Update feed forward parameters
         auto& ffn_params = layer->feed_forward->parameters();
         auto& ffn_grads = layer->feed_forward->parameter_gradients();
+        
+        std::cout << "Feed forward vectors: " << ffn_params.vectors.size() << " parameters, "
+                 << ffn_grads.vectors.size() << " gradients" << std::endl;
+        
         for (size_t i = 0; i < ffn_params.vectors.size(); ++i) {
             auto& bias = ffn_params.vectors[i];
             const auto& bias_grad = ffn_grads.vectors[i];
+            
+            std::cout << "Feed forward bias " << i << ": bias size=" << bias.get().size() 
+                     << ", grad size=" << bias_grad.get().size() << std::endl;
+            
+            if (bias.get().size() != bias_grad.get().size()) {
+                throw std::runtime_error("Dimension mismatch in feed forward bias update");
+            }
+            
             for (size_t j = 0; j < bias.get().size(); ++j) {
                 bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
             }

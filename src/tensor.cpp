@@ -42,6 +42,11 @@ float Tensor::at(unsigned long i, unsigned long j, unsigned long k, unsigned lon
     }
     return data_[index];
 }
+Tensor Tensor::fill(float value) const {
+    Tensor result(dims_[0], dims_[1], dims_[2], dims_[3]);
+    std::fill(result.data_.begin(), result.data_.end(), value);
+    return result;
+}
 
 Tensor Tensor::transpose(const std::vector<unsigned long>& perm) const {
     if (perm.size() != 4) {

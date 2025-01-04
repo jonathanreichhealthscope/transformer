@@ -15,10 +15,25 @@ private:
   float dropout_prob;
   Matrix intermediate_cache;
 
+  // Gradient members
+  mutable Matrix w1_grad;
+  mutable Matrix w2_grad;
+  mutable FloatVector b1_grad;
+  mutable FloatVector b2_grad;
+
+  // Parameter containers
+  struct Parameters {
+    std::vector<std::reference_wrapper<Matrix>> matrices;
+    std::vector<std::reference_wrapper<Vector>> vectors;
+  };
+
+  Parameters params;
+  mutable Parameters param_gradients;
+
 public:
   virtual ~FeedForward() = default;
   FeedForward() = default;
-  FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1f);  // Declaration only
+  FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1f);
   Matrix forward(const Matrix &x);
   Matrix backward(const Matrix &grad_output, const Matrix &input);
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
@@ -38,7 +53,9 @@ public:
   FeedForward(const FeedForward &other)
       : w1(other.w1), w2(other.w2), b1(other.b1), b2(other.b2),
         dropout_prob(other.dropout_prob),
-        intermediate_cache(other.intermediate_cache) {}
+        intermediate_cache(other.intermediate_cache),
+        w1_grad(other.w1_grad), w2_grad(other.w2_grad),
+        b1_grad(other.b1_grad), b2_grad(other.b2_grad) {}
 
   FeedForward &operator=(const FeedForward &other) {
     if (this != &other) {
@@ -48,17 +65,15 @@ public:
       b2 = other.b2;
       dropout_prob = other.dropout_prob;
       intermediate_cache = other.intermediate_cache;
+      w1_grad = other.w1_grad;
+      w2_grad = other.w2_grad;
+      b1_grad = other.b1_grad;
+      b2_grad = other.b2_grad;
     }
     return *this;
   }
 
-  struct Parameters {
-    std::vector<std::reference_wrapper<Matrix>> matrices;
-    std::vector<std::reference_wrapper<Vector>> vectors;
-  };
-
   Parameters& parameters() {
-    static Parameters params;
     params.matrices.clear();
     params.vectors.clear();
     
@@ -73,10 +88,18 @@ public:
     return params;
   }
 
-  // Get parameter gradients
-  const Parameters& parameter_gradients() const { return param_gradients; }
-
-private:
-  Parameters params;         // Trainable parameters
-  Parameters param_gradients;  // Parameter gradients
+  const Parameters& parameter_gradients() const {
+    param_gradients.matrices.clear();
+    param_gradients.vectors.clear();
+    
+    // Matrix gradients
+    param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(w1_grad)));
+    param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(w2_grad)));
+    
+    // Vector gradients
+    param_gradients.vectors.emplace_back(std::ref(const_cast<FloatVector&>(b1_grad)));
+    param_gradients.vectors.emplace_back(std::ref(const_cast<FloatVector&>(b2_grad)));
+    
+    return param_gradients;
+  }
 };

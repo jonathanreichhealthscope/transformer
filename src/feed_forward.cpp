@@ -19,7 +19,12 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
       b1(intermediate_size),
       b2(hidden_size),
       dropout_prob(dropout),
-      intermediate_cache(1, intermediate_size) {
+      intermediate_cache(1, intermediate_size),
+      // Initialize gradients with same dimensions as their parameters
+      w1_grad(hidden_size, intermediate_size),
+      w2_grad(intermediate_size, hidden_size),
+      b1_grad(intermediate_size),
+      b2_grad(hidden_size) {
 
   std::cout << "FeedForward dimensions:" << std::endl;
   std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
@@ -53,6 +58,24 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
     b1[i] = 0.0f;
   for (size_t i = 0; i < b2.size(); ++i)
     b2[i] = 0.0f;
+
+  // Initialize gradients to zero
+  for (size_t i = 0; i < w1_grad.rows(); ++i) {
+    for (size_t j = 0; j < w1_grad.cols(); ++j) {
+      w1_grad(i, j) = 0.0f;
+    }
+  }
+  
+  for (size_t i = 0; i < w2_grad.rows(); ++i) {
+    for (size_t j = 0; j < w2_grad.cols(); ++j) {
+      w2_grad(i, j) = 0.0f;
+    }
+  }
+
+  for (size_t i = 0; i < b1_grad.size(); ++i)
+    b1_grad[i] = 0.0f;
+  for (size_t i = 0; i < b2_grad.size(); ++i)
+    b2_grad[i] = 0.0f;
 }
 
 Matrix FeedForward::forward(const Matrix &x) {
@@ -185,6 +208,14 @@ Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
     
     std::cout << "Applying GELU derivative..." << std::endl;
     d_intermediate.apply_gelu_derivative(cache_copy);
+    
+    // Compute gradients for w2 and b2
+    w2_grad = matmul(intermediate_cache.transpose(), grad_output);
+    b2_grad = grad_output.row_sum();
+    
+    // Compute gradients for w1 and b1
+    w1_grad = matmul(input.transpose(), d_intermediate);
+    b1_grad = d_intermediate.row_sum();
     
     std::cout << "Computing grad_input..." << std::endl;
     Matrix grad_input = matmul(d_intermediate, w1.transpose());
