@@ -3,6 +3,7 @@
 #include <iostream>
 #include <memory>
 #include <vector>
+#include <functional>
 
 // Forward declaration
 class LayerNorm;
@@ -33,4 +34,12 @@ public:
   const Vector& get_beta() const { return beta_; }
   Vector& get_gamma() { return gamma_; }
   Vector& get_beta() { return beta_; }
+
+  std::vector<std::reference_wrapper<Vector>>& parameters() {
+    static std::vector<std::reference_wrapper<Vector>> params;
+    params.clear();
+    params.emplace_back(gamma_);
+    params.emplace_back(beta_);
+    return params;
+  }
 };

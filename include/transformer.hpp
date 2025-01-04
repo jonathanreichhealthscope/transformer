@@ -156,27 +156,36 @@ public:
 
 class Transformer {
 private:
-  std::vector<std::unique_ptr<TransformerLayer>> layers;
+  TransformerConfig config;
   std::unique_ptr<TokenEmbedding> token_embedding;
   std::unique_ptr<PositionalEncoding> pos_encoding;
+  std::vector<std::unique_ptr<TransformerLayer>> layers;
   std::unique_ptr<LayerNorm> final_ln;
   std::unique_ptr<LanguageModelHead> lm_head;
-  TransformerConfig config;
   bool cuda_initialized = false;
+  
+  // Cached states for backward pass
   Matrix hidden_states;
   Matrix last_hidden_states;
-
-  Matrix compute_loss_gradients(const Matrix &logits,
-                                const std::vector<int> &targets);
-  void backward_pass(const std::vector<Matrix> &activations,
-                     const Matrix &loss_grad);
-  void update_parameters(float learning_rate);
-
+  std::vector<Matrix> m_layer_activations;
+  
+  // KV cache for inference
+  std::vector<KVCache> m_kv_caches;
+  
+  // Optimizer state
   std::vector<Matrix> momentum_buffers;
   std::vector<Matrix> velocity_buffers;
   size_t update_step = 0;
   
-  // Add method to get parameter gradients
+  // Parameter gradients
+  std::optional<std::vector<Matrix>> parameter_grads;
+  
+  // Private methods
+  Matrix compute_loss_gradients(const Matrix &logits, const std::vector<int> &targets);
+  void backward_pass(const std::vector<Matrix> &activations, const Matrix &loss_grad);
+  void update_parameters(float learning_rate);
+  
+  // Get parameter gradients
   std::vector<Matrix>& parameter_gradients() {
     if (!parameter_grads.has_value()) {
       parameter_grads = std::vector<Matrix>();
@@ -189,8 +198,6 @@ private:
     }
     return parameter_grads.value();
   }
-  
-  std::optional<std::vector<Matrix>> parameter_grads;
 
 public:
   Transformer() = default;
@@ -208,7 +215,7 @@ public:
                   size_t layer_idx);
   Matrix backward_cuda(const Matrix &grad, const Matrix &activation,
                        size_t layer_idx);
-  std::vector<Matrix> &parameters();
+  std::vector<Matrix>& parameters();
   void save(std::ostream &os) const;
   void load(std::istream &is);
 

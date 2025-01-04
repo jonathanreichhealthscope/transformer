@@ -3,6 +3,7 @@
 #include <iostream>
 #include <memory>
 #include <vector>
+#include <functional>
 
 // Forward declarations
 class TokenEmbedding;
@@ -34,6 +35,13 @@ public:
   // Serialization
   void save(std::ostream &os) const;
   static std::unique_ptr<TokenEmbedding> load(std::istream &is);
+
+  std::vector<std::reference_wrapper<Matrix>>& parameters() {
+    static std::vector<std::reference_wrapper<Matrix>> params;
+    params.clear();
+    params.emplace_back(weights_);
+    return params;
+  }
 };
 
 class PositionalEncoding {
@@ -59,4 +67,11 @@ public:
   Matrix &get_encoding_matrix() { return encoding_matrix_; }
   size_t get_max_seq_length() const { return max_seq_length_; }
   size_t get_hidden_size() const { return hidden_size_; }
+
+  std::vector<std::reference_wrapper<Matrix>>& parameters() {
+    static std::vector<std::reference_wrapper<Matrix>> params;
+    params.clear();
+    params.emplace_back(encoding_matrix_);
+    return params;
+  }
 };

@@ -86,9 +86,20 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
     scores *= 1.0f / std::sqrt(static_cast<float>(head_dim));
     std::cout << "Scores range after scaling: [" << scores.min() << ", " << scores.max() << "]" << std::endl;
 
-    // Apply mask if provided
+    // Always apply causal masking for next-token prediction
+    std::cout << "Applying causal masking..." << std::endl;
+    for (size_t i = 0; i < scores.rows(); ++i) {
+      for (size_t j = 0; j < scores.cols(); ++j) {
+        // Apply causal mask: each position can only attend to previous positions
+        if (j > i) {
+          scores(i, j) = -std::numeric_limits<float>::infinity();
+        }
+      }
+    }
+    
+    // Apply additional mask if provided
     if (!mask.mask.empty()) {
-      std::cout << "Applying attention mask..." << std::endl;
+      std::cout << "Applying additional attention mask..." << std::endl;
       for (size_t i = 0; i < scores.rows(); ++i) {
         for (size_t j = 0; j < scores.cols(); ++j) {
           if (mask.mask(i, j) == 0.0f) {
@@ -96,9 +107,7 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
           }
         }
       }
-      std::cout << "Mask applied" << std::endl;
-    } else {
-      std::cout << "No mask to apply" << std::endl;
+      std::cout << "Additional mask applied" << std::endl;
     }
 
     // Apply softmax
@@ -128,52 +137,41 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
   return output;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
-                                 const std::optional<KVCache>& kv_cache) {
-    std::cout << "\n=== MultiHeadAttention::forward START ===" << std::endl;
+Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
+                                 const std::optional<KVCache> &kv_cache) {
+    std::cout << "=== MultiHeadAttention::forward START ===" << std::endl;
+    std::cout << "Input shape: " << x.rows() << "x" << x.cols() << std::endl;
     
-    try {
-        // Input x has shape [seq_len, hidden_size]
-        std::cout << "Input dimensions: " << x.rows() << "x" << x.cols() << std::endl;
-        
-        // Project to Q, K, V while preserving dimensions
-        Matrix Q = matmul(x, query_proj);  // [seq_len, hidden_size]
-        Matrix K = matmul(x, key_proj);    // [seq_len, hidden_size]
-        Matrix V = matmul(x, value_proj);  // [seq_len, hidden_size]
-        
-        // Add biases
-        for (size_t i = 0; i < Q.rows(); ++i) {
-            for (size_t j = 0; j < Q.cols(); ++j) {
-                Q(i, j) += query_bias[j];
-                K(i, j) += key_bias[j];
-                V(i, j) += value_bias[j];
-            }
-        }
-        
-        // Compute attention while maintaining dimensions
-        Matrix attention_output = compute_attention(Q, K, V, mask);
-        // attention_output shape: [seq_len, hidden_size]
-        
-        // Project output back to original dimension space
-        Matrix final_output = matmul(attention_output, output_proj);
-        // final_output shape: [seq_len, hidden_size]
-        
-        // Add output bias
-        for (size_t i = 0; i < final_output.rows(); ++i) {
-            for (size_t j = 0; j < final_output.cols(); ++j) {
-                final_output(i, j) += output_bias[j];
-            }
-        }
-        
-        std::cout << "Output dimensions: " << final_output.rows() << "x" << final_output.cols() << std::endl;
-        std::cout << "=== MultiHeadAttention::forward END ===\n" << std::endl;
-        
-        return final_output;
-    } catch (const std::exception& e) {
-        std::cerr << "\nERROR in attention forward pass: " << e.what() << std::endl;
-        std::cerr << "=== MultiHeadAttention::forward FAILED ===\n" << std::endl;
-        throw;
-    }
+    const size_t batch_size = static_cast<size_t>(x.rows());
+    const size_t seq_len = static_cast<size_t>(x.rows());  // For causal attention, sequence length is same as batch size
+    
+    // Project input to Q, K, V
+    Matrix Q = matmul(x, query_proj);  // Shape: (batch_size, hidden_size)
+    Matrix K = matmul(x, key_proj);    // Shape: (batch_size, hidden_size)
+    Matrix V = matmul(x, value_proj);  // Shape: (batch_size, hidden_size)
+    
+    std::cout << "Q shape: " << Q.rows() << "x" << Q.cols() << std::endl;
+    std::cout << "K shape: " << K.rows() << "x" << K.cols() << std::endl;
+    std::cout << "V shape: " << V.rows() << "x" << V.cols() << std::endl;
+    
+    // Reshape for attention
+    Tensor Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_dim);
+    Tensor K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_dim);
+    Tensor V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_dim);
+    
+    // Compute attention scores
+    Tensor scores = compute_attention(Q_reshaped, K_reshaped, V_reshaped, mask, batch_size, num_heads, seq_len, head_dim);
+    
+    // Reshape back to matrix
+    Matrix attention_output = reshape_from_attention(scores, batch_size, hidden_size);
+    std::cout << "Attention output before projection shape: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
+    
+    // Project output
+    Matrix output = matmul(attention_output, output_proj);
+    std::cout << "Final output shape: " << output.rows() << "x" << output.cols() << std::endl;
+    
+    std::cout << "=== MultiHeadAttention::forward END ===" << std::endl;
+    return output;
 }
 
 void MultiHeadAttention::save(std::ostream &os) const {
@@ -651,4 +649,128 @@ AttentionMask AttentionMask::create_padding_mask(const std::vector<int>& lengths
         }
     }
     return mask;
+}
+
+Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V, 
+                                           const AttentionMask& mask,
+                                           size_t batch_size, size_t num_heads, 
+                                           size_t seq_len, size_t head_dim) {
+    std::cout << "=== compute_attention START ===" << std::endl;
+    
+    // Validate input dimensions
+    std::cout << "Validating dimensions..." << std::endl;
+    std::cout << "Expected dimensions:" << std::endl;
+    std::cout << "- batch_size: " << batch_size << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+    std::cout << "- seq_len: " << seq_len << std::endl;
+    std::cout << "- head_dim: " << head_dim << std::endl;
+    
+    size_t expected_rows = batch_size * num_heads * seq_len;
+    size_t expected_cols = head_dim;
+    
+    std::cout << "Q dimensions: " << Q.rows() << "x" << Q.cols() << std::endl;
+    std::cout << "K dimensions: " << K.rows() << "x" << K.cols() << std::endl;
+    std::cout << "V dimensions: " << V.rows() << "x" << V.cols() << std::endl;
+    
+    // Dimension validation...
+    if (Q.rows() != expected_rows || Q.cols() != expected_cols) {
+        throw std::runtime_error("Q dimensions mismatch");
+    }
+    if (K.rows() != expected_rows || K.cols() != expected_cols) {
+        throw std::runtime_error("K dimensions mismatch");
+    }
+    if (V.rows() != expected_rows || V.cols() != expected_cols) {
+        throw std::runtime_error("V dimensions mismatch");
+    }
+    
+    // Initialize output matrix
+    Matrix output(Q.rows(), V.cols(), 0.0f);
+    
+    // Block size for processing (adjust based on available memory)
+    const size_t BLOCK_SIZE = 1024;  // Process 1024 rows at a time
+    float scale_factor = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    
+    // Process attention in blocks
+    for (size_t start_idx = 0; start_idx < Q.rows(); start_idx += BLOCK_SIZE) {
+        size_t end_idx = std::min(start_idx + BLOCK_SIZE, Q.rows());
+        size_t current_block_size = end_idx - start_idx;
+        
+        std::cout << "Processing block " << start_idx / BLOCK_SIZE + 1 
+                 << " of " << (Q.rows() + BLOCK_SIZE - 1) / BLOCK_SIZE << std::endl;
+        
+        // Extract block of Q
+        Matrix Q_block(current_block_size, Q.cols());
+        for (size_t i = 0; i < current_block_size; ++i) {
+            for (size_t j = 0; j < Q.cols(); ++j) {
+                Q_block(i, j) = Q(start_idx + i, j);
+            }
+        }
+        
+        // Compute scores for this block
+        Matrix scores = matmul(Q_block, K.transpose());
+        scores *= scale_factor;
+        
+        // Apply mask for this block if provided
+        if (!mask.mask.empty()) {
+            for (size_t i = 0; i < current_block_size; ++i) {
+                for (size_t j = 0; j < K.rows(); ++j) {
+                    // Calculate original indices for masking
+                    size_t orig_i = start_idx + i;
+                    size_t batch_idx_i = orig_i / (num_heads * seq_len);
+                    size_t head_idx_i = (orig_i % (num_heads * seq_len)) / seq_len;
+                    size_t seq_idx_i = orig_i % seq_len;
+                    
+                    size_t batch_idx_j = j / (num_heads * seq_len);
+                    size_t head_idx_j = (j % (num_heads * seq_len)) / seq_len;
+                    size_t seq_idx_j = j % seq_len;
+                    
+                    // Apply mask only within same batch and head
+                    if (batch_idx_i == batch_idx_j && head_idx_i == head_idx_j) {
+                        if (mask.mask(seq_idx_i, seq_idx_j) == 0.0f) {
+                            scores(i, j) = -std::numeric_limits<float>::infinity();
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Apply softmax row-wise
+        for (size_t i = 0; i < current_block_size; ++i) {
+            float max_val = -std::numeric_limits<float>::infinity();
+            for (size_t j = 0; j < scores.cols(); ++j) {
+                max_val = std::max(max_val, scores(i, j));
+            }
+            
+            float sum = 0.0f;
+            for (size_t j = 0; j < scores.cols(); ++j) {
+                scores(i, j) = std::exp(scores(i, j) - max_val);
+                sum += scores(i, j);
+            }
+            
+            for (size_t j = 0; j < scores.cols(); ++j) {
+                scores(i, j) /= sum;
+            }
+        }
+        
+        // Compute output for this block
+        Matrix block_output = matmul(scores, V);
+        
+        // Add block output to final output
+        for (size_t i = 0; i < current_block_size; ++i) {
+            for (size_t j = 0; j < V.cols(); ++j) {
+                output(start_idx + i, j) = block_output(i, j);
+            }
+        }
+    }
+    
+    // Create tensor with proper dimensions
+    std::vector<unsigned long> dims = {
+        static_cast<unsigned long>(batch_size),
+        static_cast<unsigned long>(num_heads),
+        static_cast<unsigned long>(seq_len),
+        static_cast<unsigned long>(head_dim)
+    };
+    
+    std::cout << "=== compute_attention END ===" << std::endl;
+    return Tensor(output, dims);
 }

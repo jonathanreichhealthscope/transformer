@@ -51,4 +51,25 @@ public:
     }
     return *this;
   }
+
+  struct Parameters {
+    std::vector<std::reference_wrapper<Matrix>> matrices;
+    std::vector<std::reference_wrapper<Vector>> vectors;
+  };
+
+  Parameters& parameters() {
+    static Parameters params;
+    params.matrices.clear();
+    params.vectors.clear();
+    
+    // Matrix parameters
+    params.matrices.emplace_back(w1);
+    params.matrices.emplace_back(w2);
+    
+    // Vector parameters
+    params.vectors.emplace_back(b1);
+    params.vectors.emplace_back(b2);
+    
+    return params;
+  }
 };

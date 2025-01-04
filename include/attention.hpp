@@ -268,6 +268,31 @@ public:
     }
     return *this;
   }
+
+  struct Parameters {
+      std::vector<std::reference_wrapper<Matrix>> matrices;
+      std::vector<std::reference_wrapper<Vector>> vectors;
+  };
+
+  Parameters& parameters() {
+      static Parameters params;
+      params.matrices.clear();
+      params.vectors.clear();
+      
+      // Matrix parameters
+      params.matrices.emplace_back(query_proj);
+      params.matrices.emplace_back(key_proj);
+      params.matrices.emplace_back(value_proj);
+      params.matrices.emplace_back(output_proj);
+      
+      // Vector parameters
+      params.vectors.emplace_back(query_bias);
+      params.vectors.emplace_back(key_bias);
+      params.vectors.emplace_back(value_bias);
+      params.vectors.emplace_back(output_bias);
+      
+      return params;
+  }
 };
 
 // Add sliding window attention
