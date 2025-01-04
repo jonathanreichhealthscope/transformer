@@ -1,4 +1,5 @@
 #include "../include/main.hpp"
+#include <random>
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -257,6 +258,11 @@ std::vector<std::pair<std::string, std::string>> create_training_data() {
     throw std::runtime_error("No training pairs loaded from file");
   }
 
+  // Shuffle the training pairs
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::shuffle(training_pairs.begin(), training_pairs.end(), rng);
+
   std::cout << "exiting create_training_data" << std::endl;
   return training_pairs;
 }
@@ -279,7 +285,7 @@ void analyze_token_mappings(const std::vector<std::pair<std::string, std::string
         for (int token : tokens) {
             if (!tokenizer.is_special_token(token)) {
                 total_words++;
-                if (tokenizer.decode({token}) == "<unk>") {
+                if (tokenizer.decode({token}) == "") {
                     unknown_tokens++;
                     unknown_words[tokenizer.decode({token})]++;
                 }
@@ -294,7 +300,7 @@ void analyze_token_mappings(const std::vector<std::pair<std::string, std::string
         for (int token : tokens) {
             if (!tokenizer.is_special_token(token)) {
                 total_words++;
-                if (tokenizer.decode({token}) == "<unk>") {
+                if (tokenizer.decode({token}) == "") {
                     unknown_tokens++;
                     unknown_words[tokenizer.decode({token})]++;
                 }
@@ -309,7 +315,7 @@ void analyze_token_mappings(const std::vector<std::pair<std::string, std::string
               << (100.0f * unknown_tokens / total_words) << "%)\n\n";
     
     if (!unknown_words.empty()) {
-        std::cout << "Words mapped to <unk> token:\n";
+        std::cout << "Words mapped to ] token:\n";
         for (const auto& [word, count] : unknown_words) {
             std::cout << "'" << word << "': " << count << " times\n";
         }
@@ -325,6 +331,9 @@ int main(int argc, char *argv[]) {
   logger.startLogging();
 
   try {
+    // Initialize random seed
+    std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
 #ifdef CUDA_AVAILABLE
     initialize_cuda();
 #endif
