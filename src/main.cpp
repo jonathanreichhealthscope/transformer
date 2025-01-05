@@ -42,7 +42,15 @@ int main(int argc, char *argv[]) {
         std::srand(static_cast<unsigned int>(std::time(nullptr)));
 
 #ifdef CUDA_AVAILABLE
-        initialize_cuda();
+        // Initialize CUDA
+        if (cudaSetDevice(0) != cudaSuccess) {
+            std::cerr << "Failed to initialize CUDA device" << std::endl;
+            return 1;
+        }
+        
+        // Create CUDA stream
+        cudaStream_t stream;
+        cudaStreamCreate(&stream);
 #endif
         // Initialize tokenizer first to get vocab size
         tokenizer = std::make_unique<Tokenizer>();

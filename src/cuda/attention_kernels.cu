@@ -1,38 +1,42 @@
-#include "../../include/cuda/cuda_utils.cuh"
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include "../include/cuda/attention_kernels.cuh"
 
-__global__ void flash_attention_kernel(const float *Q, const float *K,
-                                       const float *V, float *output,
-                                       const int batch_size,
-                                       const int seq_length,
-                                       const int head_dim) {
-  // Basic implementation - can be optimized further
-  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= batch_size * seq_length * head_dim)
-    return;
+__global__ void attention_scores_kernel(const float* Q, const float* K,
+                                      float* scores, const float scale,
+                                      int seq_len, int head_dim) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int col = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (row < seq_len && col < seq_len) {
+        float sum = 0.0f;
+        for (int i = 0; i < head_dim; i++) {
+            sum += Q[row * head_dim + i] * K[col * head_dim + i];
+        }
+        scores[row * seq_len + col] = sum * scale;
+    }
+}
 
-  const int b = idx / (seq_length * head_dim);
-  const int s = (idx / head_dim) % seq_length;
-  const int h = idx % head_dim;
-
-  float sum = 0.0f;
-  float max_val = -INFINITY;
-
-  // Find max for numerical stability
-  for (int i = 0; i < seq_length; ++i) {
-    float qk = Q[b * seq_length * head_dim + s * head_dim + h] *
-               K[b * seq_length * head_dim + i * head_dim + h];
-    max_val = max(max_val, qk);
-  }
-
-  // Compute attention scores
-  float denom = 0.0f;
-  for (int i = 0; i < seq_length; ++i) {
-    float qk = Q[b * seq_length * head_dim + s * head_dim + h] *
-               K[b * seq_length * head_dim + i * head_dim + h];
-    float score = exp(qk - max_val);
-    sum += score * V[b * seq_length * head_dim + i * head_dim + h];
-    denom += score;
-  }
-
-  output[idx] = sum / denom;
+__global__ void softmax_kernel(float* scores, int seq_len) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < seq_len) {
+        // Find max for numerical stability
+        float max_val = scores[row * seq_len];
+        for (int i = 1; i < seq_len; i++) {
+            max_val = max(max_val, scores[row * seq_len + i]);
+        }
+        
+        // Compute exp and sum
+        float sum = 0.0f;
+        for (int i = 0; i < seq_len; i++) {
+            scores[row * seq_len + i] = expf(scores[row * seq_len + i] - max_val);
+            sum += scores[row * seq_len + i];
+        }
+        
+        // Normalize
+        for (int i = 0; i < seq_len; i++) {
+            scores[row * seq_len + i] /= sum;
+        }
+    }
 }
