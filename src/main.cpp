@@ -45,44 +45,26 @@ int main(int argc, char *argv[]) {
 #endif
         // Initialize tokenizer first to get vocab size
         tokenizer = std::make_unique<Tokenizer>();
-        tokenizer->print_vocabulary_mappings(); // Print initial mappings
-        tokenizer->clear_cache();  // We need to add this method to Tokenizer class
+        tokenizer->print_vocabulary_mappings();
+        tokenizer->clear_cache();
         
         // Get vocabulary size from the tokenizer
         size_t actual_vocab_size = tokenizer->vocab_size();
-        
         std::cout << "Actual vocabulary size: " << actual_vocab_size << std::endl;
 
-        // Update vocab size from tokenizer
+        // Only update vocab size from tokenizer, keep other settings from config file
         config.vocab_size = actual_vocab_size;
-
-        // Configure the transformer with actual vocab size
-        config.hidden_size = 128;        // Reduced from 360 to prevent overfitting
-        config.num_heads = 4;            // Reduced from 12 to match smaller hidden size
-        config.num_layers = 3;           // Reduced from 6 to prevent overfitting
-        config.use_cuda = false;
-        config.use_flash_attention = false;
-        config.use_rope = true;
-        config.use_sliding_window = true;
-        config.window_size = 128;
-        config.use_fp16 = false;
+        // Only compute head_dim as it depends on other config values
         config.head_dim = config.hidden_size / config.num_heads;
-        config.batch_size = 4;
-        config.num_epochs = 30;
-        config.dropout_rate = 0.2f;
-        config.weight_decay = 0.01f;
 
-        std::cout << "Initializing transformer with configuration:\n"
+        std::cout << "Using configuration from file:\n"
                   << "- Hidden size: " << config.hidden_size << "\n"
-                  << "- Attention heads: " << config.num_heads << "\n"
-                  << "- Layers: " << config.num_layers << "\n"
-                  << "- Batch size: " << config.batch_size << "\n"
-                  << "- Number of epochs: " << config.num_epochs << "\n"
-                  << "- Using Flash Attention: " << std::boolalpha
+                  << "- Number of heads: " << config.num_heads << "\n"
+                  << "- Number of layers: " << config.num_layers << "\n"
+                  << "- Using Flash Attention: " << std::boolalpha 
                   << config.use_flash_attention << "\n"
                   << "- Using RoPE: " << config.use_rope << "\n"
-                  << "- Using Sliding Window: " << config.use_sliding_window
-                  << "\n";
+                  << "- Using Sliding Window: " << config.use_sliding_window << "\n";
 
         // Initialize components
         Transformer transformer(config);
