@@ -157,6 +157,39 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     Matrix K = matmul(x, key_proj);    // Shape: (batch_size * seq_len, hidden_size)
     Matrix V = matmul(x, value_proj);  // Shape: (batch_size * seq_len, hidden_size)
     
+    // Handle KV cache if present
+    if (kv_cache) {
+        // Concatenate current K/V with cached K/V
+        Matrix new_K(K.rows() + kv_cache->key_cache.rows(), K.cols());
+        Matrix new_V(V.rows() + kv_cache->value_cache.rows(), V.cols());
+        
+        // Copy cached values first
+        for (size_t i = 0; i < kv_cache->key_cache.rows(); i++) {
+            for (size_t j = 0; j < K.cols(); j++) {
+                new_K(i, j) = kv_cache->key_cache.at(i, j);
+                new_V(i, j) = kv_cache->value_cache.at(i, j);
+            }
+        }
+        
+        // Copy new values
+        for (size_t i = 0; i < K.rows(); i++) {
+            for (size_t j = 0; j < K.cols(); j++) {
+                new_K(i + kv_cache->key_cache.rows(), j) = K(i, j);
+                new_V(i + kv_cache->value_cache.rows(), j) = V(i, j);
+            }
+        }
+        
+        // Log cache usage
+        std::cout << "Using KV cache:" << std::endl;
+        std::cout << "- Cached K shape: " << kv_cache->key_cache.rows() << "x" << kv_cache->key_cache.cols() << std::endl;
+        std::cout << "- Cached V shape: " << kv_cache->value_cache.rows() << "x" << kv_cache->value_cache.cols() << std::endl;
+        std::cout << "- New K shape: " << new_K.rows() << "x" << new_K.cols() << std::endl;
+        std::cout << "- New V shape: " << new_V.rows() << "x" << new_V.cols() << std::endl;
+        
+        K = std::move(new_K);
+        V = std::move(new_V);
+    }
+    
     // Apply RoPE to Q and K if enabled
     if (use_rope) {
         // Check dimensions before applying RoPE
