@@ -9,7 +9,7 @@
     },
     "training": {
         "batch_size": 32,
-        "num_epochs": 3,
+        "num_epochs": 6,
         "dropout_rate": 0.1,
         "weight_decay": 0.01
     },

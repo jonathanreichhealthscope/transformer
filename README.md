@@ -1,6 +1,6 @@
-# Example transformer in C++
+# A decoder-style Transformer in C++
 
-A pure C++ implementation of a transformer model with CUDA support. It is based on the paper "Attention is All You Need" by Vaswani et al.
+A pure C++ implementation of a decoder-only transformer model with CUDA support. It is based on the paper "Attention is All You Need" by Vaswani et al and has been trained on an example dataset found in the `data` directory called 'training_pairs.txt'. It performs a single token prediction for each input.
 
 ## Transformer Implementation Features
 
@@ -89,9 +89,10 @@ cmake ..
 make
 ```
 
-## Running
+## Training the model
 
-From the build directory, run:
+After building the project, running `main.cpp` will train the model and save the model hyperparamters to whatever directory is specified in the `config/transformer_config.json` file. To execute the training on the sample dataset, run the following command
+from the build directory:
 
 ```bash
 ./transformer
