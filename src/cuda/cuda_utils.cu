@@ -77,7 +77,8 @@ Matrix cuda_matmul(const Matrix& A, const Matrix& B) {
     float alpha = 1.0f;
     float beta = 0.0f;
     
-    Matrix C(A.rows(), B.cols());
+    Matrix C(A.rows(), B.cols(), 0.0f);
+    Matrix C_gpu = C.to_gpu();
     std::cout << "Created output matrix C: " << C.rows() << "x" << C.cols() << std::endl;
 
     try {
@@ -88,7 +89,7 @@ Matrix cuda_matmul(const Matrix& A, const Matrix& B) {
                           B.get_data(), B.cols(),
                           A.get_data(), A.cols(),
                           &beta,
-                          C.get_data(), C.cols());
+                          C_gpu.get_data(), C_gpu.cols());
 
         if (status != CUBLAS_STATUS_SUCCESS) {
             throw std::runtime_error("cuBLAS SGEMM failed with status: " + 
@@ -103,6 +104,7 @@ Matrix cuda_matmul(const Matrix& A, const Matrix& B) {
         }
 
         std::cout << "CUDA matrix multiplication completed successfully" << std::endl;
+        C = C_gpu.to_cpu();
     } catch (const std::exception& e) {
         cublasDestroy(handle);
         throw;
