@@ -146,14 +146,11 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     std::cout << "K shape: " << K.rows() << "x" << K.cols() << std::endl;
     std::cout << "V shape: " << V.rows() << "x" << V.cols() << std::endl;
     
-    // Reshape for attention
-    Tensor Q_reshaped = reshape_for_attention(Q, batch_size, num_heads, seq_len, head_dim);
-    Tensor K_reshaped = reshape_for_attention(K, batch_size, num_heads, seq_len, head_dim);
-    Tensor V_reshaped = reshape_for_attention(V, batch_size, num_heads, seq_len, head_dim);
+    // Add debug output to verify flag
+    std::cout << "Using flash attention: " << (this->use_flash ? "true" : "false") << std::endl;
     
-    // Choose attention implementation
     Matrix attention_output;
-    if (use_flash && !kv_cache) {  // Flash attention doesn't support KV cache yet
+    if (this->use_flash && !kv_cache) {
         attention_output = flash_attention(Q, K, V, mask);
     } else {
         attention_output = standard_attention(Q, K, V, mask);

@@ -61,7 +61,7 @@ int main(int argc, char *argv[]) {
         config.num_heads = 4;            // Reduced from 12 to match smaller hidden size
         config.num_layers = 3;           // Reduced from 6 to prevent overfitting
         config.use_cuda = false;
-        config.use_flash_attention = true;
+        config.use_flash_attention = false;
         config.use_rope = true;
         config.use_sliding_window = true;
         config.window_size = 128;

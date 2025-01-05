@@ -50,4 +50,10 @@ help:
 	@echo "  make run      - Build and run the transformer"
 	@echo "  make format   - Format source code"
 	@echo "  make debug    - Build in debug mode"
-	@echo "  make release  - Build in release mode" 
+	@echo "  make release  - Build in release mode"
+	@echo "  make stop     - Stop the running transformer"
+
+# Stop the running transformer
+.PHONY: stop
+stop:
+	@pkill transformer || true 
