@@ -88,6 +88,17 @@ public:
     }
     return result;
   }
+
+  // Returns a view into a block of the matrix
+  Matrix block(size_t start_row, size_t start_col, size_t num_rows, size_t num_cols) const {
+    Matrix result(num_rows, num_cols);
+    for (size_t i = 0; i < num_rows; ++i) {
+      for (size_t j = 0; j < num_cols; ++j) {
+        result(i, j) = (*this)(start_row + i, start_col + j);
+      }
+    }
+    return result;
+  }
 };
 
 // Make to_vector inline to allow multiple definitions
