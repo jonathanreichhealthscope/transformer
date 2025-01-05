@@ -4,6 +4,9 @@
 #include <iostream>
 #include <string>
 #include "attention.hpp"
+#include "../include/performance_metrics.hpp"
+
+extern PerformanceMetrics metrics;
 
 Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
   std::cout << "\n=== MultiHeadAttention::apply_rope START ===" << std::endl;
@@ -124,12 +127,13 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
 
 Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                  const std::optional<KVCache> &kv_cache) {
+    metrics.start_timer("attention_computation");
     std::cout << "=== MultiHeadAttention::forward START ===" << std::endl;
     std::cout << "Input shape: " << x.rows() << "x" << x.cols() << std::endl;
     
     // Calculate true batch size and sequence length
     const size_t seq_len = mask.mask.rows();  // Get sequence length from mask
-    const size_t batch_size = x.rows() / seq_len;  // Calculate batch size
+    const size_t batch_size = x.rows() / seq_len;  // Correct: batch_size = total_rows / seq_len
     
     std::cout << "Calculated dimensions:" << std::endl;
     std::cout << "- batch_size: " << batch_size << std::endl;
@@ -161,6 +165,9 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     // Project output
     Matrix output = matmul(attention_output, output_proj);
     std::cout << "Final output shape: " << output.rows() << "x" << output.cols() << std::endl;
+    
+    metrics.record_attention_flops(seq_len, num_heads, head_dim);
+    metrics.stop_timer("attention_computation");
     
     std::cout << "=== MultiHeadAttention::forward END ===" << std::endl;
     return output;

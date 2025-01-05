@@ -19,6 +19,7 @@
 #include "logger.hpp"
 #include "model_saver.hpp"
 #include "optimizer/sam.hpp"
+#include "performance_metrics.hpp"
 #include "quantization.hpp"
 #include "tokenizer.hpp"
 #include "transformer.hpp"
@@ -37,3 +38,7 @@ class Tokenizer;
 class Matrix;
 class Transformer;
 class LanguageModelHead; 
+
+// Declare global variables as extern
+extern std::unique_ptr<Tokenizer> tokenizer;
+extern PerformanceMetrics metrics; 

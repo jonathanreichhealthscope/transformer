@@ -8,7 +8,7 @@
         "intermediate_size": 512
     },
     "training": {
-        "batch_size": 4,
+        "batch_size": 8,
         "num_epochs": 30,
         "dropout_rate": 0.2,
         "weight_decay": 0.01,

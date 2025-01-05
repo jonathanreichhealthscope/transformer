@@ -55,6 +55,7 @@ set(CORE_SOURCES
     src/half_precision.cpp
     src/gradient_checkpoint.cpp
     src/utils.cpp
+    src/performance_metrics.cpp
 )
 
 # Neural network components

@@ -5,6 +5,7 @@
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
+PerformanceMetrics metrics;  // Single definition of the global metrics variable
 
 // Configuration constants
 const float INITIAL_LEARNING_RATE = 0.001f;
@@ -125,6 +126,8 @@ int main(int argc, char *argv[]) {
             
             // Process batches
             for (size_t batch = 0; batch < total_batches; ++batch) {
+                metrics.start_timer("batch_processing");
+                
                 size_t start_idx = batch * config.batch_size;
                 size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
                 size_t current_batch_size = end_idx - start_idx;
@@ -188,8 +191,13 @@ int main(int argc, char *argv[]) {
                 }
                 
                 // Forward pass with the flattened batch
-                transformer.set_training(true);  // Ensure training mode is on
+                transformer.set_training(true);
+                metrics.start_timer("forward_pass");
                 Matrix hidden_states = transformer.forward(flattened_batch);
+                metrics.stop_timer("forward_pass");
+                
+                metrics.record_memory_usage(hidden_states.bytes());
+                
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
                 
                 // Take only the last token's logits for each sequence in the batch
@@ -251,7 +259,9 @@ int main(int argc, char *argv[]) {
                 epoch_loss += batch_loss;
                 global_step++;
                 
-                // Print progress
+                metrics.stop_timer("batch_processing");
+                
+                // Print progress and metrics every 10 batches
                 if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
                     std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
                              << " in epoch " << epoch + 1 
@@ -259,6 +269,9 @@ int main(int argc, char *argv[]) {
                              << ", Avg Loss: " << epoch_loss/(batch+1)
                              << ", LR: " << learning_rate 
                              << ")" << std::flush;
+                    
+                    // Print performance metrics
+                    metrics.print_metrics();
                 }
             }
             
