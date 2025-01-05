@@ -71,14 +71,14 @@ private:
   std::unique_ptr<Dropout> attention_dropout;
   std::unique_ptr<Dropout> ffn_dropout;
   KVCache kv_cache;
-  TransformerConfig config;
+  const TransformerConfig& config;
   size_t layer_idx;
   bool training = false;
 
 public:
   virtual ~TransformerLayer() = default;
   TransformerLayer() = default;
-  TransformerLayer(const TransformerConfig &config, size_t idx);
+  TransformerLayer(const TransformerConfig& config_, size_t idx);
   Matrix forward(const Matrix &input, const AttentionMask &mask,
                  const std::optional<KVCache> &kv_cache = std::nullopt);
   void clear_cache();
@@ -92,11 +92,8 @@ public:
   create(const TransformerConfig &config, size_t idx) {
     return std::make_unique<TransformerLayer>(config, idx);
   }
-  void load(std::istream &is) {
-    self_attention->load(is);
-    attention_ln->load(is);
-    feed_forward->load(is);
-    ffn_ln->load(is);
+  void load(std::istream& is) {
+    self_attention = MultiHeadAttention::load(is, config);
   }
   Matrix backward(const Matrix &grad_output, const Matrix &input,
                  const Matrix &target_distribution = Matrix());
@@ -119,7 +116,9 @@ public:
   void convert_to_fp16();
 
   TransformerLayer(const TransformerLayer &other)
-      : config(other.config), kv_cache(other.kv_cache) {
+      : config(other.config), 
+        kv_cache(other.kv_cache),
+        layer_idx(other.layer_idx) {
     if (other.self_attention) {
       self_attention =
           std::make_unique<MultiHeadAttention>(*other.self_attention);
@@ -137,8 +136,8 @@ public:
 
   TransformerLayer &operator=(const TransformerLayer &other) {
     if (this != &other) {
-      config = other.config;
       kv_cache = other.kv_cache;
+      layer_idx = other.layer_idx;
 
       if (other.self_attention) {
         self_attention =

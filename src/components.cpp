@@ -61,7 +61,8 @@ Matrix::Matrix(const Matrix& other) {
   }
   
   try {
-    data_ = other.data_;
+    data_.resize(other.data_.size());
+    std::copy(other.data_.begin(), other.data_.end(), data_.begin());
     rows_ = other.rows_;
     cols_ = other.cols_;
     shape_ = other.shape_;
@@ -69,18 +70,6 @@ Matrix::Matrix(const Matrix& other) {
   } catch (const std::exception& e) {
     throw std::runtime_error("Failed to copy matrix: " + std::string(e.what()));
   }
-}
-
-Matrix::Matrix(Matrix&& other) noexcept
-    : data_(std::move(other.data_)), 
-      rows_(other.rows_), 
-      cols_(other.cols_),
-      shape_(std::make_tuple(other.rows_, other.cols_)),
-      owns_data_(other.owns_data_) {
-      other.rows_ = 0;
-      other.cols_ = 0;
-      other.shape_ = std::make_tuple(0, 0);
-      other.owns_data_ = false;
 }
 
 Matrix& Matrix::operator=(const Matrix& other) {
@@ -95,7 +84,8 @@ Matrix& Matrix::operator=(const Matrix& other) {
     }
     
     try {
-      data_ = other.data_;
+      data_.resize(other.data_.size());
+      std::copy(other.data_.begin(), other.data_.end(), data_.begin());
       rows_ = other.rows_;
       cols_ = other.cols_;
       shape_ = other.shape_;
@@ -103,22 +93,6 @@ Matrix& Matrix::operator=(const Matrix& other) {
     } catch (const std::exception& e) {
       throw std::runtime_error("Failed to assign matrix: " + std::string(e.what()));
     }
-  }
-  return *this;
-}
-
-Matrix& Matrix::operator=(Matrix&& other) noexcept {
-  if (this != &other) {
-    data_ = std::move(other.data_);
-    rows_ = other.rows_;
-    cols_ = other.cols_;
-    shape_ = std::make_tuple(other.rows_, other.cols_);
-    owns_data_ = other.owns_data_;
-    
-    other.rows_ = 0;
-    other.cols_ = 0;
-    other.shape_ = std::make_tuple(0, 0);
-    other.owns_data_ = false;
   }
   return *this;
 }

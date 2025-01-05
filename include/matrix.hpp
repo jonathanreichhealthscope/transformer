@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <vector>
+#include <memory>
 #define M_PI 3.14159265358979323846
 // Forward declarations
 class Matrix;
@@ -28,13 +29,7 @@ public:
   Matrix(size_t rows, size_t cols, float *external_data);
   Matrix(size_t rows, size_t cols, float *external_data, bool is_owner);
   Matrix(size_t rows, size_t cols, size_t batch_size, float *external_data);
-  Matrix(const Matrix& other);
-  Matrix(Matrix&& other) noexcept;
   Matrix(size_t rows, size_t cols, const float* data);
-
-  // Assignment operators
-  Matrix& operator=(const Matrix& other);
-  Matrix& operator=(Matrix&& other) noexcept;
 
   // Rest of the class interface
   size_t rows() const { return rows_; }
@@ -98,6 +93,40 @@ public:
       }
     }
     return result;
+  }
+
+  // Only declare copy constructor and assignment operator
+  Matrix(const Matrix& other);  // Declaration only
+  Matrix& operator=(const Matrix& other);  // Declaration only
+
+  // Move operations - full implementation
+  Matrix(Matrix&& other) noexcept 
+      : data_(std::move(other.data_))
+      , rows_(other.rows_)
+      , cols_(other.cols_)
+      , shape_(other.shape_)
+      , owns_data_(other.owns_data_) {
+      // Zero out the source object
+      other.rows_ = 0;
+      other.cols_ = 0;
+      other.shape_ = std::make_tuple(0, 0);
+      other.owns_data_ = false;
+  }
+
+  Matrix& operator=(Matrix&& other) noexcept {
+      if (this != &other) {
+          data_ = std::move(other.data_);
+          rows_ = other.rows_;
+          cols_ = other.cols_;
+          shape_ = other.shape_;
+          owns_data_ = other.owns_data_;
+          
+          other.rows_ = 0;
+          other.cols_ = 0;
+          other.shape_ = std::make_tuple(0, 0);
+          other.owns_data_ = false;
+      }
+      return *this;
   }
 };
 

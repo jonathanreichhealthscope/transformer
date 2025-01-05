@@ -15,7 +15,158 @@ public:
 };
 
 class MultiHeadAttention {
+public:
+  virtual ~MultiHeadAttention() = default;
+  MultiHeadAttention() = default;
+
+  MultiHeadAttention(size_t hidden_size_, 
+                    size_t num_heads_, 
+                    size_t head_dim_, 
+                    float dropout_prob_,
+                    bool use_flash_, 
+                    bool use_rope_,
+                    bool use_sliding_window_, 
+                    size_t window_size_,
+                    bool use_gqa_, 
+                    size_t num_kv_heads_,
+                    size_t max_seq_length_);
+
+  Matrix forward(const Matrix &x, const AttentionMask &mask,
+                 const std::optional<KVCache> &kv_cache = std::nullopt);
+  Matrix backward(const Matrix& grad_output,
+                 const Matrix& input,
+                 const Matrix& target_distribution);
+  Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
+  void save(std::ostream &os) const;
+  static std::unique_ptr<MultiHeadAttention> load(std::istream &is, const class TransformerConfig& config);
+  friend class Transformer;
+
+  std::vector<std::reference_wrapper<Matrix>> get_weights() {
+    return {std::ref(query_proj), std::ref(key_proj), std::ref(value_proj),
+            std::ref(output_proj)};
+  }
+
+  friend class TransformerLayer;
+
+  FloatVector &getQueryBias() { return query_bias; }
+  FloatVector &getKeyBias() { return key_bias; }
+  FloatVector &getValueBias() { return value_bias; }
+  FloatVector &getOutputBias() { return output_bias; }
+
+  MultiHeadAttention(const MultiHeadAttention &other)
+      : query_proj(other.query_proj), key_proj(other.key_proj),
+        value_proj(other.value_proj), output_proj(other.output_proj),
+        query_bias(other.query_bias), key_bias(other.key_bias),
+        value_bias(other.value_bias), output_bias(other.output_bias),
+        query_proj_grad(other.query_proj_grad), key_proj_grad(other.key_proj_grad),
+        value_proj_grad(other.value_proj_grad), output_proj_grad(other.output_proj_grad),
+        query_bias_grad(other.query_bias_grad), key_bias_grad(other.key_bias_grad),
+        value_bias_grad(other.value_bias_grad), output_bias_grad(other.output_bias_grad),
+        num_heads(other.num_heads), head_dim(other.head_dim),
+        hidden_size(other.hidden_size), dropout_prob(other.dropout_prob),
+        use_rope(other.use_rope), use_flash(other.use_flash),
+        use_sliding_window(other.use_sliding_window),
+        window_size(other.window_size), use_gqa(other.use_gqa),
+        num_kv_heads(other.num_kv_heads),
+        cos_cached(other.cos_cached), sin_cached(other.sin_cached) {}
+
+  MultiHeadAttention &operator=(const MultiHeadAttention &other) {
+    if (this != &other) {
+      query_proj = other.query_proj;
+      key_proj = other.key_proj;
+      value_proj = other.value_proj;
+      output_proj = other.output_proj;
+      query_bias = other.query_bias;
+      key_bias = other.key_bias;
+      value_bias = other.value_bias;
+      output_bias = other.output_bias;
+      query_proj_grad = other.query_proj_grad;
+      key_proj_grad = other.key_proj_grad;
+      value_proj_grad = other.value_proj_grad;
+      output_proj_grad = other.output_proj_grad;
+      query_bias_grad = other.query_bias_grad;
+      key_bias_grad = other.key_bias_grad;
+      value_bias_grad = other.value_bias_grad;
+      output_bias_grad = other.output_bias_grad;
+      num_heads = other.num_heads;
+      head_dim = other.head_dim;
+      hidden_size = other.hidden_size;
+      dropout_prob = other.dropout_prob;
+      use_rope = other.use_rope;
+      use_flash = other.use_flash;
+      use_sliding_window = other.use_sliding_window;
+      window_size = other.window_size;
+      use_gqa = other.use_gqa;
+      num_kv_heads = other.num_kv_heads;
+      cos_cached = other.cos_cached;
+      sin_cached = other.sin_cached;
+    }
+    return *this;
+  }
+
+  struct Parameters {
+      std::vector<std::reference_wrapper<Matrix>> matrices;
+      std::vector<std::reference_wrapper<Vector>> vectors;
+
+      // Add iterator support
+      auto begin() { return matrices.begin(); }
+      auto end() { return matrices.end(); }
+      auto begin() const { return matrices.begin(); }
+      auto end() const { return matrices.end(); }
+  };
+
+  Parameters& parameters() {
+      params.matrices.clear();
+      params.vectors.clear();
+      
+      // Matrix parameters
+      params.matrices.emplace_back(query_proj);
+      params.matrices.emplace_back(key_proj);
+      params.matrices.emplace_back(value_proj);
+      params.matrices.emplace_back(output_proj);
+      
+      // Vector parameters
+      params.vectors.emplace_back(query_bias);
+      params.vectors.emplace_back(key_bias);
+      params.vectors.emplace_back(value_bias);
+      params.vectors.emplace_back(output_bias);
+      
+      return params;
+  }
+  
+  const Parameters& parameter_gradients() const {
+      param_gradients.matrices.clear();
+      param_gradients.vectors.clear();
+      
+      // Matrix gradients
+      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(query_proj_grad)));
+      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(key_proj_grad)));
+      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(value_proj_grad)));
+      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(output_proj_grad)));
+      
+      // Vector gradients
+      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(query_bias_grad)));
+      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(key_bias_grad)));
+      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(value_bias_grad)));
+      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(output_bias_grad)));
+      
+      return param_gradients;
+  }
+
 private:
+  Parameters params;         // Trainable parameters
+  mutable Parameters param_gradients;  // Parameter gradients
+
+  // Gradients
+  mutable Matrix query_proj_grad;
+  mutable Matrix key_proj_grad;
+  mutable Matrix value_proj_grad;
+  mutable Matrix output_proj_grad;
+  mutable FloatVector query_bias_grad;
+  mutable FloatVector key_bias_grad;
+  mutable FloatVector value_bias_grad;
+  mutable FloatVector output_bias_grad;
+
   Matrix query_proj;
   Matrix key_proj;
   Matrix value_proj;
@@ -37,6 +188,7 @@ private:
   float dropout_prob;
   bool use_gqa;
   size_t num_kv_heads;
+  size_t max_seq_length;
 
   // Private helper methods
   Vector apply_rope(const Vector &x, size_t position) const;
@@ -202,151 +354,10 @@ private:
        scores = Tensor(scores_mat, {scores.dims()[0], scores.dims()[1], scores.dims()[2], scores.dims()[3]});
    }
 
-public:
-  virtual ~MultiHeadAttention() = default;
-  MultiHeadAttention() = default;
-
-  MultiHeadAttention(size_t hidden_size_, size_t num_heads_, 
-                     size_t head_dim_, float dropout_prob_,
-                     bool use_flash_, bool use_rope_,
-                     bool use_sliding_window_, size_t window_size_,
-                     bool use_gqa_, size_t num_kv_heads_);
-
-  Matrix forward(const Matrix &x, const AttentionMask &mask,
-                 const std::optional<KVCache> &kv_cache = std::nullopt);
-  Matrix backward(const Matrix& grad_output,
-                 const Matrix& input,
-                 const Matrix& target_distribution);
-  Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
-  void save(std::ostream &os) const;
-  static std::unique_ptr<MultiHeadAttention> load(std::istream &is);
-  friend class Transformer;
-
-  std::vector<std::reference_wrapper<Matrix>> get_weights() {
-    return {std::ref(query_proj), std::ref(key_proj), std::ref(value_proj),
-            std::ref(output_proj)};
-  }
-
-  friend class TransformerLayer;
-
-  FloatVector &getQueryBias() { return query_bias; }
-  FloatVector &getKeyBias() { return key_bias; }
-  FloatVector &getValueBias() { return value_bias; }
-  FloatVector &getOutputBias() { return output_bias; }
-
-  MultiHeadAttention(const MultiHeadAttention &other)
-      : query_proj(other.query_proj), key_proj(other.key_proj),
-        value_proj(other.value_proj), output_proj(other.output_proj),
-        query_bias(other.query_bias), key_bias(other.key_bias),
-        value_bias(other.value_bias), output_bias(other.output_bias),
-        query_proj_grad(other.query_proj_grad), key_proj_grad(other.key_proj_grad),
-        value_proj_grad(other.value_proj_grad), output_proj_grad(other.output_proj_grad),
-        query_bias_grad(other.query_bias_grad), key_bias_grad(other.key_bias_grad),
-        value_bias_grad(other.value_bias_grad), output_bias_grad(other.output_bias_grad),
-        num_heads(other.num_heads), head_dim(other.head_dim),
-        hidden_size(other.hidden_size), dropout_prob(other.dropout_prob),
-        use_rope(other.use_rope), use_flash(other.use_flash),
-        use_sliding_window(other.use_sliding_window),
-        window_size(other.window_size), use_gqa(other.use_gqa),
-        num_kv_heads(other.num_kv_heads),
-        cos_cached(other.cos_cached), sin_cached(other.sin_cached) {}
-
-  MultiHeadAttention &operator=(const MultiHeadAttention &other) {
-    if (this != &other) {
-      query_proj = other.query_proj;
-      key_proj = other.key_proj;
-      value_proj = other.value_proj;
-      output_proj = other.output_proj;
-      query_bias = other.query_bias;
-      key_bias = other.key_bias;
-      value_bias = other.value_bias;
-      output_bias = other.output_bias;
-      query_proj_grad = other.query_proj_grad;
-      key_proj_grad = other.key_proj_grad;
-      value_proj_grad = other.value_proj_grad;
-      output_proj_grad = other.output_proj_grad;
-      query_bias_grad = other.query_bias_grad;
-      key_bias_grad = other.key_bias_grad;
-      value_bias_grad = other.value_bias_grad;
-      output_bias_grad = other.output_bias_grad;
-      num_heads = other.num_heads;
-      head_dim = other.head_dim;
-      hidden_size = other.hidden_size;
-      dropout_prob = other.dropout_prob;
-      use_rope = other.use_rope;
-      use_flash = other.use_flash;
-      use_sliding_window = other.use_sliding_window;
-      window_size = other.window_size;
-      use_gqa = other.use_gqa;
-      num_kv_heads = other.num_kv_heads;
-      cos_cached = other.cos_cached;
-      sin_cached = other.sin_cached;
-    }
-    return *this;
-  }
-
-  struct Parameters {
-      std::vector<std::reference_wrapper<Matrix>> matrices;
-      std::vector<std::reference_wrapper<Vector>> vectors;
-
-      // Add iterator support
-      auto begin() { return matrices.begin(); }
-      auto end() { return matrices.end(); }
-      auto begin() const { return matrices.begin(); }
-      auto end() const { return matrices.end(); }
-  };
-
-  Parameters& parameters() {
-      params.matrices.clear();
-      params.vectors.clear();
-      
-      // Matrix parameters
-      params.matrices.emplace_back(query_proj);
-      params.matrices.emplace_back(key_proj);
-      params.matrices.emplace_back(value_proj);
-      params.matrices.emplace_back(output_proj);
-      
-      // Vector parameters
-      params.vectors.emplace_back(query_bias);
-      params.vectors.emplace_back(key_bias);
-      params.vectors.emplace_back(value_bias);
-      params.vectors.emplace_back(output_bias);
-      
-      return params;
-  }
-  
-  const Parameters& parameter_gradients() const {
-      param_gradients.matrices.clear();
-      param_gradients.vectors.clear();
-      
-      // Matrix gradients
-      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(query_proj_grad)));
-      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(key_proj_grad)));
-      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(value_proj_grad)));
-      param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(output_proj_grad)));
-      
-      // Vector gradients
-      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(query_bias_grad)));
-      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(key_bias_grad)));
-      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(value_bias_grad)));
-      param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(output_bias_grad)));
-      
-      return param_gradients;
-  }
-
-private:
-  Parameters params;         // Trainable parameters
-  mutable Parameters param_gradients;  // Parameter gradients
-
-  // Gradients
-  mutable Matrix query_proj_grad;
-  mutable Matrix key_proj_grad;
-  mutable Matrix value_proj_grad;
-  mutable Matrix output_proj_grad;
-  mutable FloatVector query_bias_grad;
-  mutable FloatVector key_bias_grad;
-  mutable FloatVector value_bias_grad;
-  mutable FloatVector output_bias_grad;
+   // RoPE helper functions
+   void initialize_rope_cache(size_t max_seq_len, size_t dim);
+   float get_cos_cached(size_t pos, size_t dim_idx) const;
+   float get_sin_cached(size_t pos, size_t dim_idx) const;
 };
 
 // Add sliding window attention
