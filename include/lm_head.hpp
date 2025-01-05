@@ -14,7 +14,7 @@ private:
   size_t vocab_size_;
   size_t hidden_size_;
   Matrix hidden_states;
-  void backward_linear(const Matrix& grad_output);
+  void backward_linear(const Matrix &grad_output);
   Matrix forward_impl(const Matrix &hidden_states);
 
 public:
@@ -154,5 +154,6 @@ public:
 
   const Matrix &get_projection() const { return projection; }
 
-  Matrix backward(const Matrix& grad_output, const Matrix& target_distribution = Matrix());
+  Matrix backward(const Matrix &grad_output,
+                  const Matrix &target_distribution = Matrix());
 };

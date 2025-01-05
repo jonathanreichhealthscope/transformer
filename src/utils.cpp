@@ -77,37 +77,39 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
 TransformerConfig Utils::load_config(const std::string& config_path) {
     TransformerConfig config;
     try {
-        std::ifstream file(config_path);
-        if (!file.is_open()) {
+        // Try multiple possible locations
+        std::vector<std::string> possible_paths = {
+            config_path,
+            "../" + config_path,
+            "../../" + config_path,
+            "./config/transformer_config.json"
+        };
+
+        std::ifstream config_file;
+        for (const auto& path : possible_paths) {
+            config_file.open(path);
+            if (config_file.is_open()) {
+                break;
+            }
+        }
+
+        if (!config_file.is_open()) {
             throw std::runtime_error("Could not open config file: " + config_path);
         }
-        
+
         nlohmann::json j;
-        file >> j;
+        config_file >> j;
         
-        // Parse model settings
-        auto& model = j["model"];
-        config.vocab_size = model["vocab_size"];
-        config.hidden_size = model["hidden_size"];
-        config.num_heads = model["num_heads"];
-        config.num_layers = model["num_layers"];
-        config.head_dim = model["head_dim"];
-        config.intermediate_size = model["intermediate_size"];
-        
-        // Parse training settings
-        auto& training = j["training"];
-        config.batch_size = training["batch_size"];
-        config.num_epochs = training["num_epochs"];
-        config.dropout_rate = training["dropout_rate"];
-        config.weight_decay = training["weight_decay"];
-        
-        // Parse paths
-        if (j.contains("paths")) {
-            auto& paths = j["paths"];
-            config.paths.save_directory = paths["save_directory"];
-            config.paths.model_name = paths["model_name"];
-            config.paths.checkpoint_frequency = paths["checkpoint_frequency"];
-        }
+        // Parse top-level settings
+        config.vocab_size = j["vocab_size"];
+        config.max_seq_length = j["max_seq_length"];
+        config.hidden_size = j["hidden_size"];
+        config.num_heads = j["num_heads"];
+        config.num_layers = j["num_layers"];
+        config.batch_size = j["batch_size"];
+        config.num_epochs = j["num_epochs"];
+        config.head_dim = config.hidden_size / config.num_heads;
+        config.intermediate_size = 4 * config.hidden_size;
         
         // Parse attention settings
         auto& attention = j["attention"];
@@ -117,25 +119,12 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         config.window_size = attention["window_size"];
         if (attention.contains("use_gqa")) {
             config.use_gqa = attention["use_gqa"].get<bool>();
-            std::cout << "Loaded use_gqa from config: " << config.use_gqa << std::endl;
             if (config.use_gqa) {
-                if (attention.contains("num_kv_heads")) {
-                    config.num_kv_heads = attention["num_kv_heads"].get<size_t>();
-                } else {
-                    config.num_kv_heads = config.num_heads / 2;  // Default to half the heads
-                }
-                std::cout << "Using GQA with num_heads=" << config.num_heads 
-                         << " and num_kv_heads=" << config.num_kv_heads << std::endl;
+                config.num_kv_heads = attention["num_kv_heads"].get<size_t>();
             } else {
                 config.num_kv_heads = config.num_heads;  // No GQA, use same number
             }
         }
-        
-        // Parse optimization settings
-        auto& optimization = j["optimization"];
-        config.use_fp16 = optimization["use_fp16"];
-        config.use_gradient_checkpointing = optimization["use_gradient_checkpointing"];
-        config.memory_pool_size = optimization["memory_pool_size"];
         
     } catch (const std::exception& e) {
         throw std::runtime_error("Error parsing config file: " + std::string(e.what()));
@@ -181,7 +170,7 @@ void Utils::analyze_token_mappings(const std::vector<std::pair<std::string, std:
         for (int token : tokens) {
             if (!tokenizer.is_special_token(token)) {
                 total_words++;
-                if (tokenizer.decode({token}) == "<unk>") {
+                if (tokenizer.decode({token}) == " ") {
                     unknown_tokens++;
                     unknown_words[tokenizer.decode({token})]++;
                 }

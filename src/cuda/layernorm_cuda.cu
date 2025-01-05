@@ -1,8 +1,8 @@
 #define USE_CUDA
-#include <cuda_runtime.h>
-#include "../../include/layer_norm.hpp"
 #include "../../include/cuda/cuda_check.cuh"
 #include "../../include/cuda/cuda_utils.cuh"
+#include "../../include/layer_norm.hpp"
+#include <cuda_runtime.h>
 
 #ifdef USE_CUDA
 
@@ -60,7 +60,7 @@ Matrix LayerNorm::backward_cuda(const Matrix &grad_output,
   const int batch_size = input.rows();
   const int hidden_size = get_hidden_size();
   const float eps = get_eps();
-  const Vector& gamma = get_gamma();
+  const Vector &gamma = get_gamma();
 
   // Allocate device memory
   float *d_grad_output, *d_input, *d_gamma;

@@ -14,12 +14,12 @@ Matrix Quantizer::quantize(const Matrix &input) {
   float min_val = std::numeric_limits<float>::max();
   float max_val = std::numeric_limits<float>::lowest();
 
-  #pragma omp parallel
+#pragma omp parallel
   {
     float local_min = std::numeric_limits<float>::max();
     float local_max = std::numeric_limits<float>::lowest();
 
-    #pragma omp for collapse(2) nowait
+#pragma omp for collapse(2) nowait
     for (size_t i = 0; i < input.rows(); ++i) {
       for (size_t j = 0; j < input.cols(); ++j) {
         local_min = std::min(local_min, input(i, j));
@@ -27,7 +27,7 @@ Matrix Quantizer::quantize(const Matrix &input) {
       }
     }
 
-    #pragma omp critical
+#pragma omp critical
     {
       min_val = std::min(min_val, local_min);
       max_val = std::max(max_val, local_max);
@@ -41,7 +41,7 @@ Matrix Quantizer::quantize(const Matrix &input) {
 
   // Quantize values using OpenMP
   Matrix quantized(input.rows(), input.cols());
-  #pragma omp parallel for collapse(2)
+#pragma omp parallel for collapse(2)
   for (size_t i = 0; i < input.rows(); ++i) {
     for (size_t j = 0; j < input.cols(); ++j) {
       float val = input(i, j);
@@ -55,7 +55,7 @@ Matrix Quantizer::quantize(const Matrix &input) {
 Matrix Quantizer::dequantize(const Matrix &quantized) {
   Matrix result(quantized.rows(), quantized.cols());
 
-  #pragma omp parallel for collapse(2)
+#pragma omp parallel for collapse(2)
   for (size_t i = 0; i < quantized.rows(); ++i) {
     for (size_t j = 0; j < quantized.cols(); ++j) {
       float val = quantized(i, j);

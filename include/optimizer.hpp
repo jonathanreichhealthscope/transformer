@@ -18,7 +18,7 @@ public:
   void add_parameter(Matrix &param);
   void update(const std::vector<Matrix> &params,
               const std::vector<Matrix> &grads);
-  void step();
+  void step(std::vector<Matrix*>& params, const std::vector<Matrix>& grads);
   void zero_grad();
   void save(std::ostream &os) const;
   void load(std::istream &is);

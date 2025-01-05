@@ -2,6 +2,7 @@
 #include "attention.hpp"
 #include "cache.hpp"
 #include "components.hpp"
+#include "dropout.hpp"
 #include "embeddings.hpp"
 #include "feed_forward.hpp"
 #include "gradient_checkpoint.hpp"
@@ -9,7 +10,8 @@
 #include "layer_norm.hpp"
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
-#include "dropout.hpp"
+#include "optimizer/sam.hpp"
+#include "tokenizer.hpp"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -61,8 +63,7 @@ public:
            lhs.use_rope != rhs.use_rope ||
            lhs.use_sliding_window != rhs.use_sliding_window ||
            lhs.window_size != rhs.window_size ||
-           lhs.batch_size != rhs.batch_size ||
-           lhs.num_epochs != rhs.num_epochs;
+           lhs.batch_size != rhs.batch_size || lhs.num_epochs != rhs.num_epochs;
   }
 };
 
@@ -75,14 +76,14 @@ private:
   std::unique_ptr<Dropout> attention_dropout;
   std::unique_ptr<Dropout> ffn_dropout;
   KVCache kv_cache;
-  const TransformerConfig& config;
+  const TransformerConfig &config;
   size_t layer_idx;
   bool training = false;
 
 public:
   virtual ~TransformerLayer() = default;
   TransformerLayer() = default;
-  TransformerLayer(const TransformerConfig& config_, size_t idx);
+  TransformerLayer(const TransformerConfig &config_, size_t idx);
   Matrix forward(const Matrix &input, const AttentionMask &mask,
                  const std::optional<KVCache> &kv_cache = std::nullopt);
   void clear_cache();
@@ -96,11 +97,11 @@ public:
   create(const TransformerConfig &config, size_t idx) {
     return std::make_unique<TransformerLayer>(config, idx);
   }
-  void load(std::istream& is) {
+  void load(std::istream &is) {
     self_attention = MultiHeadAttention::load(is, config);
   }
   Matrix backward(const Matrix &grad_output, const Matrix &input,
-                 const Matrix &target_distribution = Matrix());
+                  const Matrix &target_distribution = Matrix());
   Matrix backward_cuda(const Matrix &grad, const Matrix &input) const;
   std::vector<std::reference_wrapper<Matrix>> get_weights() {
     std::vector<std::reference_wrapper<Matrix>> weights;
@@ -120,8 +121,7 @@ public:
   void convert_to_fp16();
 
   TransformerLayer(const TransformerLayer &other)
-      : config(other.config), 
-        kv_cache(other.kv_cache),
+      : config(other.config), kv_cache(other.kv_cache),
         layer_idx(other.layer_idx) {
     if (other.self_attention) {
       self_attention =
@@ -160,9 +160,7 @@ public:
     return *this;
   }
 
-  void set_training(bool mode) {
-    training = mode;
-  }
+  void set_training(bool mode) { training = mode; }
 };
 
 class Transformer {
@@ -173,37 +171,41 @@ private:
   std::vector<std::unique_ptr<TransformerLayer>> layers;
   std::unique_ptr<LayerNorm> final_ln;
   std::unique_ptr<LanguageModelHead> lm_head;
+  std::unique_ptr<SAM> optimizer;
+  std::unique_ptr<Tokenizer> tokenizer;
   bool cuda_initialized = false;
-  
+
   // Cached states for backward pass
   Matrix hidden_states;
   Matrix last_hidden_states;
   std::vector<Matrix> m_layer_activations;
-  
+
   // KV cache for inference
   std::vector<KVCache> m_kv_caches;
-  
+
   // Optimizer state
   std::vector<Matrix> momentum_buffers;
   std::vector<Matrix> velocity_buffers;
   size_t update_step = 0;
-  
+
   // Parameter gradients
   std::optional<std::vector<Matrix>> parameter_grads;
-  
+
   // Private methods
-  Matrix compute_loss_gradients(const Matrix &logits, const std::vector<int> &targets);
-  void backward_pass(const std::vector<Matrix> &activations, const Matrix &loss_grad);
+  Matrix compute_loss_gradients(const Matrix &logits,
+                                const std::vector<int> &targets);
+  void backward_pass(const std::vector<Matrix> &activations,
+                     const Matrix &loss_grad);
   void update_parameters(float learning_rate);
-  
+
   // Get parameter gradients
-  std::vector<Matrix>& parameter_gradients() {
+  std::vector<Matrix> &parameter_gradients() {
     if (!parameter_grads.has_value()) {
       parameter_grads = std::vector<Matrix>();
       // Initialize gradients for all parameters
-      auto& params = parameters();
+      auto &params = parameters();
       parameter_grads->reserve(params.size());
-      for (const auto& param : params) {
+      for (const auto &param : params) {
         parameter_grads->emplace_back(param.rows(), param.cols(), 0.0f);
       }
     }
@@ -214,12 +216,13 @@ private:
 
 public:
   Transformer() = default;
-  explicit Transformer(const TransformerConfig &config);
+  explicit Transformer(const TransformerConfig &config,
+                      std::unique_ptr<SAM> optimizer = nullptr);
   Matrix forward(const std::vector<int> &input_tokens, bool use_cache = false);
   Matrix forward_cuda(const std::vector<int> &input_tokens,
                       bool use_cache = false);
-  void train(const std::vector<std::vector<int>> &input_tokens,
-             const std::vector<std::vector<int>> &target_tokens,
+  void train(const std::vector<std::pair<std::string, std::string>>& training_data,
+             const std::vector<std::pair<std::string, std::string>>& validation_data,
              size_t num_epochs, float learning_rate);
   void save_model(const std::string &path) const;
   static Transformer load_model(const std::string &path);
@@ -228,7 +231,7 @@ public:
                   size_t layer_idx);
   Matrix backward_cuda(const Matrix &grad, const Matrix &activation,
                        size_t layer_idx);
-  std::vector<Matrix>& parameters();
+  std::vector<Matrix> &parameters();
   void save(std::ostream &os) const;
   void load(std::istream &is);
 
@@ -259,15 +262,18 @@ public:
   Transformer(Transformer &&other) noexcept = default;
   Transformer &operator=(Transformer &&other) noexcept = default;
 
-  void backward(const Matrix &grad_output, const std::vector<int> &input_tokens, float learning_rate);
+  void backward(const Matrix &grad_output, const std::vector<int> &input_tokens,
+                float learning_rate);
 
-  const Matrix& get_hidden_states() const { return hidden_states; }
-  LanguageModelHead* get_lm_head() { return lm_head.get(); }
-  void set_lm_head(std::unique_ptr<LanguageModelHead> head) { lm_head = std::move(head); }
+  const Matrix &get_hidden_states() const { return hidden_states; }
+  LanguageModelHead *get_lm_head() { return lm_head.get(); }
+  void set_lm_head(std::unique_ptr<LanguageModelHead> head) {
+    lm_head = std::move(head);
+  }
 
-  void set_training(bool mode) { 
+  void set_training(bool mode) {
     training = mode;
-    for (auto& layer : layers) {
+    for (auto &layer : layers) {
       layer->set_training(mode);
     }
   }

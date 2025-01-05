@@ -1,10 +1,9 @@
 #include "../include/vocabulary.hpp"
 #include <algorithm>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <fstream>
 #include <unordered_set>
-
 
 Vocabulary::Vocabulary() {
   // Initialize special tokens first (guaranteed IDs)
@@ -44,64 +43,64 @@ void Vocabulary::initialize_basic_vocabulary() {
   std::vector<std::string> articles = {
       // Articles
       "a", "an", "the",
-      
+
       // Demonstrative determiners
       "this", "that", "these", "those",
-      
+
       // Possessive determiners
       "my", "your", "his", "her", "its", "our", "their",
-      
+
       // Quantifiers and other determiners
-      "all", "any", "both", "each", "every", "few", "many", "much",
-      "several", "some", "such", "no", "none", "neither", "either",
-      
+      "all", "any", "both", "each", "every", "few", "many", "much", "several",
+      "some", "such", "no", "none", "neither", "either",
+
       // Numbers as determiners
-      "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-      "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
-      
+      "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+      "ten", "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+      "eighth", "ninth", "tenth",
+
       // Other common determiners
-      "another", "other", "what", "whatever", "which", "whichever",
-      "whose", "enough", "various", "certain", "plenty", "lots", "most",
-      "least", "last", "next", "previous", "same", "certain",
-      
+      "another", "other", "what", "whatever", "which", "whichever", "whose",
+      "enough", "various", "certain", "plenty", "lots", "most", "least", "last",
+      "next", "previous", "same", "certain",
+
       // Distributive determiners
-      "each", "every", "either", "neither"
-  };
+      "each", "every", "either", "neither"};
 
   // Basic pronouns and their contractions
   std::vector<std::string> pronouns = {
-      "i",       "me",        "my",       "mine",     "myself",
-      "you",     "your",      "yours",    "yourself", "he",
-      "him",     "his",       "himself",  "she",      "her",
-      "hers",    "herself",   "it",       "its",      "itself",
-      "we",      "us",        "our",      "ours",     "ourselves",
-      "they",    "them",      "their",    "theirs",   "themselves",
-      "this",    "that",      "these",    "those",    "who",
-      "whom",    "whose",     "which",    "what",     "whatever",
-      "whoever", "whomever",  "anyone",   "everyone", "someone",
-      "nobody",  "everybody", "somebody", "anyone",   "everyone",
-      "no one",  "each",      "either",   "neither",  "many",
-      "few",     "several",   "all",      "both",     "any",
-      "some",    "oneself",   "y'all",    "youse",    "thee",
-      "thou",    "thy",       "thine",    "ye",       "yon",
+      "i",       "me",        "my",         "mine",      "myself",
+      "you",     "your",      "yours",      "yourself",  "he",
+      "him",     "his",       "himself",    "she",       "her",
+      "hers",    "herself",   "it",         "its",       "itself",
+      "we",      "us",        "our",        "ours",      "ourselves",
+      "they",    "them",      "their",      "theirs",    "themselves",
+      "this",    "that",      "these",      "those",     "who",
+      "whom",    "whose",     "which",      "what",      "whatever",
+      "whoever", "whomever",  "anyone",     "everyone",  "someone",
+      "nobody",  "everybody", "somebody",   "anyone",    "everyone",
+      "no one",  "each",      "either",     "neither",   "many",
+      "few",     "several",   "all",        "both",      "any",
+      "some",    "oneself",   "y'all",      "youse",     "thee",
+      "thou",    "thy",       "thine",      "ye",        "yon",
       "yonder",  "whichever", "whatsoever", "whosoever", "whomsoever"};
 
   // Common contractions and their variations
   std::vector<std::string> contractions = {
-      "i'm",      "i've",     "i'll",     "i'd",     "you're",    "you've",
-      "you'll",   "you'd",    "he's",     "he'll",   "he'd",      "she's",
-      "she'll",   "she'd",    "it's",     "it'll",   "it'd",      "we're",
-      "we've",    "we'll",    "we'd",     "they're", "they've",   "they'll",
-      "they'd",   "isn't",    "aren't",   "wasn't",  "weren't",   "haven't",
-      "hasn't",   "hadn't",   "doesn't",  "don't",   "didn't",    "won't",
-      "wouldn't", "can't",    "couldn't", "mustn't", "shouldn't", "mightn't",
-      "shan't",   "let's",    "that's",   "who's",   "what's",    "here's",
-      "there's",  "where's",  "when's",   "why's",   "how's",     "daren't",
-      "needn't",  "oughtn't", "ain't",    "y'all're", "y'all've", "y'all'll",
-      "ma'am",    "o'clock",  "'tis",     "'twas",   "g'day",     "y'know",
-      "d'you",    "c'mon",    "dunno",    "gonna",   "gotta",     "wanna",
-      "gimme",    "lemme",    "kinda",    "sorta",   "hafta",     "oughta",
-      "supposta", "useta",    "coulda",   "woulda",  "shoulda",   "musta"};
+      "i'm",      "i've",     "i'll",     "i'd",      "you're",    "you've",
+      "you'll",   "you'd",    "he's",     "he'll",    "he'd",      "she's",
+      "she'll",   "she'd",    "it's",     "it'll",    "it'd",      "we're",
+      "we've",    "we'll",    "we'd",     "they're",  "they've",   "they'll",
+      "they'd",   "isn't",    "aren't",   "wasn't",   "weren't",   "haven't",
+      "hasn't",   "hadn't",   "doesn't",  "don't",    "didn't",    "won't",
+      "wouldn't", "can't",    "couldn't", "mustn't",  "shouldn't", "mightn't",
+      "shan't",   "let's",    "that's",   "who's",    "what's",    "here's",
+      "there's",  "where's",  "when's",   "why's",    "how's",     "daren't",
+      "needn't",  "oughtn't", "ain't",    "y'all're", "y'all've",  "y'all'll",
+      "ma'am",    "o'clock",  "'tis",     "'twas",    "g'day",     "y'know",
+      "d'you",    "c'mon",    "dunno",    "gonna",    "gotta",     "wanna",
+      "gimme",    "lemme",    "kinda",    "sorta",    "hafta",     "oughta",
+      "supposta", "useta",    "coulda",   "woulda",   "shoulda",   "musta"};
 
   // Common verbs with all their forms
   std::vector<std::string> verbs = {
@@ -128,25 +127,23 @@ void Vocabulary::initialize_basic_vocabulary() {
       "talk", "talks", "talked", "talking", "turn", "turns", "turned",
       "turning", "show", "shows", "showed", "showing", "shown",
       // Additional verbs
-      "write", "writes", "wrote", "writing", "written", "read", "reads", "reading",
-      "sing", "sings", "sang", "singing", "sung", "dance", "dances", "danced",
-      "dancing", "play", "plays", "played", "playing", "run", "runs", "ran",
-      "running", "jump", "jumps", "jumped", "jumping", "swim", "swims", "swam",
-      "swimming", "swum", "eat", "eats", "ate", "eating", "eaten", "drink",
-      "drinks", "drank", "drinking", "drunk", "sleep", "sleeps", "slept",
-      "sleeping", "walk", "walks", "walked", "walking", "fly", "flies", "flew",
-      "flying", "flown", "draw", "draws", "drew", "drawing", "drawn",
+      "write", "writes", "wrote", "writing", "written", "read", "reads",
+      "reading", "sing", "sings", "sang", "singing", "sung", "dance", "dances",
+      "danced", "dancing", "play", "plays", "played", "playing", "run", "runs",
+      "ran", "running", "jump", "jumps", "jumped", "jumping", "swim", "swims",
+      "swam", "swimming", "swum", "eat", "eats", "ate", "eating", "eaten",
+      "drink", "drinks", "drank", "drinking", "drunk", "sleep", "sleeps",
+      "slept", "sleeping", "walk", "walks", "walked", "walking", "fly", "flies",
+      "flew", "flying", "flown", "draw", "draws", "drew", "drawing", "drawn",
       // Adding frequently occurring verbs from logs
-      "prepare", "wait", "compete", "meet", "collaborate", "repair",
-      "cook", "rush", "entertain", "hop", "code", "respond", "train",
-      "examine", "soar", "maintain", "hunt", "patrol", "meditate",
-      "consult", "study", "practice", "deploy", "serve", "rehearse",
-      "build", "analyze", "learn", "drive", "create", "gather", "sit",
-      "teach", "worship", "visit", "test", "clean", "operate", "mix",
-      "treat", "research", "counsel", "fight", "glide", "preside",
-      "rest", "settle", "pray", "organize", "file", "type", "experiment",
-      "observe", "perform", "collect", "plan"
-  };
+      "prepare", "wait", "compete", "meet", "collaborate", "repair", "cook",
+      "rush", "entertain", "hop", "code", "respond", "train", "examine", "soar",
+      "maintain", "hunt", "patrol", "meditate", "consult", "study", "practice",
+      "deploy", "serve", "rehearse", "build", "analyze", "learn", "drive",
+      "create", "gather", "sit", "teach", "worship", "visit", "test", "clean",
+      "operate", "mix", "treat", "research", "counsel", "fight", "glide",
+      "preside", "rest", "settle", "pray", "organize", "file", "type",
+      "experiment", "observe", "perform", "collect", "plan"};
 
   // Common prepositions and conjunctions
   std::vector<std::string> connectors = {
@@ -173,29 +170,25 @@ void Vocabulary::initialize_basic_vocabulary() {
 
   // Common adjectives
   std::vector<std::string> adjectives = {
-      "good",      "new",       "first",      "last",   "long",      "great",
-      "little",    "own",       "other",      "old",    "right",     "big",
-      "high",      "different", "small",      "large",  "next",      "early",
-      "young",     "important", "few",        "public", "bad",       "same",
-      "able",      "best",      "better",     "low",    "late",      "general",
-      "specific",  "certain",   "free",       "full",   "special",   "easy",
-      "clear",     "recent",    "final",      "main",   "sure",      "real",
-      "available", "local",     "particular", "hard",   "major",     "current",
-      "nice",      "happy",     "serious",    "ready",  "simple",    "possible",
-      "whole",     "short",     "private",    "past",   "beautiful", "strong",
-      "quick",     
+      "good", "new", "first", "last", "long", "great", "little", "own", "other",
+      "old", "right", "big", "high", "different", "small", "large", "next",
+      "early", "young", "important", "few", "public", "bad", "same", "able",
+      "best", "better", "low", "late", "general", "specific", "certain", "free",
+      "full", "special", "easy", "clear", "recent", "final", "main", "sure",
+      "real", "available", "local", "particular", "hard", "major", "current",
+      "nice", "happy", "serious", "ready", "simple", "possible", "whole",
+      "short", "private", "past", "beautiful", "strong", "quick",
       // Additional adjectives
-      "amazing",   "awesome",   "brilliant",  "calm",   "clever",    "colorful",
-      "creative",  "curious",   "delicate",   "eager",  "elegant",   "energetic",
-      "enormous",  "excellent", "excited",    "famous", "fantastic", "fierce",
-      "friendly",  "gentle",    "gorgeous",   "graceful", "handsome", "healthy",
-      "helpful",   "honest",    "humble",     "hungry", "innocent",  "intelligent",
-      "kind",      "lively",    "lovely",     "lucky",  "magical",   "mysterious",
-      "natural",   "patient",   "peaceful",   "perfect", "pleasant", "polite",
-      "powerful",  "proud",     "quiet",      "rare",   "reliable",  "rich",
-      "scared",    "shy",       "silly",      "smart",  "smooth",    "soft",
-      "sweet",     "talented",  "tiny",       "tough",  "unique",    "warm",
-      "wise",      "wonderful", "worried",    "young"};
+      "amazing", "awesome", "brilliant", "calm", "clever", "colorful",
+      "creative", "curious", "delicate", "eager", "elegant", "energetic",
+      "enormous", "excellent", "excited", "famous", "fantastic", "fierce",
+      "friendly", "gentle", "gorgeous", "graceful", "handsome", "healthy",
+      "helpful", "honest", "humble", "hungry", "innocent", "intelligent",
+      "kind", "lively", "lovely", "lucky", "magical", "mysterious", "natural",
+      "patient", "peaceful", "perfect", "pleasant", "polite", "powerful",
+      "proud", "quiet", "rare", "reliable", "rich", "scared", "shy", "silly",
+      "smart", "smooth", "soft", "sweet", "talented", "tiny", "tough", "unique",
+      "warm", "wise", "wonderful", "worried", "young"};
 
   // Common nouns
   std::vector<std::string> nouns_vec = {
@@ -207,10 +200,10 @@ void Vocabulary::initialize_basic_vocabulary() {
       "banker", "barber", "carpenter", "chef", "clerk", "coach", "dancer",
       "dentist", "designer", "director", "driver", "engineer", "farmer",
       "firefighter", "judge", "lawyer", "mechanic", "musician", "nurse",
-      "painter", "pilot", "plumber", "poet", "police", "professor", "programmer",
-      "reporter", "sailor", "scientist", "secretary", "singer", "soldier",
-      "surgeon", "tailor", "therapist", "trainer", "translator", "veterinarian",
-      "waiter", "writer",
+      "painter", "pilot", "plumber", "poet", "police", "professor",
+      "programmer", "reporter", "sailor", "scientist", "secretary", "singer",
+      "soldier", "surgeon", "tailor", "therapist", "trainer", "translator",
+      "veterinarian", "waiter", "writer",
 
       // Places
       "home", "house", "school", "office", "store", "hospital", "city",
@@ -227,10 +220,10 @@ void Vocabulary::initialize_basic_vocabulary() {
       "time", "day", "night", "morning", "evening", "week", "month", "year",
       "today", "tomorrow", "minute", "hour", "moment", "future", "past",
       // Additional time-related
-      "afternoon", "age", "century", "dawn", "decade", "dusk", "era", "eternity",
-      "history", "lifetime", "midnight", "millennium", "noon", "period", "present",
-      "season", "spring", "summer", "autumn", "winter", "twilight", "weekend",
-      "yesterday",
+      "afternoon", "age", "century", "dawn", "decade", "dusk", "era",
+      "eternity", "history", "lifetime", "midnight", "millennium", "noon",
+      "period", "present", "season", "spring", "summer", "autumn", "winter",
+      "twilight", "weekend", "yesterday",
 
       // Nature
       "water", "air", "earth", "fire", "sun", "moon", "star", "sky", "tree",
@@ -252,14 +245,14 @@ void Vocabulary::initialize_basic_vocabulary() {
       "battery", "bell", "blanket", "bottle", "bowl", "box", "bracelet",
       "brush", "bucket", "button", "camera", "candle", "card", "carpet",
       "clock", "coin", "compass", "crown", "cup", "curtain", "desk", "diary",
-      "dictionary", "dish", "doll", "envelope", "fan", "flag", "flask",
-      "fork", "frame", "glass", "glove", "hammer", "hat", "helmet", "knife",
-      "lamp", "lock", "magazine", "map", "medal", "mirror", "needle",
-      "newspaper", "notebook", "package", "paint", "pen", "pencil", "pillow",
-      "plate", "radio", "ribbon", "ring", "rope", "ruler", "scissors", "shelf",
-      "shoe", "soap", "spoon", "stamp", "stapler", "sword", "telescope",
-      "ticket", "tool", "torch", "toy", "umbrella", "vase", "wallet", "watch",
-      "wheel", "wire",
+      "dictionary", "dish", "doll", "envelope", "fan", "flag", "flask", "fork",
+      "frame", "glass", "glove", "hammer", "hat", "helmet", "knife", "lamp",
+      "lock", "magazine", "map", "medal", "mirror", "needle", "newspaper",
+      "notebook", "package", "paint", "pen", "pencil", "pillow", "plate",
+      "radio", "ribbon", "ring", "rope", "ruler", "scissors", "shelf", "shoe",
+      "soap", "spoon", "stamp", "stapler", "sword", "telescope", "ticket",
+      "tool", "torch", "toy", "umbrella", "vase", "wallet", "watch", "wheel",
+      "wire",
 
       // Abstract concepts
       "life", "death", "love", "hate", "peace", "war", "truth", "lie", "idea",
@@ -278,74 +271,75 @@ void Vocabulary::initialize_basic_vocabulary() {
       "growth", "guilt", "happiness", "harmony", "health", "heaven", "hell",
       "history", "honor", "humanity", "humor", "identity", "imagination",
       "independence", "infinity", "influence", "information", "innocence",
-      "inspiration", "intelligence", "interest", "intuition", "irony",
-      "joy", "justice", "kindness", "knowledge", "language", "laughter",
-      "law", "liberty", "logic", "loneliness", "loss", "luck", "luxury",
-      "magic", "meaning", "memory", "mercy", "miracle", "mystery", "nature",
-      "necessity", "need", "opportunity", "pain", "passion", "patience",
-      "perception", "perfection", "philosophy", "pleasure", "politics",
-      "possibility", "poverty", "power", "pride", "principle", "progress",
-      "promise", "prosperity", "purpose", "quality", "quantity", "question",
-      "reality", "reason", "recognition", "religion", "respect",
-      "responsibility", "revenge", "risk", "romance", "sacrifice", "safety",
-      "satisfaction", "science", "security", "self", "sense", "serenity",
-      "shame", "silence", "simplicity", "sin", "skill", "society", "solitude",
-      "sorrow", "spirit", "strength", "stress", "structure", "success",
-      "suffering", "surprise", "talent", "taste", "technology", "theory",
-      "thinking", "time", "tolerance", "tradition", "trust", "understanding",
-      "unity", "universe", "value", "victory", "violence", "virtue", "vision",
-      "wealth", "wisdom", "wonder", "work", "world", "worth", "youth",
+      "inspiration", "intelligence", "interest", "intuition", "irony", "joy",
+      "justice", "kindness", "knowledge", "language", "laughter", "law",
+      "liberty", "logic", "loneliness", "loss", "luck", "luxury", "magic",
+      "meaning", "memory", "mercy", "miracle", "mystery", "nature", "necessity",
+      "need", "opportunity", "pain", "passion", "patience", "perception",
+      "perfection", "philosophy", "pleasure", "politics", "possibility",
+      "poverty", "power", "pride", "principle", "progress", "promise",
+      "prosperity", "purpose", "quality", "quantity", "question", "reality",
+      "reason", "recognition", "religion", "respect", "responsibility",
+      "revenge", "risk", "romance", "sacrifice", "safety", "satisfaction",
+      "science", "security", "self", "sense", "serenity", "shame", "silence",
+      "simplicity", "sin", "skill", "society", "solitude", "sorrow", "spirit",
+      "strength", "stress", "structure", "success", "suffering", "surprise",
+      "talent", "taste", "technology", "theory", "thinking", "time",
+      "tolerance", "tradition", "trust", "understanding", "unity", "universe",
+      "value", "victory", "violence", "virtue", "vision", "wealth", "wisdom",
+      "wonder", "work", "world", "worth", "youth",
 
       // Adding frequently occurring nouns from logs
-      "service", "simulator", "tunnel", "briefing", "hangar", "club",
-      "hall", "space", "field", "players", "headquarters", "chamber",
-      "workspace", "facility", "meat", "comedy", "bakery", "center",
-      "tarmac", "auditorium", "bay", "ward", "pond", "wall", "ice",
-      "lab", "sanctuary", "temple", "mosque", "observatory", "academy",
-      "range", "shrine", "wine", "workshop", "chapel", "classroom",
-      "base", "records", "pharmacy", "department", "pool", "galley",
-      "rink", "track", "kitchen", "cellar", "precinct", "bar",
+      "service", "simulator", "tunnel", "briefing", "hangar", "club", "hall",
+      "space", "field", "players", "headquarters", "chamber", "workspace",
+      "facility", "meat", "comedy", "bakery", "center", "tarmac", "auditorium",
+      "bay", "ward", "pond", "wall", "ice", "lab", "sanctuary", "temple",
+      "mosque", "observatory", "academy", "range", "shrine", "wine", "workshop",
+      "chapel", "classroom", "base", "records", "pharmacy", "department",
+      "pool", "galley", "rink", "track", "kitchen", "cellar", "precinct", "bar",
       "courtroom", "conference", "meeting", "district", "mat", "cargo",
       "anteroom", "monastery", "stage", "cockpit",
 
       // Teams and groups
       "crew", "teams", "assistants", "handlers", "technicians",
-      
+
       // Facilities and rooms
       "examination", "consultation", "therapy", "radiology", "filing",
 
       // Adding missing professional and role-related nouns
-      "aircraft", "baggage", "instructor", "instructors", "aviation", "mechanic",
-      "mechanics", "controller", "controllers", "attendant", "attendants",
-      "analyst", "analysts", "researcher", "researchers", "geologist", "geologists",
-      "developer", "developers", "rescuer", "rescuers", "medic", "medics",
-      "chemist", "chemists", "designer", "designers", "therapist", "therapists",
-      "barista", "baristas", "paramedic", "paramedics", "climber", "climbers",
-      "runner", "runners", "sous", "teacher", "teachers", "biologist", "biologists",
-      "skater", "skaters", "pilgrim", "pilgrims", "attorney", "attorneys",
-      "scientist", "scientists", "ranger", "rangers", "prosecutor", "prosecutors",
-      "professor", "professors", "bartender", "bartenders", "worshipper", "worshippers",
-      "priest", "priests", "pilot", "pilots", "scholar", "scholars", "pupil", "pupils",
-      "firefighter", "firefighters", "inventor", "inventors", "officer", "officers",
-      "musician", "musicians", "astronomer", "astronomers", "programmer", "programmers",
-      "dancer", "dancers", "actor", "actors", "doctor", "doctors", "spectator",
-      "spectators", "bowler", "bowlers", "clerk", "clerks", "tutor", "tutors",
-      "baker", "bakers", "gamer", "gamers", "artist", "artists", "monk", "monks",
-      "performer", "performers", "dj", "djs", "expert", "experts", "comedian",
-      "comedians", "surgeon", "surgeons", "judge", "judges", "radiologist",
-      "radiologists", "patient", "patients", "paralegal", "paralegals", "nurse",
-      "nurses", "specialist", "specialists", "pharmacist", "pharmacists",
-      "technician", "technicians", "boxer", "boxers", "police", "dentist",
-      "dentists", "navigator", "navigators", "psychiatrist", "psychiatrists",
-      "athlete", "athletes", "swimmer", "swimmers", "player", "players", "golfer",
-      "golfers", "chef", "chefs", "sommelier", "sommeliers", "butcher", "butchers",
-      "waiter", "waiters", "guard", "guards", "believer", "believers", "mediator",
-      "mediators", "lawyer", "lawyers", "witness", "witnesses", "reporter",
-      "reporters", "physicist", "physicists",
+      "aircraft", "baggage", "instructor", "instructors", "aviation",
+      "mechanic", "mechanics", "controller", "controllers", "attendant",
+      "attendants", "analyst", "analysts", "researcher", "researchers",
+      "geologist", "geologists", "developer", "developers", "rescuer",
+      "rescuers", "medic", "medics", "chemist", "chemists", "designer",
+      "designers", "therapist", "therapists", "barista", "baristas",
+      "paramedic", "paramedics", "climber", "climbers", "runner", "runners",
+      "sous", "teacher", "teachers", "biologist", "biologists", "skater",
+      "skaters", "pilgrim", "pilgrims", "attorney", "attorneys", "scientist",
+      "scientists", "ranger", "rangers", "prosecutor", "prosecutors",
+      "professor", "professors", "bartender", "bartenders", "worshipper",
+      "worshippers", "priest", "priests", "pilot", "pilots", "scholar",
+      "scholars", "pupil", "pupils", "firefighter", "firefighters", "inventor",
+      "inventors", "officer", "officers", "musician", "musicians", "astronomer",
+      "astronomers", "programmer", "programmers", "dancer", "dancers", "actor",
+      "actors", "doctor", "doctors", "spectator", "spectators", "bowler",
+      "bowlers", "clerk", "clerks", "tutor", "tutors", "baker", "bakers",
+      "gamer", "gamers", "artist", "artists", "monk", "monks", "performer",
+      "performers", "dj", "djs", "expert", "experts", "comedian", "comedians",
+      "surgeon", "surgeons", "judge", "judges", "radiologist", "radiologists",
+      "patient", "patients", "paralegal", "paralegals", "nurse", "nurses",
+      "specialist", "specialists", "pharmacist", "pharmacists", "technician",
+      "technicians", "boxer", "boxers", "police", "dentist", "dentists",
+      "navigator", "navigators", "psychiatrist", "psychiatrists", "athlete",
+      "athletes", "swimmer", "swimmers", "player", "players", "golfer",
+      "golfers", "chef", "chefs", "sommelier", "sommeliers", "butcher",
+      "butchers", "waiter", "waiters", "guard", "guards", "believer",
+      "believers", "mediator", "mediators", "lawyer", "lawyers", "witness",
+      "witnesses", "reporter", "reporters", "physicist", "physicists",
 
       // Adding missing animal-related nouns
-      "duck", "ducks", "bird", "birds", "wolf", "wolves", "bear", "fish",
-      "dog", "rabbit", "rabbits", "eagle", "eagles", "lion", "cat",
+      "duck", "ducks", "bird", "birds", "wolf", "wolves", "bear", "fish", "dog",
+      "rabbit", "rabbits", "eagle", "eagles", "lion", "cat",
 
       // Adding missing place and facility-related nouns
       "seminary", "concert", "tournament", "alley", "patisserie",
@@ -359,12 +353,11 @@ void Vocabulary::initialize_basic_vocabulary() {
 
       // Adding missing specialized terms
       "air", "flight", "data", "defense", "ground", "legal", "operating",
-      "dressing", "chambers"
-  };
+      "dressing", "chambers"};
 
   // Store nouns in the set for quick lookup
-  for (const auto& noun : nouns_vec) {
-      nouns.insert(noun);
+  for (const auto &noun : nouns_vec) {
+    nouns.insert(noun);
   }
 
   // Add all words to vocabulary
@@ -434,14 +427,14 @@ bool Vocabulary::verify_mappings() const {
   return valid;
 }
 
-bool Vocabulary::is_noun(const std::string& token) const {
-    return nouns.find(token) != nouns.end();
+bool Vocabulary::is_noun(const std::string &token) const {
+  return nouns.find(token) != nouns.end();
 }
 
-void Vocabulary::load_nouns(const std::string& noun_file_path) {
-    std::ifstream file(noun_file_path);
-    std::string line;
-    while (std::getline(file, line)) {
-        nouns.insert(line);
-    }
+void Vocabulary::load_nouns(const std::string &noun_file_path) {
+  std::ifstream file(noun_file_path);
+  std::string line;
+  while (std::getline(file, line)) {
+    nouns.insert(line);
+  }
 }

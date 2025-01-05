@@ -1,9 +1,9 @@
 #pragma once
 #include "matrix.hpp"
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <vector>
-#include <functional>
 
 // Forward declarations
 class TokenEmbedding;
@@ -46,15 +46,16 @@ public:
     auto end() const { return matrices.end(); }
   };
 
-  Parameters& parameters() {
+  Parameters &parameters() {
     params_.matrices.clear();
     params_.matrices.emplace_back(weights_);
     return params_;
   }
 
-  const Parameters& parameter_gradients() const {
+  const Parameters &parameter_gradients() const {
     param_gradients_.matrices.clear();
-    param_gradients_.matrices.emplace_back(std::ref(const_cast<Matrix&>(weights_grad_)));
+    param_gradients_.matrices.emplace_back(
+        std::ref(const_cast<Matrix &>(weights_grad_)));
     return param_gradients_;
   }
 
@@ -91,7 +92,7 @@ public:
   size_t get_max_seq_length() const { return max_seq_length_; }
   size_t get_hidden_size() const { return hidden_size_; }
 
-  std::vector<std::reference_wrapper<Matrix>>& parameters() {
+  std::vector<std::reference_wrapper<Matrix>> &parameters() {
     static std::vector<std::reference_wrapper<Matrix>> params;
     params.clear();
     params.emplace_back(encoding_matrix_);

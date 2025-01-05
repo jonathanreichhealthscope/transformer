@@ -1,8 +1,8 @@
 #pragma once
 #include <string>
 #include <unordered_map>
-#include <vector>
 #include <unordered_set>
+#include <vector>
 
 class Vocabulary {
 private:
@@ -33,10 +33,10 @@ public:
   void print_vocabulary_mappings() const;
   bool verify_mappings() const;
 
-  bool has_token(const std::string& token) const {
-      return token_to_id.find(token) != token_to_id.end();
+  bool has_token(const std::string &token) const {
+    return token_to_id.find(token) != token_to_id.end();
   }
 
-  bool is_noun(const std::string& token) const;
-  void load_nouns(const std::string& noun_file_path);
+  bool is_noun(const std::string &token) const;
+  void load_nouns(const std::string &noun_file_path);
 };
