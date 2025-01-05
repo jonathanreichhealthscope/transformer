@@ -1,4 +1,5 @@
 #include "../include/attention.hpp"
+#include "../include/gqa.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -139,6 +140,16 @@ Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
 Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                  const std::optional<KVCache> &kv_cache) {
     metrics.start_timer("attention_computation");
+    
+    // Use GQA if enabled
+    if (use_gqa && num_kv_heads != num_heads) {
+        std::cout << "Using Grouped Query Attention" << std::endl;
+        GroupedQueryAttention gqa(hidden_size, num_heads, num_kv_heads,
+                                head_dim, dropout_prob);
+        return gqa.forward(x, mask, kv_cache);
+    }
+    
+    // Regular attention implementation continues...
     std::cout << "=== MultiHeadAttention::forward START ===" << std::endl;
     std::cout << "Input shape: " << x.rows() << "x" << x.cols() << std::endl;
     

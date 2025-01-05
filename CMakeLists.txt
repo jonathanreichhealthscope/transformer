@@ -56,6 +56,7 @@ set(CORE_SOURCES
     src/gradient_checkpoint.cpp
     src/utils.cpp
     src/performance_metrics.cpp
+    src/gqa.cpp
 )
 
 # Neural network components
