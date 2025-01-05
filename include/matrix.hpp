@@ -1,4 +1,7 @@
 #pragma once
+#ifdef CUDA_AVAILABLE
+#include <cuda_runtime.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -21,6 +24,10 @@ private:
   size_t cols_;
   std::tuple<size_t, size_t> shape_;
   bool owns_data_ = true;
+  #ifdef CUDA_AVAILABLE
+  float* gpu_data_ = nullptr;
+  bool is_on_gpu_ = false;
+  #endif
 
 public:
   // Constructor declarations only
@@ -40,10 +47,17 @@ public:
   bool empty() const { return data_.empty(); }
   
   // Data access
-  float *data() { return data_.data(); }
-  const float *data() const { return data_.data(); }
   float min() const { return *std::min_element(data_.begin(), data_.end()); }
   float max() const { return *std::max_element(data_.begin(), data_.end()); }
+
+  // Single unified data access method
+  #ifdef CUDA_AVAILABLE
+  const float* get_data() const { return is_on_gpu_ ? gpu_data_ : data_.data(); }
+  float* get_data() { return is_on_gpu_ ? gpu_data_ : data_.data(); }
+  #else
+  const float* get_data() const { return data_.data(); }
+  float* get_data() { return data_.data(); }
+  #endif
 
   // Matrix operations declarations
   void resize(size_t new_rows, size_t new_cols);
@@ -96,7 +110,22 @@ public:
   }
 
   // Only declare copy constructor and assignment operator
-  Matrix(const Matrix& other);  // Declaration only
+  Matrix(const Matrix& other) {
+      data_ = other.data_;
+      rows_ = other.rows_;
+      cols_ = other.cols_;
+      shape_ = other.shape_;
+      owns_data_ = other.owns_data_;
+      #ifdef CUDA_AVAILABLE
+      if (other.is_on_gpu_) {
+          cudaMalloc(&gpu_data_, data_.size() * sizeof(float));
+          cudaMemcpy(gpu_data_, other.gpu_data_,
+                    data_.size() * sizeof(float), cudaMemcpyDeviceToDevice);
+          is_on_gpu_ = true;
+      }
+      #endif
+  }
+
   Matrix& operator=(const Matrix& other);  // Declaration only
 
   // Move operations - full implementation
@@ -127,6 +156,53 @@ public:
           other.owns_data_ = false;
       }
       return *this;
+  }
+
+  #ifdef CUDA_AVAILABLE
+  Matrix to_gpu() const {
+      Matrix gpu_matrix = *this;
+      if (!gpu_matrix.is_on_gpu_) {
+          cudaError_t err;
+          err = cudaMalloc(&gpu_matrix.gpu_data_, data_.size() * sizeof(float));
+          if (err != cudaSuccess) {
+              throw std::runtime_error("CUDA malloc failed: " + 
+                  std::string(cudaGetErrorString(err)));
+          }
+          
+          err = cudaMemcpy(gpu_matrix.gpu_data_, data_.data(), 
+                        data_.size() * sizeof(float), cudaMemcpyHostToDevice);
+          if (err != cudaSuccess) {
+              cudaFree(gpu_matrix.gpu_data_);
+              throw std::runtime_error("CUDA memcpy H2D failed: " + 
+                  std::string(cudaGetErrorString(err)));
+          }
+          gpu_matrix.is_on_gpu_ = true;
+      }
+      return gpu_matrix;
+  }
+
+  Matrix to_cpu() const {
+      if (!is_on_gpu_) return *this;
+      Matrix cpu_matrix = *this;
+      cudaMemcpy(cpu_matrix.data_.data(), gpu_data_,
+                data_.size() * sizeof(float), cudaMemcpyDeviceToHost);
+      return cpu_matrix;
+  }
+
+  const float* data() const { return is_on_gpu_ ? gpu_data_ : data_.data(); }
+  float* data() { return is_on_gpu_ ? gpu_data_ : data_.data(); }
+  #else
+  const float* data() const { return data_.data(); }
+  float* data() { return data_.data(); }
+  #endif
+
+  ~Matrix() {
+      #ifdef CUDA_AVAILABLE
+      if (gpu_data_ != nullptr) {
+          cudaFree(gpu_data_);
+          gpu_data_ = nullptr;
+      }
+      #endif
   }
 };
 

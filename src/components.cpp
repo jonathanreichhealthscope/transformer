@@ -51,27 +51,6 @@ Matrix::Matrix(size_t rows, size_t cols, float* external_data, bool is_owner)
       shape_(std::make_tuple(rows, cols)),
       owns_data_(is_owner) {}
 
-Matrix::Matrix(const Matrix& other) {
-  if (other.empty()) {
-    rows_ = 0;
-    cols_ = 0;
-    shape_ = std::make_tuple(0, 0);
-    owns_data_ = true;
-    return;
-  }
-  
-  try {
-    data_.resize(other.data_.size());
-    std::copy(other.data_.begin(), other.data_.end(), data_.begin());
-    rows_ = other.rows_;
-    cols_ = other.cols_;
-    shape_ = other.shape_;
-    owns_data_ = true;
-  } catch (const std::exception& e) {
-    throw std::runtime_error("Failed to copy matrix: " + std::string(e.what()));
-  }
-}
-
 Matrix& Matrix::operator=(const Matrix& other) {
   if (this != &other) {
     if (other.empty()) {

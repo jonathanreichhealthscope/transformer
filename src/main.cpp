@@ -42,7 +42,15 @@ int main(int argc, char *argv[]) {
         std::srand(static_cast<unsigned int>(std::time(nullptr)));
 
 #ifdef CUDA_AVAILABLE
-        initialize_cuda();
+        // Initialize CUDA
+        if (cudaSetDevice(0) != cudaSuccess) {
+            std::cerr << "Failed to initialize CUDA device" << std::endl;
+            return 1;
+        }
+        
+        // Create CUDA stream
+        cudaStream_t stream;
+        cudaStreamCreate(&stream);
 #endif
         // Initialize tokenizer first to get vocab size
         tokenizer = std::make_unique<Tokenizer>();
@@ -102,14 +110,13 @@ int main(int argc, char *argv[]) {
         std::cout << "\n=== Full Vocabulary Mapping ===\n";
         tokenizer->print_vocabulary_mappings();
         std::cout << "\n";
-
         // Training parameters
-        const size_t checkpoint_frequency = 2; // Save checkpoint every 2 epochs
+        const size_t checkpoint_frequency = config.paths.checkpoint_frequency; // Save checkpoint every 2 epochs
 
         // Initialize model saver
         ModelSaver model_saver;
-        std::string save_directory = "models";
-        std::string model_name = "transformer_model";
+        std::string save_directory = config.paths.save_directory;
+        std::string model_name = config.paths.model_name;
 
         // Training loop
         size_t global_step = 0;  // Move outside epoch loop

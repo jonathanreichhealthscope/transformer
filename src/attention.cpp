@@ -1,5 +1,6 @@
 #include "../include/attention.hpp"
 #include "../include/gqa.hpp"
+#include "../include/cuda/cuda_utils.cuh"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -14,7 +15,6 @@ Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
   std::cout << "\n=== MultiHeadAttention::apply_rope START ===" << std::endl;
   Vector result = x;
   // Apply rotary position embeddings
-  std::cout << "Applying rotary embeddings..." << std::endl;
   for (size_t i = 0; i < x.size(); i += 2) {
     if (i + 1 >= x.size()) {
       std::cout << "Breaking at i=" << i << " (odd size)" << std::endl;
@@ -51,8 +51,8 @@ Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
 }
 
 Matrix MultiHeadAttention::flash_attention(const Matrix &Q, const Matrix &K,
-                                           const Matrix &V,
-                                           const AttentionMask &mask) const {
+                                         const Matrix &V,
+                                         const AttentionMask &mask) const {
     std::cout << "\n=== MultiHeadAttention::flash_attention START ===" << std::endl;
     const size_t seq_len = Q.rows();
     const size_t head_dim = Q.cols();
@@ -169,9 +169,46 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     std::cout << "- head_dim: " << head_dim << std::endl;
     
     // Project input to Q, K, V
-    Matrix Q = matmul(x, query_proj);  // Shape: (batch_size * seq_len, hidden_size)
-    Matrix K = matmul(x, key_proj);    // Shape: (batch_size * seq_len, hidden_size)
-    Matrix V = matmul(x, value_proj);  // Shape: (batch_size * seq_len, hidden_size)
+    #ifdef CUDA_AVAILABLE
+    std::cout << "\n=== CUDA EXECUTION PATH ===" << std::endl;
+    std::cout << "CUDA is available and will be used for matrix operations" << std::endl;
+    // Move matrices to GPU
+    std::cout << "Moving matrices to GPU..." << std::endl;
+    Matrix Q, K, V;
+    try {
+        Matrix x_gpu = x.to_gpu();
+        std::cout << "x moved to GPU successfully" << std::endl;
+        Matrix query_proj_gpu = query_proj.to_gpu();
+        std::cout << "query_proj moved to GPU successfully" << std::endl;
+        Matrix key_proj_gpu = key_proj.to_gpu();
+        std::cout << "key_proj moved to GPU successfully" << std::endl;
+        Matrix value_proj_gpu = value_proj.to_gpu();
+        std::cout << "value_proj moved to GPU successfully" << std::endl;
+        
+        // Project input using CUDA
+        std::cout << "Performing CUDA matrix multiplications..." << std::endl;
+        Q = cuda_matmul(x_gpu, query_proj_gpu);
+        std::cout << "Q computation successful" << std::endl;
+        K = cuda_matmul(x_gpu, key_proj_gpu);
+        std::cout << "K computation successful" << std::endl;
+        V = cuda_matmul(x_gpu, value_proj_gpu);
+        std::cout << "V computation successful" << std::endl;
+        std::cout << "=== CUDA operations completed successfully ===" << std::endl;
+    } catch (const std::runtime_error& e) {
+        std::cout << "\n=== CUDA EXECUTION FAILED - Falling back to CPU ===" << std::endl;
+        std::cerr << "CUDA error: " << e.what() << std::endl;
+        std::cerr << "Falling back to CPU implementation" << std::endl;
+        // Fall back to CPU implementation
+        Q = matmul(x, query_proj);
+        K = matmul(x, key_proj);
+        V = matmul(x, value_proj);
+    }
+    #else
+    // CPU fallback
+    Matrix Q = matmul(x, query_proj);
+    Matrix K = matmul(x, key_proj);
+    Matrix V = matmul(x, value_proj);
+    #endif
     
     // Handle KV cache if present
     if (kv_cache) {

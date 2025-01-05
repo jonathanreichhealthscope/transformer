@@ -101,6 +101,14 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         config.dropout_rate = training["dropout_rate"];
         config.weight_decay = training["weight_decay"];
         
+        // Parse paths
+        if (j.contains("paths")) {
+            auto& paths = j["paths"];
+            config.paths.save_directory = paths["save_directory"];
+            config.paths.model_name = paths["model_name"];
+            config.paths.checkpoint_frequency = paths["checkpoint_frequency"];
+        }
+        
         // Parse attention settings
         auto& attention = j["attention"];
         config.use_flash_attention = attention["use_flash_attention"];
@@ -125,7 +133,6 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         
         // Parse optimization settings
         auto& optimization = j["optimization"];
-        config.use_cuda = optimization["use_cuda"];
         config.use_fp16 = optimization["use_fp16"];
         config.use_gradient_checkpointing = optimization["use_gradient_checkpointing"];
         config.memory_pool_size = optimization["memory_pool_size"];

@@ -33,7 +33,6 @@ public:
   size_t window_size;
   bool use_gqa;
   size_t num_kv_heads;
-  bool use_cuda;
   bool use_fp16;
   bool use_gradient_checkpointing;
   size_t memory_pool_size;
@@ -41,6 +40,11 @@ public:
   size_t num_epochs;
   float dropout_rate;
   float weight_decay;
+  struct {
+    std::string save_directory;
+    std::string model_name;
+    size_t checkpoint_frequency;
+  } paths;
 
   TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
                     size_t hidden_size = 768, size_t num_layers = 12,
