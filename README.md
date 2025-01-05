@@ -110,4 +110,4 @@ The configuration is done in the `config/transformer_config.json` file.
 ## Limitations
 
 - The model training is performed on a very small dataset, so its predictions are certainly sub-optimal, given its constraints.
-- It only works on a format that follows the training data i.e I like to cook in the |kitchen (| is the delimiter).
+- It only works on a format that follows the training data i.e I like to cook in the |kitchen (where `|` is the delimiter).
