@@ -1,78 +1,109 @@
 #include "../include/logger.hpp"
 #include <chrono>
+#include <filesystem>
 
 std::unique_ptr<Logger> Logger::instance = nullptr;
 
-Logger::Logger() {
-  // Don't open the file in constructor - wait for startLogging()
-  cout_buffer = nullptr;
-  cerr_buffer = nullptr;
+Logger::Logger() : logging_enabled(false), cout_buffer(nullptr), cerr_buffer(nullptr) {
+    // Initialize in constructor
 }
 
 Logger::~Logger() {
-  if (log_file.is_open()) {
-    stopLogging();
-    log_file.close();
-  }
+    if (logging_enabled) {
+        stopLogging();
+    }
 }
 
-Logger &Logger::getInstance() {
-  if (!instance) {
-    instance = std::unique_ptr<Logger>(new Logger());
-  }
-  return *instance;
+Logger& Logger::getInstance() {
+    if (!instance) {
+        instance = std::unique_ptr<Logger>(new Logger());
+    }
+    return *instance;
 }
 
-void Logger::startLogging() {
-  // Close the file if it's already open
-  if (log_file.is_open()) {
-    log_file.close();
-  }
+void Logger::startLogging(const std::string& file_path) {
+    if (logging_enabled) {
+        stopLogging();
+    }
 
-  // Delete the existing log file if it exists
-  std::remove("transformer.log");
+    log_file_path = file_path;
 
-  // Open a new file, truncating any existing content
-  log_file.open("transformer.log", std::ios::out | std::ios::trunc);
-  if (!log_file.is_open()) {
-    std::cerr << "Failed to open log file" << std::endl;
-    return;
-  }
+    // Create directories if they don't exist
+    std::filesystem::path path(file_path);
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
 
-  // Start capturing cout
-  auto old_cout_buf = std::cout.rdbuf();
-  std::cout.rdbuf(log_file.rdbuf());
+    // Open log file
+    log_file.open(file_path, std::ios::out | std::ios::trunc);
+    if (!log_file.is_open()) {
+        std::cerr << "Failed to open log file: " << file_path << std::endl;
+        return;
+    }
 
-  // Log start time
-  auto now = std::chrono::system_clock::now();
-  auto time = std::chrono::system_clock::to_time_t(now);
-  log_file << "=== Logging started at " << std::ctime(&time)
-           << "===" << std::endl;
+    // Store and redirect cout buffer
+    cout_buffer = std::cout.rdbuf();
+    std::cout.rdbuf(log_file.rdbuf());
+
+    // Store and redirect cerr buffer
+    cerr_buffer = std::cerr.rdbuf();
+    std::cerr.rdbuf(log_file.rdbuf());
+
+    logging_enabled = true;
+
+    // Log start time
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    log_file << "=== Logging started at " << std::ctime(&time) << "===" << std::endl;
 }
 
 void Logger::stopLogging() {
-  // Restore the original buffers
-  if (cout_buffer) {
-    std::cout.rdbuf(cout_buffer);
-    cout_buffer = nullptr;
-  }
-  if (cerr_buffer) {
-    std::cerr.rdbuf(cerr_buffer);
-    cerr_buffer = nullptr;
-  }
+    if (!logging_enabled) {
+        return;
+    }
 
-  time_t now = time(nullptr);
-  log_file << "\n=== Logging stopped at " << ctime(&now) << "===\n";
+    // Log stop time
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    log_file << "\n=== Logging stopped at " << std::ctime(&time) << "===" << std::endl;
+
+    // Restore cout buffer
+    if (cout_buffer) {
+        std::cout.rdbuf(cout_buffer);
+        cout_buffer = nullptr;
+    }
+
+    // Restore cerr buffer
+    if (cerr_buffer) {
+        std::cerr.rdbuf(cerr_buffer);
+        cerr_buffer = nullptr;
+    }
+
+    // Close log file
+    if (log_file.is_open()) {
+        log_file.close();
+    }
+
+    logging_enabled = false;
 }
 
-void Logger::log(const std::string &message, bool is_error) {
-  if (!logging_enabled)
-    return;
+void Logger::disableLogging() {
+    if (logging_enabled) {
+        stopLogging();
+    }
+    logging_enabled = false;
+}
 
-  time_t now = time(nullptr);
-  std::string timestamp(ctime(&now));
-  timestamp = timestamp.substr(0, timestamp.length() - 1);
+void Logger::log(const std::string& message, bool is_error) {
+    if (!logging_enabled) {
+        return;
+    }
 
-  log_file << "[" << timestamp << "] " << (is_error ? "ERROR: " : "INFO: ")
-           << message << std::endl;
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    std::string timestamp(std::ctime(&time));
+    timestamp = timestamp.substr(0, timestamp.length() - 1); // Remove trailing newline
+
+    log_file << "[" << timestamp << "] " << (is_error ? "ERROR: " : "INFO: ") 
+             << message << std::endl;
 }

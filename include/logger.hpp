@@ -12,7 +12,8 @@ private:
   std::ofstream log_file;
   std::streambuf *cout_buffer;
   std::streambuf *cerr_buffer;
-  bool logging_enabled = false;
+  bool logging_enabled;
+  std::string log_file_path;
 
   static std::unique_ptr<Logger> instance;
   Logger(); // Private constructor for singleton
@@ -20,10 +21,12 @@ private:
 public:
   static Logger &getInstance();
 
-  void startLogging();
+  void startLogging(const std::string &file_path = "transformer.log");
   void stopLogging();
   void log(const std::string &message, bool is_error = false);
-  void disableLogging() { logging_enabled = false; }
+  bool isLoggingEnabled() const { return logging_enabled; }
+  void disableLogging();
+  void enableLogging() { logging_enabled = true; }
 
   // Prevent copying and assignment
   Logger(const Logger &) = delete;

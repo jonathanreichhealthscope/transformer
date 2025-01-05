@@ -271,58 +271,116 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
 
 float Utils::evaluate_validation(Transformer& transformer, const Tokenizer& tokenizer,
                                 const std::vector<std::pair<std::string, std::string>>& validation_data) {
+    std::cout << "\n=== Evaluating Validation Data ===\n";
+    
     float total_loss = 0.0f;
     size_t correct_predictions = 0;
     size_t total_predictions = 0;
+
+    // Validate we have data to process
+    if (validation_data.empty()) {
+        std::cout << "Warning: Empty validation data\n";
+        return 0.0f;
+    }
 
     transformer.set_training(false);  // Set model to evaluation mode
 
     for (const auto& pair : validation_data) {
         // Preprocess input
         std::string processed_input = pair.first;
+        std::cout << "Processing input: '" << processed_input << "'\n";
         tokenizer.preprocess_text(processed_input);
-        std::vector<int> input_tokens = tokenizer.encode(processed_input);
-
-        // Get model prediction
-        Matrix output = transformer.forward(input_tokens);
-        Matrix logits = transformer.get_lm_head()->forward(output);
-
-        // Get target
-        std::string processed_target = pair.second;
-        tokenizer.preprocess_text(processed_target);
-        std::vector<int> target_tokens = tokenizer.encode(processed_target);
-
-        // Create target distribution
-        Matrix target_distribution(1, tokenizer.vocab_size(), 0.0f);
-        if (!target_tokens.empty()) {
-            target_distribution(0, target_tokens.back()) = 1.0f;
-        }
-
-        // Compute loss
-        float loss = compute_batch_loss(logits, target_distribution);
-        total_loss += loss;
-
-        // Check if prediction matches target
-        std::vector<float> last_logits;
-        for (size_t i = 0; i < logits.cols(); ++i) {
-            last_logits.push_back(logits(logits.rows() - 1, i));
-        }
-        int predicted_token = std::max_element(last_logits.begin(), last_logits.end()) - last_logits.begin();
+        std::cout << "Preprocessed input: '" << processed_input << "'\n";
         
-        if (!target_tokens.empty() && predicted_token == target_tokens.back()) {
-            correct_predictions++;
+        std::vector<int> input_tokens = tokenizer.encode(processed_input);
+        std::cout << "Encoded input tokens: ";
+        for (int token : input_tokens) {
+            std::cout << token << " ";
         }
-        total_predictions++;
-    }
+        std::cout << "\n";
+        
+        // Skip empty sequences
+        if (input_tokens.empty()) {
+            std::cout << "Warning: Empty input tokens, skipping\n";
+            continue;
+        }
 
-    transformer.set_training(true);  // Set model back to training mode
-    
-    float accuracy = static_cast<float>(correct_predictions) / total_predictions;
-    float avg_loss = total_loss / validation_data.size();
-    
-    std::cout << "\nValidation Results:\n"
-              << "Average Loss: " << avg_loss << "\n"
-              << "Accuracy: " << (accuracy * 100.0f) << "%\n";
-    
-    return avg_loss;
+        // Validate input tokens
+        if (!Utils::validate_input_sequence(input_tokens, tokenizer.vocab_size())) {
+            std::cout << "Warning: Invalid input sequence, skipping\n";
+            continue;
+        }
+
+        try {
+            // Get model prediction
+            std::cout << "Calling transformer.forward with " << input_tokens.size() << " tokens\n";
+            Matrix output = transformer.forward(input_tokens);
+            std::cout << "Forward pass output shape: " << output.rows() << "x" << output.cols() << "\n";
+
+            if (output.rows() == 0 || output.cols() == 0) {
+                std::cout << "Warning: Empty output from transformer, skipping\n";
+                continue;
+            }
+
+            auto lm_head = transformer.get_lm_head();
+            if (!lm_head) {
+                std::cout << "Error: Null language model head\n";
+                continue;
+            }
+
+            Matrix logits = lm_head->forward(output);
+            std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
+
+            // Ensure we have valid output dimensions
+            if (logits.rows() == 0 || logits.cols() != tokenizer.vocab_size()) {
+                continue;
+            }
+            std::cout << "\n=== get target ===\n";
+            // Get target
+            std::string processed_target = pair.second;
+            tokenizer.preprocess_text(processed_target);
+            std::cout <<"encode target" << std::endl;
+            std::vector<int> target_tokens = tokenizer.encode(processed_target);
+            std::cout << "target tokens: " << target_tokens.size() << std::endl;
+            // Create target distribution
+            Matrix target_distribution(1, tokenizer.vocab_size(), 0.0f);
+            if (!target_tokens.empty()) {
+                target_distribution(0, target_tokens.back()) = 1.0f;
+            }
+            std::cout << "target distribution: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
+            // Compute loss using only the last token's prediction
+            Matrix last_token_logits(1, logits.cols());
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                last_token_logits(0, i) = logits(logits.rows() - 1, i);
+            }
+            std::cout << "last token logits: " << last_token_logits.rows() << "x" << last_token_logits.cols() << std::endl;
+            float loss = compute_batch_loss(last_token_logits, target_distribution);
+            total_loss += loss;
+
+            // Check if prediction matches target
+            int predicted_token = -1;
+            float max_logit = -std::numeric_limits<float>::infinity();
+            std::cout << "iterating through logits" << std::endl;
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                float val = logits(logits.rows() - 1, i);
+                if (val > max_logit) {
+                    max_logit = val;
+                    predicted_token = i;
+                }
+            }
+            std::cout << "predicted token: " << predicted_token << std::endl;
+
+            if (!target_tokens.empty() && predicted_token == target_tokens.back()) {
+                correct_predictions++;
+            }
+            total_predictions++;
+        } catch (const std::exception& e) {
+            std::cout << "Error evaluating validation: " << e.what() << "\n";
+        }
+    }
+    std::cout << "total loss: " << total_loss << std::endl;
+    std::cout << "total predictions: " << total_predictions << std::endl;
+    std::cout << "correct predictions: " << correct_predictions << std::endl;
+    transformer.set_training(true);  // Reset to training mode
+    return total_predictions > 0 ? total_loss / total_predictions : 0.0f;
 } 

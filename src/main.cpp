@@ -44,7 +44,7 @@ int main(int argc, char *argv[]) {
         initialize_cuda();
 #endif
         // Initialize tokenizer first to get vocab size
-        auto tokenizer = std::make_unique<Tokenizer>();
+        tokenizer = std::make_unique<Tokenizer>();
         tokenizer->print_vocabulary_mappings(); // Print initial mappings
         tokenizer->clear_cache();  // We need to add this method to Tokenizer class
         
