@@ -15,7 +15,6 @@ Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
   std::cout << "\n=== MultiHeadAttention::apply_rope START ===" << std::endl;
   Vector result = x;
   // Apply rotary position embeddings
-  std::cout << "Applying rotary embeddings..." << std::endl;
   for (size_t i = 0; i < x.size(); i += 2) {
     if (i + 1 >= x.size()) {
       std::cout << "Breaking at i=" << i << " (odd size)" << std::endl;
