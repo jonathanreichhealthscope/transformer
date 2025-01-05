@@ -5,17 +5,13 @@
 #include <string>
 #include "attention.hpp"
 #include "../include/performance_metrics.hpp"
+#include "../include/transformer.hpp"
 
 extern PerformanceMetrics metrics;
 
 Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
   std::cout << "\n=== MultiHeadAttention::apply_rope START ===" << std::endl;
-  std::cout << "Input vector size: " << x.size() << std::endl;
-  std::cout << "Position: " << position << std::endl;
-
   Vector result = x;
-  std::cout << "Created result vector" << std::endl;
-
   // Apply rotary position embeddings
   std::cout << "Applying rotary embeddings..." << std::endl;
   for (size_t i = 0; i < x.size(); i += 2) {
@@ -27,11 +23,26 @@ Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
     float x_i = x[i];
     float x_i1 = x[i + 1];
 
-    float cos_theta = cos_cached(position, i / 2);
-    float sin_theta = sin_cached(position, i / 2);
+    // Each pair of elements belongs to a specific head and position within that head
+    size_t pair_idx = i/2;                    // Index of the current pair
+    size_t head_idx = pair_idx / (head_dim/2);  // Which head (using half head_dim since we process pairs)
+    size_t dim_idx = pair_idx % (head_dim/2);   // Position within head (using half head_dim)
+    size_t cache_idx = head_idx * head_dim + dim_idx;  // Correct: direct mapping to cache
+    
+    try {
+      float cos_theta = get_cos_cached(position, cache_idx);
+      float sin_theta = get_sin_cached(position, cache_idx);
 
-    result[i] = x_i * cos_theta - x_i1 * sin_theta;
-    result[i + 1] = x_i * sin_theta + x_i1 * cos_theta;
+      result[i] = x_i * cos_theta - x_i1 * sin_theta;
+      result[i + 1] = x_i * sin_theta + x_i1 * cos_theta;
+    } catch (const std::exception& e) {
+      std::cout << "Error in RoPE application:" << std::endl;
+      std::cout << "- Error message: " << e.what() << std::endl;
+      std::cout << "- Current indices: pos=" << position 
+                << ", cache_idx=" << cache_idx 
+                << ", i=" << i << std::endl;
+      throw;
+    }
   }
 
   std::cout << "=== MultiHeadAttention::apply_rope END ===\n" << std::endl;
@@ -146,6 +157,44 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     Matrix K = matmul(x, key_proj);    // Shape: (batch_size * seq_len, hidden_size)
     Matrix V = matmul(x, value_proj);  // Shape: (batch_size * seq_len, hidden_size)
     
+    // Apply RoPE to Q and K if enabled
+    if (use_rope) {
+        // Check dimensions before applying RoPE
+        if (Q.cols() % 2 != 0) {
+            throw std::runtime_error("RoPE requires even dimension size, got: " + std::to_string(Q.cols()));
+        }
+        
+        // Apply RoPE to each position in the sequence
+        for (size_t pos = 0; pos < seq_len; pos++) {
+            for (size_t b = 0; b < batch_size; b++) {
+                size_t idx = b * seq_len + pos;
+                // Bounds check
+                if (idx >= Q.rows()) {
+                    throw std::runtime_error("RoPE index out of bounds: " + std::to_string(idx) + 
+                                           " >= " + std::to_string(Q.rows()));
+                }
+                
+                // Get row vectors for Q and K
+                Vector q_row(Q.cols());
+                Vector k_row(K.cols());
+                for (size_t j = 0; j < Q.cols(); j++) {
+                    q_row[j] = Q(idx, j);
+                    k_row[j] = K(idx, j);
+                }
+                
+                // Apply RoPE
+                Vector q_rotated = apply_rope(q_row, pos);
+                Vector k_rotated = apply_rope(k_row, pos);
+                
+                // Update matrices with rotated vectors
+                for (size_t j = 0; j < Q.cols(); j++) {
+                    Q(idx, j) = q_rotated[j];
+                    K(idx, j) = k_rotated[j];
+                }
+            }
+        }
+    }
+    
     std::cout << "Q shape: " << Q.rows() << "x" << Q.cols() << std::endl;
     std::cout << "K shape: " << K.rows() << "x" << K.cols() << std::endl;
     std::cout << "V shape: " << V.rows() << "x" << V.cols() << std::endl;
@@ -165,12 +214,29 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     // Project output
     Matrix output = matmul(attention_output, output_proj);
     std::cout << "Final output shape: " << output.rows() << "x" << output.cols() << std::endl;
-    
-    metrics.record_attention_flops(seq_len, num_heads, head_dim);
-    metrics.stop_timer("attention_computation");
-    
     std::cout << "=== MultiHeadAttention::forward END ===" << std::endl;
-    return output;
+    
+    try {
+        std::cout << "Recording attention metrics:" << std::endl;
+        std::cout << "- seq_len: " << seq_len << std::endl;
+        std::cout << "- num_heads: " << num_heads << std::endl;
+        std::cout << "- head_dim: " << head_dim << std::endl;
+        std::cout << "Recording FLOPS..." << std::endl;
+        metrics.record_attention_flops(seq_len, num_heads, head_dim);
+        std::cout << "Stopping timer..." << std::endl;
+        metrics.stop_timer("attention_computation");
+        std::cout << "Successfully recorded metrics" << std::endl;
+        
+        std::cout << "Moving output matrix..." << std::endl;
+        return std::move(output);  // Explicit move
+    } catch (const std::exception& e) {
+        std::cout << "Error after forward pass:" << std::endl;
+        std::cout << "- Error message: " << e.what() << std::endl;
+        std::cout << "- seq_len: " << seq_len << std::endl;
+        std::cout << "- num_heads: " << num_heads << std::endl;
+        std::cout << "- head_dim: " << head_dim << std::endl;
+        throw;
+    }
 }
 
 void MultiHeadAttention::save(std::ostream &os) const {
@@ -197,7 +263,7 @@ void MultiHeadAttention::save(std::ostream &os) const {
   std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
 }
 
-std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream &is) {
+std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream &is, const TransformerConfig& config) {
   std::cout << "\n=== MultiHeadAttention::load START ===" << std::endl;
   
   // Read configuration
@@ -209,47 +275,29 @@ std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream &is) {
   std::cout << "- Head dimension: " << head_dim << std::endl;
 
   size_t hidden_size = num_heads * head_dim;
-  float dropout_prob = 0.1f;
-  bool use_flash = true;
-  bool use_rope = true;
-  bool use_sliding_window = false;
-  size_t window_size = 512;
-  bool use_gqa = false;
-  size_t num_kv_heads = num_heads;
-
-  std::cout << "\nCreating attention instance..." << std::endl;
+  
+  // Use default values instead of config
   auto attention = std::make_unique<MultiHeadAttention>(
-      hidden_size,    // hidden_size
-      num_heads,      // num_heads
-      head_dim,       // head_dim
-      dropout_prob,   // dropout_prob
-      use_flash,      // use_flash
-      use_rope,       // use_rope
-      use_sliding_window,  // use_sliding_window
-      window_size,    // window_size
-      use_gqa,       // use_gqa
-      num_kv_heads   // num_kv_heads
+      hidden_size,
+      num_heads,
+      head_dim,
+      config.dropout_rate,
+      config.use_flash_attention,
+      config.use_rope,
+      config.use_sliding_window,
+      config.window_size,
+      config.use_gqa,
+      num_heads,
+      config.max_seq_length
   );
-  std::cout << "Attention instance created" << std::endl;
-
+  
   // Load projection matrices
   std::cout << "\nLoading projection matrices..." << std::endl;
-  std::cout << "Loading query projection..." << std::endl;
   attention->query_proj = Matrix::load(is);
-  std::cout << "Query projection loaded: " << attention->query_proj.rows() << "x" << attention->query_proj.cols() << std::endl;
-  
-  std::cout << "Loading key projection..." << std::endl;
   attention->key_proj = Matrix::load(is);
-  std::cout << "Key projection loaded: " << attention->key_proj.rows() << "x" << attention->key_proj.cols() << std::endl;
-  
-  std::cout << "Loading value projection..." << std::endl;
   attention->value_proj = Matrix::load(is);
-  std::cout << "Value projection loaded: " << attention->value_proj.rows() << "x" << attention->value_proj.cols() << std::endl;
-  
-  std::cout << "Loading output projection..." << std::endl;
   attention->output_proj = Matrix::load(is);
-  std::cout << "Output projection loaded: " << attention->output_proj.rows() << "x" << attention->output_proj.cols() << std::endl;
-
+  
   // Validate loaded matrices
   std::cout << "\nValidating loaded matrices..." << std::endl;
   auto validate_matrix = [](const Matrix& m, const std::string& name) {
@@ -278,7 +326,8 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
                                      size_t head_dim_, float dropout_prob_,
                                      bool use_flash_, bool use_rope_,
                                      bool use_sliding_window_, size_t window_size_,
-                                     bool use_gqa_, size_t num_kv_heads_)
+                                     bool use_gqa_, size_t num_kv_heads_,
+                                     size_t max_seq_length_)
     : num_heads(num_heads_),
       head_dim(head_dim_),
       hidden_size(hidden_size_),
@@ -289,6 +338,7 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
       window_size(window_size_),
       use_gqa(use_gqa_),
       num_kv_heads(num_kv_heads_),
+      max_seq_length(max_seq_length_),
       // Initialize matrices with correct dimensions
       query_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
       key_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
@@ -393,6 +443,8 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
     validate_matrix(output_proj_grad, "Output projection gradient");
 
     std::cout << "=== MultiHeadAttention::constructor END ===\n" << std::endl;
+
+    initialize_rope_cache(max_seq_length_, head_dim);
 }
 
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
@@ -821,4 +873,45 @@ Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, c
     
     std::cout << "=== compute_attention END ===" << std::endl;
     return Tensor(output, dims);
+}
+
+void MultiHeadAttention::initialize_rope_cache(size_t max_seq_len, size_t dim) {
+    std::cout << "Initializing RoPE cache:" << std::endl;
+    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
+    std::cout << "- dim: " << dim << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+
+    cos_cached = Matrix(max_seq_len, dim * num_heads);
+    sin_cached = Matrix(max_seq_len, dim * num_heads);
+
+    std::cout << "Created cache matrices:" << std::endl;
+    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
+    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
+
+    for (size_t pos = 0; pos < max_seq_len; pos++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            for (size_t i = 0; i < dim; i++) {
+                size_t idx = h * dim + i;
+                float theta = std::pow(10000.0f, -2.0f * i / dim);
+                cos_cached(pos, idx) = std::cos(pos * theta);
+                sin_cached(pos, idx) = std::sin(pos * theta);
+            }
+        }
+    }
+}
+
+float MultiHeadAttention::get_cos_cached(size_t pos, size_t dim_idx) const {
+    if (pos >= cos_cached.rows() || dim_idx >= cos_cached.cols()) {
+        throw std::runtime_error("RoPE cache access out of bounds: pos=" + 
+                                std::to_string(pos) + ", dim=" + std::to_string(dim_idx));
+    }
+    return cos_cached(pos, dim_idx);
+}
+
+float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
+    if (pos >= sin_cached.rows() || dim_idx >= sin_cached.cols()) {
+        throw std::runtime_error("RoPE cache access out of bounds: pos=" + 
+                                std::to_string(pos) + ", dim=" + std::to_string(dim_idx));
+    }
+    return sin_cached(pos, dim_idx);
 }

@@ -31,29 +31,23 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
 }
 
 // TransformerLayer implementation
-TransformerLayer::TransformerLayer(const TransformerConfig &config, size_t idx)
-    : kv_cache(config.max_seq_length), 
-      config(config),
-      layer_idx(idx),
-      training(false) {
-  std::cout << "entering TransformerLayer constructor" << std::endl;
-  // Initialize attention layer
-  self_attention = std::make_unique<MultiHeadAttention>(
-      config.hidden_size, config.num_heads, config.head_dim,
-      config.dropout_prob, config.use_flash_attention, config.use_rope,
-      config.use_sliding_window, config.window_size, config.use_gqa,
-      config.num_kv_heads);
-
-  // Initialize layer normalization
-  attention_ln = std::make_unique<LayerNorm>(config.hidden_size);
-  ffn_ln = std::make_unique<LayerNorm>(config.hidden_size);
-
-  // Initialize feed-forward network
-  feed_forward = std::make_unique<FeedForward>(
-      config.hidden_size, config.intermediate_size, config.dropout_prob);
-  attention_dropout = std::make_unique<Dropout>(config.dropout_rate);
-  ffn_dropout = std::make_unique<Dropout>(config.dropout_rate);
-  std::cout << "exiting TransformerLayer constructor" << std::endl;
+TransformerLayer::TransformerLayer(const TransformerConfig &config_, size_t idx)
+    : config(config_), layer_idx(idx) {
+    // Initialize components
+    self_attention = std::make_unique<MultiHeadAttention>(
+        config.hidden_size, config.num_heads, config.head_dim,
+        config.dropout_prob, config.use_flash_attention, config.use_rope,
+        config.use_sliding_window, config.window_size, config.use_gqa,
+        config.num_kv_heads,
+        config.max_seq_length);
+    
+    attention_ln = std::make_unique<LayerNorm>(config.hidden_size);
+    feed_forward = std::make_unique<FeedForward>(config.hidden_size, config.intermediate_size);
+    ffn_ln = std::make_unique<LayerNorm>(config.hidden_size);
+    
+    // Initialize dropout layers
+    attention_dropout = std::make_unique<Dropout>(config.dropout_rate);
+    ffn_dropout = std::make_unique<Dropout>(config.dropout_rate);
 }
 
 Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
@@ -69,10 +63,14 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
     
     // Self attention
     Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
+    std::cout << "attention output: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
     if (training) {
+        std::cout << "attention dropout" << std::endl;
         attention_output = attention_dropout->forward(attention_output, true);
     }
+    std::cout << "calculating residual" << std::endl;
     Matrix residual = attention_output + normalized;
+    std::cout << "calculating attention ln" << std::endl;
     Matrix norm1 = attention_ln->forward(residual);
     
     // Cache the normalized input for feed forward backward pass
