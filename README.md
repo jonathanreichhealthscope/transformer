@@ -91,6 +91,8 @@ make
 
 ## Running
 
+From the build directory, run:
+
 ```bash
 ./transformer
 ```
