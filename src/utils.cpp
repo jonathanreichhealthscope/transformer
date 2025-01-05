@@ -344,6 +344,7 @@ float Utils::evaluate_validation(Transformer& transformer, const Tokenizer& toke
 
             auto lm_head = transformer.get_lm_head();
             if (!lm_head) {
+                std::cerr << "Error: Language model head not initialized. Initializing now...\n";
                 std::cout << "Error: Null language model head\n";
                 continue;
             }

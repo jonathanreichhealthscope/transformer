@@ -12,7 +12,6 @@
 extern PerformanceMetrics metrics;
 
 Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
-  std::cout << "\n=== MultiHeadAttention::apply_rope START ===" << std::endl;
   Vector result = x;
   // Apply rotary position embeddings
   for (size_t i = 0; i < x.size(); i += 2) {
@@ -46,7 +45,6 @@ Vector MultiHeadAttention::apply_rope(const Vector &x, size_t position) const {
     }
   }
 
-  std::cout << "=== MultiHeadAttention::apply_rope END ===\n" << std::endl;
   return result;
 }
 

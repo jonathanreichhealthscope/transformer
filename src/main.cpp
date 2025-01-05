@@ -331,8 +331,8 @@ int main(int argc, char *argv[]) {
                 tokenizer->clear_cache();
             }
 
-            // Run validation every N epochs
-            if ((epoch + 1) % 5 == 0) {  // Validate every 5 epochs
+            // Run validation every 3 epochs
+            if ((epoch + 1) % 3 == 0) {  // Validate every 3 epochs
                 std::cout << "\nRunning validation after epoch " << (epoch + 1) << "...\n";
                 float validation_loss = Utils::evaluate_validation(transformer, *tokenizer, validation_data);
                 
@@ -359,14 +359,6 @@ int main(int argc, char *argv[]) {
             std::cout << "Failed to save model to " + save_directory + "/" + model_name << std::endl;
             return 1;
         }
-
-        // Demonstrate quantization
-        std::cout << "\nTesting quantization...\n";
-        std::vector<Matrix> calibration_data{
-            last_hidden_states}; // Use stored hidden states
-        qat.calibrate(transformer, calibration_data);
-        Matrix quantized = qat.quantize_weights(last_hidden_states, "layer_0");
-        Utils::print_matrix(quantized, "Quantized hidden states");
 
     } catch (const std::exception &e) {
         std::cerr << "Error: " << e.what() << std::endl;

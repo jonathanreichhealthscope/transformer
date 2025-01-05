@@ -196,6 +196,9 @@ Transformer::Transformer(const TransformerConfig &config) : config(config) {
   // Initialize final layer normalization
   final_ln = std::make_unique<LayerNorm>(config.hidden_size);
 
+  // Initialize the language model head
+  lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
+
   std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 

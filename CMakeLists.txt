@@ -62,9 +62,8 @@ set(CORE_SOURCES
 # Neural network components
 set(NN_SOURCES
     src/attention.cpp
-    src/attention_mask.cpp
     src/transformer.cpp
-    src/layernorm.cpp
+    src/layer_norm.cpp
     src/feed_forward.cpp
     src/embeddings.cpp
 )
@@ -80,11 +79,6 @@ set(UTIL_SOURCES
     src/optimizer.cpp
 )
 
-# Advanced attention mechanisms
-set(ATTENTION_SOURCES
-    src/attention/block_sparse.cpp
-    src/attention/advanced_attention.cpp
-)
 
 # Language model components
 set(LM_SOURCES
