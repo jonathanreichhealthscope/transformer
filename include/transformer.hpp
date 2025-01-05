@@ -263,6 +263,7 @@ public:
 
   const Matrix& get_hidden_states() const { return hidden_states; }
   LanguageModelHead* get_lm_head() { return lm_head.get(); }
+  void set_lm_head(std::unique_ptr<LanguageModelHead> head) { lm_head = std::move(head); }
 
   void set_training(bool mode) { 
     training = mode;

@@ -35,6 +35,7 @@ A pure C++ implementation of a decoder-only transformer model with CUDA support.
 ## Optimization Features
 
 - CUDA support for GPU acceleration
+- OpenMP parallelisation
 - Half-precision (FP16) support
 - Memory pooling
 - Gradient accumulation
@@ -105,3 +106,8 @@ The logging is done to a file called `transformer.log` in the `build` directory.
 ## Configuration
 
 The configuration is done in the `config/transformer_config.json` file.
+
+## Limitations
+
+- The model training is performed on a very small dataset, so its predictions are certainly sub-optimal, given its constraints.
+- It only works on a format that follows the training data i.e I like to cook in the |kitchen (| is the delimiter).
