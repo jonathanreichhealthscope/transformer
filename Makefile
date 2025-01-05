@@ -57,3 +57,10 @@ help:
 .PHONY: stop
 stop:
 	@pkill transformer || true 
+
+SOURCES = src/main.cpp src/transformer.cpp src/attention.cpp src/components.cpp \
+          src/embeddings.cpp src/layernorm.cpp src/feed_forward.cpp \
+          src/trainer.cpp src/cache.cpp \
+          src/gqa.cpp
+
+OBJECTS = $(SOURCES:.cpp=.o) 

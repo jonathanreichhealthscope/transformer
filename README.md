@@ -1,6 +1,76 @@
 # Example transformer in C++
 
-This is a simple example of a transformer model in C++. It is based on the paper "Attention is All You Need" by Vaswani et al.
+A pure C++ implementation of a transformer model with CUDA support. It is based on the paper "Attention is All You Need" by Vaswani et al.
+
+## Transformer Implementation Features
+
+## Core Attention Mechanisms
+
+- Standard Multi-Head Attention
+- Grouped Query Attention (GQA)
+- Flash Attention optimization
+- Rotary Position Embeddings (RoPE)
+- Sliding Window Attention
+- Key-Value Cache support
+
+## Architecture Components
+
+- Layer Normalization
+- Feed Forward Networks
+- Dropout layers
+- Residual connections
+- Language Model Head
+- Tokenizer with vocabulary management
+
+## Training Features
+
+- Batch processing
+- Dynamic learning rate adjustment
+- Gradient clipping
+- Loss computation and backpropagation
+- Training/Evaluation modes
+- Gradient checkpointing
+- Performance metrics tracking
+
+## Optimization Features
+
+- CUDA support for GPU acceleration
+- Half-precision (FP16) support
+- Memory pooling
+- Gradient accumulation
+- SAM (Sharpness-Aware Minimization) optimizer
+
+## Advanced Features
+
+- Quantization-Aware Training
+- Adaptive cache replacement policies
+- Token embedding with positional encoding
+- Advanced attention mechanisms (block-sparse)
+- Configurable model architecture
+
+## Utility Features
+
+- JSON configuration loading
+- Model checkpointing and saving
+- Performance metrics logging
+- Validation data evaluation
+- Token prediction and probability calculation
+- Text preprocessing and tokenization
+
+## Memory Management
+
+- Memory pooling
+- Cache management
+- Gradient checkpointing
+- Efficient matrix operations
+
+## Development Features
+
+- Comprehensive logging
+- Error handling
+- Configuration validation
+- Performance profiling
+- Debug output options
 
 ## Dependencies
 
@@ -18,3 +88,17 @@ cd build
 cmake ..
 make
 ```
+
+## Running
+
+```bash
+./transformer
+```
+
+## Logging
+
+The logging is done to a file called `transformer.log` in the `build` directory.
+
+## Configuration
+
+The configuration is done in the `config/transformer_config.json` file.

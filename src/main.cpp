@@ -62,8 +62,8 @@ int main(int argc, char *argv[]) {
                   << "- Hidden size: " << config.hidden_size << "\n"
                   << "- Number of heads: " << config.num_heads << "\n"
                   << "- Number of layers: " << config.num_layers << "\n"
-                  << "- Using Flash Attention: " << std::boolalpha 
-                  << config.use_flash_attention << "\n"
+                  << "- Using Flash Attention: " << config.use_flash_attention << "\n"
+                  << "- Using GQA: " << config.use_gqa << "\n"
                   << "- Using RoPE: " << config.use_rope << "\n"
                   << "- Using Sliding Window: " << config.use_sliding_window << "\n";
 

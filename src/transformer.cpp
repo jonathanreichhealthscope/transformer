@@ -20,7 +20,8 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
       head_dim(hidden_size / num_heads), intermediate_size(4 * hidden_size),
       dropout_prob(0.1f), use_flash_attention(true), use_rope(true),
       use_sliding_window(false), window_size(512), use_gqa(false),
-      num_kv_heads(num_heads), use_cuda(true), batch_size(batch_size),
+      num_kv_heads(num_heads/2),
+      use_cuda(true), batch_size(batch_size),
       num_epochs(num_epochs) {
   std::cout << "entering TransformerConfig constructor" << std::endl;
   if (hidden_size % num_heads != 0) {
@@ -34,6 +35,10 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
 TransformerLayer::TransformerLayer(const TransformerConfig &config_, size_t idx)
     : config(config_), layer_idx(idx) {
     // Initialize components
+    std::cout << "Initializing TransformerLayer " << idx << " with GQA config:" << std::endl;
+    std::cout << "- use_gqa: " << (config.use_gqa ? "true" : "false") << std::endl;
+    std::cout << "- num_kv_heads: " << config.num_kv_heads << std::endl;
+    
     self_attention = std::make_unique<MultiHeadAttention>(
         config.hidden_size, config.num_heads, config.head_dim,
         config.dropout_prob, config.use_flash_attention, config.use_rope,
