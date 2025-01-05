@@ -107,8 +107,21 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         config.use_rope = attention["use_rope"];
         config.use_sliding_window = attention["use_sliding_window"];
         config.window_size = attention["window_size"];
-        config.use_gqa = attention["use_gqa"];
-        config.num_kv_heads = attention["num_kv_heads"];
+        if (attention.contains("use_gqa")) {
+            config.use_gqa = attention["use_gqa"].get<bool>();
+            std::cout << "Loaded use_gqa from config: " << config.use_gqa << std::endl;
+            if (config.use_gqa) {
+                if (attention.contains("num_kv_heads")) {
+                    config.num_kv_heads = attention["num_kv_heads"].get<size_t>();
+                } else {
+                    config.num_kv_heads = config.num_heads / 2;  // Default to half the heads
+                }
+                std::cout << "Using GQA with num_heads=" << config.num_heads 
+                         << " and num_kv_heads=" << config.num_kv_heads << std::endl;
+            } else {
+                config.num_kv_heads = config.num_heads;  // No GQA, use same number
+            }
+        }
         
         // Parse optimization settings
         auto& optimization = j["optimization"];

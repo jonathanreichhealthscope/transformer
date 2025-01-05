@@ -141,6 +141,11 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
                                  const std::optional<KVCache> &kv_cache) {
     metrics.start_timer("attention_computation");
     
+    std::cout << "Checking GQA configuration:" << std::endl;
+    std::cout << "- use_gqa: " << (use_gqa ? "true" : "false") << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+    std::cout << "- num_kv_heads: " << num_kv_heads << std::endl;
+    
     // Use GQA if enabled
     if (use_gqa && num_kv_heads != num_heads) {
         std::cout << "Using Grouped Query Attention" << std::endl;
