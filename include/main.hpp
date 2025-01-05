@@ -22,6 +22,7 @@
 #include "quantization.hpp"
 #include "tokenizer.hpp"
 #include "transformer.hpp"
+#include "utils.hpp"
 #include "utils/tensor_cache.hpp"
 #include "vocabulary.hpp"
 #include "matrix.hpp"

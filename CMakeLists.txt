@@ -230,3 +230,6 @@ endif()
 target_sources(transformer_lib PRIVATE
     src/tensor.cpp
 )
+
+find_package(nlohmann_json 3.2.0 REQUIRED)
+target_link_libraries(transformer_lib PRIVATE nlohmann_json::nlohmann_json)

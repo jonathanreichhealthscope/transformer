@@ -6,7 +6,7 @@ This is a simple example of a transformer model in C++. It is based on the paper
 
 - OpenMP: <https://github.com/OpenMP/openmp-api>
 - CUDA: <https://developer.nvidia.com/cuda-downloads>
-- cuDNN: <https://developer.nvidia.com/cudnn>
+- nlohmann/json: <https://github.com/nlohmann/json>
 
 ## Building
 

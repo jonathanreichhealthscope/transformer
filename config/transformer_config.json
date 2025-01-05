@@ -1,0 +1,37 @@
+{
+    "model": {
+        "vocab_size": 50000,
+        "hidden_size": 128,
+        "num_heads": 4,
+        "num_layers": 3,
+        "head_dim": 32,
+        "intermediate_size": 512
+    },
+    "training": {
+        "batch_size": 4,
+        "num_epochs": 30,
+        "dropout_rate": 0.2,
+        "weight_decay": 0.01,
+        "learning_rate": 0.001,
+        "warmup_steps": 100
+    },
+    "attention": {
+        "use_flash_attention": true,
+        "use_rope": true,
+        "use_sliding_window": true,
+        "window_size": 128,
+        "use_gqa": false,
+        "num_kv_heads": 4
+    },
+    "optimization": {
+        "use_cuda": false,
+        "use_fp16": false,
+        "use_gradient_checkpointing": false,
+        "memory_pool_size": 1024
+    },
+    "paths": {
+        "save_directory": "models",
+        "model_name": "transformer_model",
+        "checkpoint_frequency": 2
+    }
+} 
