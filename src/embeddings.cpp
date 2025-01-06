@@ -28,62 +28,51 @@ TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
   }
 }
 
-Matrix TokenEmbedding::forward(const std::vector<int> &tokens) {
+Matrix TokenEmbedding::forward(const std::vector<std::vector<int>> &batch_tokens) {
   // Input validation
-  if (tokens.empty()) {
+  if (batch_tokens.empty()) {
     throw std::runtime_error("Empty token sequence");
   }
-  for (int token : tokens) {
-    if (token < 0 || static_cast<size_t>(token) >= vocab_size_) {
-      throw std::runtime_error("Token id " + std::to_string(token) +
-                               " out of range [0, " +
-                               std::to_string(vocab_size_) + ")");
-    }
+
+  // Find max sequence length in batch
+  size_t max_seq_len = 0;
+  for (const auto& tokens : batch_tokens) {
+    max_seq_len = std::max(max_seq_len, tokens.size());
   }
 
-  Matrix output(tokens.size(), embedding_dim_);
+  Matrix output(batch_tokens.size() * max_seq_len, embedding_dim_);
 
   // Copy embeddings
-  for (size_t i = 0; i < tokens.size(); ++i) {
-    for (size_t j = 0; j < embedding_dim_; ++j) {
-      float val = weights_(tokens[i], j);
-      if (std::isnan(val) || std::isinf(val)) {
-        throw std::runtime_error("Invalid embedding value at position (" +
-                                 std::to_string(tokens[i]) + "," +
-                                 std::to_string(j) +
-                                 "): " + std::to_string(val));
+  for (size_t b = 0; b < batch_tokens.size(); b++) {
+    for (size_t i = 0; i < batch_tokens[b].size(); ++i) {
+      size_t row = b * max_seq_len + i;
+      int token = batch_tokens[b][i];
+      if (token < 0 || static_cast<size_t>(token) >= vocab_size_) {
+        throw std::runtime_error("Token id out of range");
       }
-      output(i, j) = val;
+      for (size_t j = 0; j < embedding_dim_; ++j) {
+        float val = weights_(token, j);
+        if (std::isnan(val) || std::isinf(val)) {
+          throw std::runtime_error("Invalid embedding value");
+        }
+        output(row, j) = val;
+      }
     }
   }
 
-  // Normalize output embeddings with better numerical stability
-  const float eps = 1e-6f; // Increased epsilon for stability
-  for (size_t i = 0; i < tokens.size(); i++) {
+  // Normalize output embeddings (keeping batch structure)
+  const float eps = 1e-6f;
+  for (size_t i = 0; i < output.rows(); i++) {
     float row_norm = 0.0f;
-    // Compute norm for this embedding
     for (size_t j = 0; j < embedding_dim_; j++) {
       float val = output(i, j);
       row_norm += val * val;
     }
     row_norm = std::sqrt(row_norm + eps);
-
-    // Clamp the norm to prevent division by very small values
     row_norm = std::max(row_norm, 1e-3f);
-
-    // Scale this embedding
     float scale = std::min(1.0f, 1.0f / row_norm);
     for (size_t j = 0; j < embedding_dim_; j++) {
       output(i, j) *= scale;
-    }
-  }
-
-  // Validate output
-  for (size_t i = 0; i < output.size(); i++) {
-    if (std::isnan(output.data()[i]) || std::isinf(output.data()[i])) {
-      throw std::runtime_error(
-          "Invalid value in output embeddings at position " +
-          std::to_string(i));
     }
   }
 

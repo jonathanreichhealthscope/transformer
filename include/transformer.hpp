@@ -193,7 +193,7 @@ private:
 
   // Private methods
   Matrix compute_loss_gradients(const Matrix &logits,
-                                const std::vector<int> &targets);
+                                const std::vector<std::vector<int>> &batch_targets);
   void backward_pass(const std::vector<Matrix> &activations,
                      const Matrix &loss_grad);
   void update_parameters(float learning_rate);
@@ -218,7 +218,7 @@ public:
   Transformer() = default;
   explicit Transformer(const TransformerConfig &config,
                       std::unique_ptr<SAM> optimizer = nullptr);
-  Matrix forward(const std::vector<int> &input_tokens, bool use_cache = false);
+  Matrix forward(const std::vector<std::vector<int>> &batch_tokens, bool use_cache = false);
   Matrix forward_cuda(const std::vector<int> &input_tokens,
                       bool use_cache = false);
   void train(const std::vector<std::pair<std::string, std::string>>& training_data,
@@ -228,6 +228,8 @@ public:
   void save_model(const std::string &path) const;
   static Transformer load_model(const std::string &path);
   void clear_kv_cache();
+  void backward(const Matrix &grad_output, const std::vector<std::vector<int>> &batch_tokens,
+                float learning_rate);
   Matrix backward(const Matrix &grad, const Matrix &activation,
                   size_t layer_idx);
   Matrix backward_cuda(const Matrix &grad, const Matrix &activation,

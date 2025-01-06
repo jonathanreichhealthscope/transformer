@@ -62,7 +62,7 @@ public:
         output_bias_grad(other.output_bias_grad), num_heads(other.num_heads),
         head_dim(other.head_dim), hidden_size(other.hidden_size),
         dropout_prob(other.dropout_prob), use_rope(other.use_rope),
-        use_flash(other.use_flash),
+        use_flash_attention(other.use_flash_attention),
         use_sliding_window(other.use_sliding_window),
         window_size(other.window_size), use_gqa(other.use_gqa),
         num_kv_heads(other.num_kv_heads), cos_cached(other.cos_cached),
@@ -91,7 +91,7 @@ public:
       hidden_size = other.hidden_size;
       dropout_prob = other.dropout_prob;
       use_rope = other.use_rope;
-      use_flash = other.use_flash;
+      use_flash_attention = other.use_flash_attention;
       use_sliding_window = other.use_sliding_window;
       window_size = other.window_size;
       use_gqa = other.use_gqa;
@@ -184,7 +184,7 @@ private:
   size_t num_heads;
   size_t head_dim;
   bool use_rope;
-  bool use_flash;
+  bool use_flash_attention;
   bool use_sliding_window;
   size_t window_size;
   Matrix cos_cached;
@@ -366,6 +366,8 @@ private:
   void initialize_rope_cache(size_t max_seq_len, size_t dim);
   float get_cos_cached(size_t pos, size_t dim_idx) const;
   float get_sin_cached(size_t pos, size_t dim_idx) const;
+
+  void apply_stable_softmax(Matrix& scores, size_t start_idx, size_t end_idx);
 };
 
 // Add sliding window attention

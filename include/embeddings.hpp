@@ -10,17 +10,11 @@ class TokenEmbedding;
 class PositionalEncoding;
 
 class TokenEmbedding {
-private:
-  Matrix weights_;
-  mutable Matrix weights_grad_;
-  size_t vocab_size_;
-  size_t embedding_dim_;
-
 public:
   TokenEmbedding(size_t vocab_size, size_t embedding_dim);
 
   // Core functionality
-  Matrix forward(const std::vector<int> &tokens);
+  Matrix forward(const std::vector<std::vector<int>>& batch_tokens);
   Matrix project_to_vocab(const Matrix &hidden_states);
   void backward(const Matrix &grad_output,
                 const std::vector<int> &input_tokens);
@@ -66,6 +60,10 @@ public:
 private:
   Parameters params_;
   mutable Parameters param_gradients_;
+  Matrix weights_;
+  Matrix weights_grad_;
+  size_t vocab_size_;
+  size_t embedding_dim_;
 };
 
 class PositionalEncoding {

@@ -25,7 +25,7 @@ public:
   static std::vector<std::pair<std::string, std::string>>
   load_validation_data();
   static float evaluate_validation(
-      Transformer &transformer, const Tokenizer &tokenizer,
+      Transformer &transformer, Tokenizer &tokenizer,
       const std::vector<std::pair<std::string, std::string>> &validation_data);
   static TransformerConfig load_config(const std::string &config_path);
   static Matrix create_batch_target_distribution(

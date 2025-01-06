@@ -235,55 +235,72 @@ Transformer::Transformer(const TransformerConfig& config, std::unique_ptr<SAM> s
     std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
-Matrix Transformer::forward(const std::vector<int> &input_tokens,
-                            bool use_cache) {
-  std::cout << "\n=== Transformer::forward START ===" << std::endl;
-  std::cout << "before embeddings" << std::endl;
-  // Get embeddings
-  Matrix embeddings = token_embedding->forward(input_tokens);
-  std::cout << "after embeddings" << std::endl;
-  // Add positional encodings
-  std::cout << "before position ids" << std::endl;
-  Matrix position_ids(input_tokens.size(), 1);
-  for (size_t i = 0; i < input_tokens.size(); ++i) {
-    position_ids(i, 0) = static_cast<float>(i);
-  }
-  std::cout << "after position ids" << std::endl;
-  Matrix pos_encodings = pos_encoding->forward(position_ids);
-  std::cout << "after pos encoding forward" << std::endl;
-  embeddings += pos_encodings;
-  std::cout << "after embeddings + pos encodings" << std::endl;
-  // Create causal mask for next-token prediction
-  std::cout << "before mask" << std::endl;
-  AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
-  std::cout << "after mask" << std::endl;
-  std::cout << "before hidden states" << std::endl;
-  // Forward through layers
-  hidden_states = embeddings;
-  std::cout << "after hidden states" << std::endl;
-  std::vector<Matrix> activations;
-  activations.reserve(layers.size());
-  std::cout << "before activations" << std::endl;
-  for (size_t i = 0; i < layers.size(); ++i) {
-    activations.push_back(hidden_states);
-    hidden_states = layers[i]->forward(
-        hidden_states, mask,
-        use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
-  }
-  std::cout << "after activations" << std::endl;
-  // Final layer normalization
-  std::cout << "before final ln" << std::endl;
-  hidden_states = final_ln->forward(hidden_states);
-  std::cout << "after final ln" << std::endl;
-  // Store activations for backward pass
-  std::cout << "before last hidden states" << std::endl;
-  last_hidden_states = hidden_states;
-  std::cout << "after last hidden states" << std::endl;
-  m_layer_activations = std::move(activations);
-  std::cout << "after layer activations" << std::endl;
+Matrix Transformer::forward(const std::vector<std::vector<int>> &batch_tokens, bool use_cache) {
+    std::cout << "\n=== Transformer::forward START ===" << std::endl;
+    
+    // Calculate max sequence length in batch
+    size_t max_seq_len = 0;
+    for (const auto& tokens : batch_tokens) {
+        max_seq_len = std::max(max_seq_len, tokens.size());
+    }
+    
+    // Create batched input matrix
+    Matrix embeddings(batch_tokens.size() * max_seq_len, config.hidden_size, 0.0f);
+    // Process all sequences in one batch
+    Matrix all_embeddings = token_embedding->forward(batch_tokens);
+    embeddings = all_embeddings;  // The embeddings will already be in the correct shape
 
-  std::cout << "=== Transformer::forward END ===\n" << std::endl;
-  return hidden_states;
+    std::cout << "before position ids" << std::endl;
+    Matrix position_ids(max_seq_len, 1);
+    for (size_t i = 0; i < max_seq_len; ++i) {
+        position_ids(i, 0) = static_cast<float>(i);
+    }
+    std::cout << "after position ids" << std::endl;
+    Matrix pos_encodings = pos_encoding->forward(position_ids);
+   
+    // Replicate positional encodings for each item in the batch
+    Matrix batched_pos_encodings(embeddings.rows(), embeddings.cols(), 0.0f);
+    for (size_t b = 0; b < batch_tokens.size(); b++) {
+        for (size_t i = 0; i < max_seq_len; i++) {
+            for (size_t j = 0; j < config.hidden_size; j++) {
+                batched_pos_encodings(b * max_seq_len + i, j) = pos_encodings(i, j);
+            }
+        }
+    }
+    std::cout << "after pos encoding forward" << std::endl;
+    embeddings += batched_pos_encodings;  // Now dimensions match
+    std::cout << "after embeddings + pos encodings" << std::endl;
+    // Create causal mask for next-token prediction
+    std::cout << "before mask" << std::endl;
+    AttentionMask mask = AttentionMask::create_causal_mask(max_seq_len);
+    std::cout << "after mask" << std::endl;
+    std::cout << "before hidden states" << std::endl;
+    // Forward through layers
+    hidden_states = embeddings;
+    std::cout << "after hidden states" << std::endl;
+    std::vector<Matrix> activations;
+    activations.reserve(layers.size());
+    std::cout << "before activations" << std::endl;
+    for (size_t i = 0; i < layers.size(); ++i) {
+        activations.push_back(hidden_states);
+        hidden_states = layers[i]->forward(
+            hidden_states, mask,
+            use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
+    }
+    std::cout << "after activations" << std::endl;
+    // Final layer normalization
+    std::cout << "before final ln" << std::endl;
+    hidden_states = final_ln->forward(hidden_states);
+    std::cout << "after final ln" << std::endl;
+    // Store activations for backward pass
+    std::cout << "before last hidden states" << std::endl;
+    last_hidden_states = hidden_states;
+    std::cout << "after last hidden states" << std::endl;
+    m_layer_activations = std::move(activations);
+    std::cout << "after layer activations" << std::endl;
+
+    std::cout << "=== Transformer::forward END ===\n" << std::endl;
+    return hidden_states;
 }
 
 void Transformer::clear_kv_cache() {
@@ -292,8 +309,7 @@ void Transformer::clear_kv_cache() {
   }
 }
 
-void Transformer::backward(const Matrix &grad_output,
-                           const std::vector<int> &input_tokens,
+void Transformer::backward(const Matrix &grad_output, const std::vector<std::vector<int>> &batch_tokens,
                            float learning_rate) {
   std::cout << "\n=== Transformer::backward START ===" << std::endl;
   std::cout << "before grad output" << std::endl;
@@ -360,9 +376,9 @@ void Transformer::backward(const Matrix &grad_output,
   optimizer->first_step(param_ptrs, grads);
   std::cout << "after first step" << std::endl;
   // Recompute gradients at the perturbed point
-  Matrix perturbed_output = forward(input_tokens);
+  Matrix perturbed_output = forward(batch_tokens);
   std::cout << "after perturbed output" << std::endl;
-  Matrix perturbed_grad = compute_loss_gradients(perturbed_output, input_tokens);
+  Matrix perturbed_grad = compute_loss_gradients(perturbed_output, batch_tokens);
   std::cout << "after perturbed grad" << std::endl;
   auto& perturbed_grads = parameter_gradients();
   std::cout << "after perturbed grads" << std::endl;
@@ -558,30 +574,20 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
                 batch_inputs.push_back(tokenizer->encode(input_text));
                 batch_targets.push_back(tokenizer->encode(target_text));
             }
-
-            std::cout << "\nProcessing batch " << batch_count + 1 << ":\n";
-            std::cout << "Input text length: " << batch_inputs[0].size() << "\n";
-            std::cout << "Target text length: " << batch_targets[0].size() << "\n";
             
             optimizer->zero_grad();
             
-            std::vector<int> input_tokens = batch_inputs[0];
-            std::vector<int> target_tokens = batch_targets[0];
+            Matrix output = forward(batch_inputs);
             
-            std::cout << "Encoded tokens - Input: " << input_tokens.size() 
-                      << ", Target: " << target_tokens.size() << "\n";
-            
-            Matrix output = forward(input_tokens);
-            std::cout << "Forward pass complete - Output shape: " 
-                      << output.rows() << "x" << output.cols() << "\n";
-            
-            // Create target distribution matrix
+            // Create batched target distribution
+            size_t max_seq_len = output.rows() / batch_inputs.size();
             Matrix target_distribution(output.rows(), config.vocab_size, 0.0f);
-            size_t target_token_val = std::min(target_tokens.size(), target_distribution.rows());
             
-            for (size_t i = 0; i < target_token_val; i++) {
-                if (target_tokens[i] >= 0 && target_tokens[i] < config.vocab_size) {
-                    target_distribution(i, target_tokens[i]) = 1.0f;
+            for (size_t b = 0; b < batch_inputs.size(); b++) {
+                for (size_t i = 0; i < batch_targets[b].size(); i++) {
+                    if (batch_targets[b][i] >= 0 && batch_targets[b][i] < config.vocab_size) {
+                        target_distribution(b * max_seq_len + i, batch_targets[b][i]) = 1.0f;
+                    }
                 }
             }
             
@@ -595,7 +601,7 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
             ++batch_count;
             
             std::cout << "Starting backward pass...\n";
-            backward(output, input_tokens, learning_rate);
+            backward(output, batch_inputs, learning_rate);
             std::cout << "Backward pass complete\n";
             
             if (++step % validate_every == 0) {
@@ -619,38 +625,42 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
     std::cout << "Final Average Loss: " << (total_loss / batch_count) << "\n";
 }
 
-Matrix Transformer::compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets) {
-    // Initialize gradient matrix with same dimensions as logits
+Matrix Transformer::compute_loss_gradients(const Matrix& logits, const std::vector<std::vector<int>>& batch_targets) {
     Matrix loss_grad(logits.rows(), logits.cols(), 0.0f);
     
-    // For each sequence position
-    for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max logit for numerical stability
-        float max_val = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < logits.cols(); j++) {
-            max_val = std::max(max_val, logits(i, j));
-        }
-        
-        // Compute softmax denominator
-        float sum_exp = 0.0f;
-        std::vector<float> exp_vals(logits.cols());
-        for (size_t j = 0; j < logits.cols(); j++) {
-            exp_vals[j] = std::exp(logits(i, j) - max_val);
-            sum_exp += exp_vals[j];
-        }
-        
-        // Compute gradients
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float softmax_out = exp_vals[j] / sum_exp;
-            // If this position has a target token, compute cross-entropy gradient
-            if (i < targets.size()) {
-                loss_grad(i, j) = softmax_out - (j == static_cast<size_t>(targets[i]) ? 1.0f : 0.0f);
+    size_t batch_size = batch_targets.size();
+    size_t seq_len = logits.rows() / batch_size;
+    
+    // For each batch and sequence position
+    for (size_t b = 0; b < batch_size; b++) {
+        for (size_t i = 0; i < seq_len; i++) {
+            size_t row = b * seq_len + i;
+            float max_val = -std::numeric_limits<float>::infinity();
+            for (size_t j = 0; j < logits.cols(); j++) {
+                max_val = std::max(max_val, logits(row, j));
+            }
+            
+            // Compute softmax denominator
+            float sum_exp = 0.0f;
+            std::vector<float> exp_vals(logits.cols());
+            for (size_t j = 0; j < logits.cols(); j++) {
+                exp_vals[j] = std::exp(logits(row, j) - max_val);
+                sum_exp += exp_vals[j];
+            }
+            
+            // Compute gradients
+            for (size_t j = 0; j < logits.cols(); j++) {
+                float softmax_out = exp_vals[j] / sum_exp;
+                // If this position has a target token, compute cross-entropy gradient
+                if (i < batch_targets[b].size()) {
+                    loss_grad(row, j) = softmax_out - (j == static_cast<size_t>(batch_targets[b][i]) ? 1.0f : 0.0f);
+                }
             }
         }
     }
     
     // Scale gradients by sequence length for better numerical stability
-    float scale = 1.0f / static_cast<float>(targets.size());
+    float scale = 1.0f / static_cast<float>(batch_targets.size());
     for (size_t i = 0; i < loss_grad.size(); i++) {
         loss_grad.data()[i] *= scale;
     }

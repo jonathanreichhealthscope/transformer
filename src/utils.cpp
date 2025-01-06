@@ -280,119 +280,46 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     }
 }
 
-float Utils::evaluate_validation(Transformer& transformer, const Tokenizer& tokenizer,
-                                const std::vector<std::pair<std::string, std::string>>& validation_data) {
-    std::cout << "\n=== Evaluating Validation Data ===\n";
-    
+float Utils::evaluate_validation(Transformer& transformer, Tokenizer& tokenizer,
+                               const std::vector<std::pair<std::string, std::string>>& validation_data) {
     float total_loss = 0.0f;
-    size_t correct_predictions = 0;
     size_t total_predictions = 0;
-
-    // Validate we have data to process
-    if (validation_data.empty()) {
-        std::cout << "Warning: Empty validation data\n";
-        return 0.0f;
-    }
-
-    transformer.set_training(false);  // Set model to evaluation mode
-
-    for (const auto& pair : validation_data) {
-        // Preprocess input
-        std::string processed_input = pair.first;
-        std::cout << "Processing input: '" << processed_input << "'\n";
-        tokenizer.preprocess_text(processed_input);
-        std::cout << "Preprocessed input: '" << processed_input << "'\n";
-        
-        std::vector<int> input_tokens = tokenizer.encode(processed_input);
-        std::cout << "Encoded input tokens: ";
-        for (int token : input_tokens) {
-            std::cout << token << " ";
-        }
-        std::cout << "\n";
-        
-        // Skip empty sequences
-        if (input_tokens.empty()) {
-            std::cout << "Warning: Empty input tokens, skipping\n";
-            continue;
-        }
-
-        // Validate input tokens
-        if (!Utils::validate_input_sequence(input_tokens, tokenizer.vocab_size())) {
-            std::cout << "Warning: Invalid input sequence, skipping\n";
-            continue;
-        }
-
+    size_t correct_predictions = 0;
+    
+    transformer.set_training(false);  // Set to evaluation mode
+    
+    for (const auto& [input_text, target_text] : validation_data) {
         try {
-            // Get model prediction
-            std::cout << "Calling transformer.forward with " << input_tokens.size() << " tokens\n";
-            Matrix output = transformer.forward(input_tokens);
-            std::cout << "Forward pass output shape: " << output.rows() << "x" << output.cols() << "\n";
-
-            if (output.rows() == 0 || output.cols() == 0) {
-                std::cout << "Warning: Empty output from transformer, skipping\n";
-                continue;
-            }
-
-            auto lm_head = transformer.get_lm_head();
-            if (!lm_head) {
-                std::cerr << "Error: Language model head not initialized. Initializing now...\n";
-                std::cout << "Error: Null language model head\n";
-                continue;
-            }
-
-            Matrix logits = lm_head->forward(output);
-            std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
-
-            // Ensure we have valid output dimensions
-            if (logits.rows() == 0 || logits.cols() != tokenizer.vocab_size()) {
-                continue;
-            }
-            std::cout << "\n=== get target ===\n";
-            // Get target
-            std::string processed_target = pair.second;
-            tokenizer.preprocess_text(processed_target);
-            std::cout <<"encode target" << std::endl;
-            std::vector<int> target_tokens = tokenizer.encode(processed_target);
-            std::cout << "target tokens: " << target_tokens.size() << std::endl;
-            // Create target distribution
-            Matrix target_distribution(1, tokenizer.vocab_size(), 0.0f);
-            if (!target_tokens.empty()) {
-                target_distribution(0, target_tokens.back()) = 1.0f;
-            }
-            std::cout << "target distribution: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
-            // Compute loss using only the last token's prediction
-            Matrix last_token_logits(1, logits.cols());
-            for (size_t i = 0; i < logits.cols(); ++i) {
-                last_token_logits(0, i) = logits(logits.rows() - 1, i);
-            }
-            std::cout << "last token logits: " << last_token_logits.rows() << "x" << last_token_logits.cols() << std::endl;
-            float loss = compute_batch_loss(last_token_logits, target_distribution);
-            total_loss += loss;
-
-            // Check if prediction matches target
-            int predicted_token = -1;
+            std::vector<int> input_tokens = tokenizer.encode(input_text);
+            std::vector<int> target_tokens = tokenizer.encode(target_text);
+            
+            // Wrap single sequence in a batch
+            std::vector<std::vector<int>> batch_input = {input_tokens};
+            Matrix output = transformer.forward(batch_input);
+            
+            // Find predicted token
+            size_t predicted_token = 0;
             float max_logit = -std::numeric_limits<float>::infinity();
-            std::cout << "iterating through logits" << std::endl;
-            for (size_t i = 0; i < logits.cols(); ++i) {
-                float val = logits(logits.rows() - 1, i);
+            
+            // Get last token prediction
+            for (size_t i = 0; i < output.cols(); i++) {
+                float val = output(output.rows() - 1, i);
                 if (val > max_logit) {
                     max_logit = val;
                     predicted_token = i;
                 }
             }
-            std::cout << "predicted token: " << predicted_token << std::endl;
-
+            
             if (!target_tokens.empty() && predicted_token == target_tokens.back()) {
                 correct_predictions++;
             }
             total_predictions++;
+            
         } catch (const std::exception& e) {
             std::cout << "Error evaluating validation: " << e.what() << "\n";
         }
     }
-    std::cout << "total loss: " << total_loss << std::endl;
-    std::cout << "total predictions: " << total_predictions << std::endl;
-    std::cout << "correct predictions: " << correct_predictions << std::endl;
+    
     transformer.set_training(true);  // Reset to training mode
     return total_predictions > 0 ? total_loss / total_predictions : 0.0f;
 } 

@@ -2,28 +2,32 @@
 #include <cmath>
 #include <omp.h>
 
-Matrix LayerNorm::forward(const Matrix &x) {
-  // Compute mean and variance
-  float mean = 0.0f, var = 0.0f;
-#pragma omp parallel for reduction(+ : mean, var)
-  for (size_t i = 0; i < x.size(); i++) {
-    mean += x.data()[i];
-    var += x.data()[i] * x.data()[i];
-  }
-  mean /= x.size();
-  var = var / x.size() - mean * mean;
-  float std = sqrt(var + eps);
-
-  // Store normalized values for backward pass
-  normalized = Matrix(x.rows(), x.cols());
-  Matrix output(x.rows(), x.cols());
-#pragma omp parallel for
-  for (size_t i = 0; i < x.size(); i++) {
-    normalized.data()[i] = (x.data()[i] - mean) / std;
-    output.data()[i] =
-        gamma[i % hidden_size] * normalized.data()[i] + beta[i % hidden_size];
-  }
-  return output;
+Matrix LayerNorm::forward(const Matrix &input) {
+    Matrix output(input.rows(), input.cols());
+    
+    // Process each sample in batch independently
+    for (size_t b = 0; b < input.rows(); b++) {
+        // Calculate mean
+        float mean = 0.0f;
+        for (size_t j = 0; j < input.cols(); j++) {
+            mean += input(b, j);
+        }
+        mean /= input.cols();
+        
+        // Calculate variance
+        float var = 0.0f;
+        for (size_t j = 0; j < input.cols(); j++) {
+            float diff = input(b, j) - mean;
+            var += diff * diff;
+        }
+        var /= input.cols();
+        
+        // Normalize and apply scale/shift
+        for (size_t j = 0; j < input.cols(); j++) {
+            output(b, j) = gamma[j] * (input(b, j) - mean) / std::sqrt(var + eps) + beta[j];
+        }
+    }
+    return output;
 }
 
 Matrix LayerNorm::backward(const Matrix &grad, const Matrix &input) {
