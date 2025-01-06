@@ -29,6 +29,9 @@ public:
                             const std::string &model_name, int &epoch,
                             float &loss);
 
+  // Load checkpoint
+  bool loadCheckpoint(Transformer& transformer, const std::string& checkpoint_path);
+
 private:
   Logger &logger;
 

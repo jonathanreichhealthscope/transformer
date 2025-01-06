@@ -26,6 +26,8 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length,
       num_epochs(num_epochs),
       dropout_rate(0.1f),
       weight_decay(0.01f),
+      load_from_checkpoint(false),
+      checkpoint_to_load(""),
       paths{
           "models",           // save_directory
           "transformer_model", // model_name
@@ -455,4 +457,28 @@ std::vector<Matrix>& Transformer::parameters() {
 
 Transformer::~Transformer() {
     std::cout << "Transformer destructor called" << std::endl;
+}
+
+void Transformer::load(std::istream& is) {
+    try {
+        // Load token embedding
+        token_embedding->load(is);
+        
+        // Load positional encoding
+        pos_encoding->load(is);
+        
+        // Load transformer layers
+        for (auto& layer : layers) {
+            layer->load(is);
+        }
+        
+        // Load final layer norm
+        final_ln->load(is);
+        
+        // Load language model head
+        lm_head->load(is);
+        
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error loading transformer: " + std::string(e.what()));
+    }
 }

@@ -16,6 +16,7 @@ const float LOSS_SPIKE_THRESHOLD = 1.5f;
 const size_t WARMUP_STEPS = 100;
 float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
+size_t global_step = 0;
 
 // Define the special character map (definition)
 const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP = {
@@ -117,6 +118,40 @@ int main(int argc, char *argv[]) {
         ModelSaver model_saver;
         std::string save_directory = config.paths.save_directory;
         std::string model_name = config.paths.model_name;
+
+        // After transformer initialization but before training loop
+        if (config.load_from_checkpoint) {
+            std::cout << "Attempting to load checkpoint from: " << config.checkpoint_to_load << std::endl;
+            
+            try {
+                if (!std::filesystem::exists(config.checkpoint_to_load)) {
+                    std::cout << "Warning: Checkpoint file does not exist: " << config.checkpoint_to_load << std::endl;
+                    std::cout << "Proceeding with training from scratch..." << std::endl;
+                } else {
+                    // Attempt to load the checkpoint
+                    if (!model_saver.loadCheckpoint(transformer, config.checkpoint_to_load)) {
+                        std::cerr << "Warning: Failed to load checkpoint from: " << config.checkpoint_to_load << std::endl;
+                        std::cout << "Proceeding with training from scratch..." << std::endl;
+                    } else {
+                        // Extract epoch number from checkpoint filename
+                        std::string filename = std::filesystem::path(config.checkpoint_to_load).filename().string();
+                        size_t epoch_pos = filename.find("epoch_");
+                        if (epoch_pos != std::string::npos) {
+                            std::string epoch_str = filename.substr(epoch_pos + 6);
+                            size_t end_pos = epoch_str.find_first_not_of("0123456789");
+                            epoch_str = epoch_str.substr(0, end_pos);
+                            global_step = std::stoul(epoch_str) * (training_data.size() / config.batch_size);
+                        }
+                        
+                        std::cout << "Successfully loaded checkpoint. Resuming from global step: " 
+                                  << global_step << std::endl;
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Error during checkpoint loading: " << e.what() << std::endl;
+                std::cout << "Proceeding with training from scratch..." << std::endl;
+            }
+        }
 
         // Training loop
         size_t global_step = 0;  // Move outside epoch loop

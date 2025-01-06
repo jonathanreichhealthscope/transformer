@@ -15,7 +15,7 @@ bool ModelSaver::saveModel(const Transformer &transformer,
                            const std::string &model_name) {
   try {
     std::string dir_path = createDirectory(directory);
-    std::string model_path = dir_path + "/" + model_name;
+    std::string model_path = dir_path + "/" + model_name + ".ckpt";
 
     logger.log("Saving model to: " + model_path);
 
@@ -26,7 +26,7 @@ bool ModelSaver::saveModel(const Transformer &transformer,
     }
 
     // Save model weights
-    std::ofstream model_file(model_path + ".bin", std::ios::binary);
+    std::ofstream model_file(model_path, std::ios::binary);
     if (!model_file) {
       logger.log("Failed to open model file for writing", true);
       return false;
@@ -91,76 +91,141 @@ bool ModelSaver::saveCheckpoint(const Transformer &transformer,
                                 const std::string &directory,
                                 const std::string &model_name, int epoch,
                                 float loss) {
-  try {
-    std::string checkpoint_file =
-        getCheckpointFilename(directory, model_name, epoch);
-    logger.log("Saving checkpoint to: " + checkpoint_file);
+    try {
+        std::string checkpoint_file = getCheckpointFilename(directory, model_name, epoch);
+        logger.log("Saving checkpoint to: " + checkpoint_file);
 
-    // Save model state
-    if (!saveModel(transformer, directory,
-                   model_name + "_checkpoint_" + std::to_string(epoch))) {
-      return false;
+        // Create checkpoint metadata
+        json checkpoint_meta;
+        const auto& config = transformer.getConfig();
+        
+        checkpoint_meta["epoch"] = epoch;
+        checkpoint_meta["loss"] = loss;
+        checkpoint_meta["timestamp"] = std::chrono::system_clock::now().time_since_epoch().count();
+        checkpoint_meta["model_config"] = {
+            {"vocab_size", config.vocab_size},
+            {"hidden_size", config.hidden_size},
+            {"num_heads", config.num_heads},
+            {"num_layers", config.num_layers}
+        };
+        checkpoint_meta["batch_size"] = config.batch_size;
+
+        // Open single checkpoint file
+        std::ofstream ckpt_file(checkpoint_file, std::ios::binary);
+        if (!ckpt_file) {
+            logger.log("Failed to open checkpoint file for writing", true);
+            return false;
+        }
+
+        // Write metadata as JSON to start of file
+        std::string meta_str = checkpoint_meta.dump();
+        size_t meta_size = meta_str.size();
+        ckpt_file.write(reinterpret_cast<const char*>(&meta_size), sizeof(meta_size));
+        ckpt_file.write(meta_str.c_str(), meta_size);
+
+        // Save model state
+        const auto &layers = transformer.getLayers();
+        for (const auto &layer : layers) {
+            layer->save(ckpt_file);
+        }
+
+        logger.log("Checkpoint saved successfully");
+        return true;
+    } catch (const std::exception &e) {
+        logger.log("Error saving checkpoint: " + std::string(e.what()), true);
+        return false;
     }
+}
 
-    // Save checkpoint metadata
-    json checkpoint_meta;
-    checkpoint_meta["epoch"] = epoch;
-    checkpoint_meta["loss"] = loss;
-    checkpoint_meta["timestamp"] =
-        std::chrono::system_clock::now().time_since_epoch().count();
+bool ModelSaver::loadCheckpoint(Transformer& transformer, const std::string& checkpoint_path) {
+    std::ifstream ckpt_file(checkpoint_path, std::ios::binary);
+    if (!ckpt_file) {
+        logger.log("Failed to open checkpoint file for reading", true);
+        return false;
+    }
+    
+    try {
+        // Read metadata size
+        size_t meta_size;
+        ckpt_file.read(reinterpret_cast<char*>(&meta_size), sizeof(meta_size));
 
-    std::ofstream meta_file(checkpoint_file + ".meta.json");
-    meta_file << std::setw(4) << checkpoint_meta << std::endl;
+        // Read metadata JSON
+        std::string meta_str(meta_size, '\0');
+        ckpt_file.read(&meta_str[0], meta_size);
+        
+        json checkpoint_meta = json::parse(meta_str);
+        
+        // Verify model configuration
+        const auto& config = transformer.getConfig();
+        const auto& saved_config = checkpoint_meta["model_config"];
+        
+        if (saved_config["vocab_size"] != config.vocab_size ||
+            saved_config["hidden_size"] != config.hidden_size ||
+            saved_config["num_heads"] != config.num_heads ||
+            saved_config["num_layers"] != config.num_layers) {
+            logger.log("Model configuration mismatch in checkpoint", true);
+            return false;
+        }
 
-    logger.log("Checkpoint saved successfully");
-    return true;
-  } catch (const std::exception &e) {
-    logger.log("Error saving checkpoint: " + std::string(e.what()), true);
-    return false;
-  }
+        // Load model state
+        transformer.load(ckpt_file);
+        
+        logger.log("Successfully loaded checkpoint from epoch " + 
+                  std::to_string(checkpoint_meta["epoch"].get<int>()));
+        return true;
+    } catch (const std::exception& e) {
+        logger.log("Error loading checkpoint: " + std::string(e.what()), true);
+        return false;
+    }
 }
 
 bool ModelSaver::loadLatestCheckpoint(Transformer &transformer,
-                                      const std::string &directory,
-                                      const std::string &model_name, int &epoch,
-                                      float &loss) {
-  try {
-    // Find latest checkpoint
-    int latest_epoch = -1;
-    for (const auto &entry : fs::directory_iterator(directory)) {
-      if (entry.path().extension() == ".meta.json") {
-        std::string filename = entry.path().stem().string();
-        if (filename.find(model_name + "_checkpoint_") == 0) {
-          int checkpoint_epoch =
-              std::stoi(filename.substr(filename.find_last_of("_") + 1));
-          latest_epoch = std::max(latest_epoch, checkpoint_epoch);
+                                    const std::string &directory,
+                                    const std::string &model_name, 
+                                    int &epoch,
+                                    float &loss) {
+    try {
+        // Find latest checkpoint
+        int latest_epoch = -1;
+        for (const auto &entry : fs::directory_iterator(directory)) {
+            if (entry.path().extension() == ".ckpt") {
+                std::string filename = entry.path().stem().string();
+                if (filename.find(model_name + "_checkpoint_") == 0) {
+                    int checkpoint_epoch =
+                        std::stoi(filename.substr(filename.find_last_of("_") + 1));
+                    latest_epoch = std::max(latest_epoch, checkpoint_epoch);
+                }
+            }
         }
-      }
+
+        if (latest_epoch == -1) {
+            logger.log("No checkpoints found", true);
+            return false;
+        }
+
+        // Load the latest checkpoint
+        std::string checkpoint_file = getCheckpointFilename(directory, model_name, latest_epoch);
+        if (!loadCheckpoint(transformer, checkpoint_file)) {
+            return false;
+        }
+
+        // Update epoch and loss from the loaded checkpoint
+        std::ifstream ckpt_file(checkpoint_file, std::ios::binary);
+        size_t meta_size;
+        ckpt_file.read(reinterpret_cast<char*>(&meta_size), sizeof(meta_size));
+        
+        std::string meta_str(meta_size, '\0');
+        ckpt_file.read(&meta_str[0], meta_size);
+        
+        json checkpoint_meta = json::parse(meta_str);
+        epoch = checkpoint_meta["epoch"];
+        loss = checkpoint_meta["loss"];
+
+        return true;
+    } catch (const std::exception &e) {
+        logger.log("Error loading latest checkpoint: " + std::string(e.what()), true);
+        return false;
     }
-
-    if (latest_epoch == -1) {
-      logger.log("No checkpoints found", true);
-      return false;
-    }
-
-    // Load checkpoint metadata
-    std::string checkpoint_file =
-        getCheckpointFilename(directory, model_name, latest_epoch);
-    std::ifstream meta_file(checkpoint_file + ".meta.json");
-    json checkpoint_meta;
-    meta_file >> checkpoint_meta;
-
-    epoch = checkpoint_meta["epoch"];
-    loss = checkpoint_meta["loss"];
-
-    // Load model state
-    return loadModel(transformer, directory,
-                     model_name + "_checkpoint_" +
-                         std::to_string(latest_epoch));
-  } catch (const std::exception &e) {
-    logger.log("Error loading checkpoint: " + std::string(e.what()), true);
-    return false;
-  }
 }
 
 std::string ModelSaver::createDirectory(const std::string &base_dir) const {
@@ -172,7 +237,7 @@ std::string ModelSaver::createDirectory(const std::string &base_dir) const {
 std::string ModelSaver::getCheckpointFilename(const std::string &directory,
                                               const std::string &model_name,
                                               int epoch) const {
-  return directory + "/" + model_name + "_checkpoint_" + std::to_string(epoch);
+  return directory + "/" + model_name + "_checkpoint_" + std::to_string(epoch) + ".ckpt";
 }
 
 bool ModelSaver::writeMetadata(const std::string &directory,

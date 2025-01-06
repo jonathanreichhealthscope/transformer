@@ -45,11 +45,13 @@ public:
     std::string model_name;
     size_t checkpoint_frequency;
   } paths;
+  bool load_from_checkpoint;
+  std::string checkpoint_to_load;
 
-  TransformerConfig(size_t vocab_size = 50000, size_t max_seq_length = 2048,
-                    size_t hidden_size = 768, size_t num_layers = 12,
-                    size_t num_heads = 12, size_t batch_size = 1,
-                    size_t num_epochs = 10);
+  TransformerConfig(size_t vocab_size = 32000, size_t max_seq_length = 512,
+                   size_t hidden_size = 768, size_t num_layers = 12,
+                   size_t num_heads = 12, size_t batch_size = 32,
+                   size_t num_epochs = 10);
 
   friend bool operator!=(const TransformerConfig &lhs,
                          const TransformerConfig &rhs) {
@@ -270,5 +272,11 @@ public:
     for (auto& layer : layers) {
       layer->set_training(mode);
     }
+  }
+
+  bool verify_state() const {
+    return token_embedding && pos_encoding && final_ln && lm_head && 
+           !layers.empty() && std::all_of(layers.begin(), layers.end(), 
+           [](const auto& layer) { return layer != nullptr; });
   }
 };

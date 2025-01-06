@@ -137,6 +137,15 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         config.use_gradient_checkpointing = optimization["use_gradient_checkpointing"];
         config.memory_pool_size = optimization["memory_pool_size"];
         
+        // Add checkpoint loading settings
+        if (j.contains("load_from_checkpoint")) {
+            config.load_from_checkpoint = j["load_from_checkpoint"].get<bool>();
+            if (config.load_from_checkpoint && j.contains("checkpoint_to_load")) {
+                config.checkpoint_to_load = j["checkpoint_to_load"].get<std::string>();
+                std::cout << "Will load checkpoint from: " << config.checkpoint_to_load << std::endl;
+            }
+        }
+        
     } catch (const std::exception& e) {
         throw std::runtime_error("Error parsing config file: " + std::string(e.what()));
     }
