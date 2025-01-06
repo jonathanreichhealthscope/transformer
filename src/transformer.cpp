@@ -8,6 +8,7 @@
 #include <iostream>
 #include <omp.h>
 #include <stdexcept>
+#include <chrono>
 
 extern cublasHandle_t cublas_handle;
 
@@ -76,15 +77,11 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
 
   // Self attention
   Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
-  std::cout << "attention output: " << attention_output.rows() << "x"
-            << attention_output.cols() << std::endl;
   if (training) {
     std::cout << "attention dropout" << std::endl;
     attention_output = attention_dropout->forward(attention_output, true);
   }
-  std::cout << "calculating residual" << std::endl;
   Matrix residual = attention_output + normalized;
-  std::cout << "calculating attention ln" << std::endl;
   Matrix norm1 = attention_ln->forward(residual);
 
   // Cache the normalized input for feed forward backward pass
@@ -104,11 +101,6 @@ Matrix TransformerLayer::forward(const Matrix &input, const AttentionMask &mask,
 Matrix TransformerLayer::backward(const Matrix &grad_output,
                                   const Matrix &input,
                                   const Matrix &target_distribution) {
-  std::cout << "=== TransformerLayer::backward START ===" << std::endl;
-  std::cout << "Grad output dimensions: " << grad_output.rows() << "x"
-            << grad_output.cols() << std::endl;
-  std::cout << "Input dimensions: " << input.rows() << "x" << input.cols()
-            << std::endl;
 
   try {
     // Get the cached normalized input for feed forward
@@ -250,12 +242,10 @@ Matrix Transformer::forward(const std::vector<std::vector<int>> &batch_tokens, b
     Matrix all_embeddings = token_embedding->forward(batch_tokens);
     embeddings = all_embeddings;  // The embeddings will already be in the correct shape
 
-    std::cout << "before position ids" << std::endl;
     Matrix position_ids(max_seq_len, 1);
     for (size_t i = 0; i < max_seq_len; ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
-    std::cout << "after position ids" << std::endl;
     Matrix pos_encodings = pos_encoding->forward(position_ids);
    
     // Replicate positional encodings for each item in the batch
@@ -267,37 +257,26 @@ Matrix Transformer::forward(const std::vector<std::vector<int>> &batch_tokens, b
             }
         }
     }
-    std::cout << "after pos encoding forward" << std::endl;
     embeddings += batched_pos_encodings;  // Now dimensions match
-    std::cout << "after embeddings + pos encodings" << std::endl;
     // Create causal mask for next-token prediction
-    std::cout << "before mask" << std::endl;
+  
     AttentionMask mask = AttentionMask::create_causal_mask(max_seq_len);
-    std::cout << "after mask" << std::endl;
-    std::cout << "before hidden states" << std::endl;
     // Forward through layers
     hidden_states = embeddings;
-    std::cout << "after hidden states" << std::endl;
     std::vector<Matrix> activations;
     activations.reserve(layers.size());
-    std::cout << "before activations" << std::endl;
     for (size_t i = 0; i < layers.size(); ++i) {
         activations.push_back(hidden_states);
         hidden_states = layers[i]->forward(
             hidden_states, mask,
             use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
     }
-    std::cout << "after activations" << std::endl;
+
     // Final layer normalization
-    std::cout << "before final ln" << std::endl;
     hidden_states = final_ln->forward(hidden_states);
-    std::cout << "after final ln" << std::endl;
     // Store activations for backward pass
-    std::cout << "before last hidden states" << std::endl;
     last_hidden_states = hidden_states;
-    std::cout << "after last hidden states" << std::endl;
     m_layer_activations = std::move(activations);
-    std::cout << "after layer activations" << std::endl;
 
     std::cout << "=== Transformer::forward END ===\n" << std::endl;
     return hidden_states;
@@ -311,17 +290,11 @@ void Transformer::clear_kv_cache() {
 
 void Transformer::backward(const Matrix &grad_output, const std::vector<std::vector<int>> &batch_tokens,
                            float learning_rate) {
-  std::cout << "\n=== Transformer::backward START ===" << std::endl;
-  std::cout << "before grad output" << std::endl;
 
   Matrix current_grad = grad_output;
-  std::cout << "Initial grad dimensions: " << current_grad.rows() << "x"
-            << current_grad.cols() << std::endl;
 
   // Backward through final layer norm
   const Matrix &last_activation = m_layer_activations.back();
-  std::cout << "Last activation dimensions: " << last_activation.rows() << "x"
-            << last_activation.cols() << std::endl;
 
   if (current_grad.rows() != last_activation.rows() ||
       current_grad.cols() != last_activation.cols()) {
@@ -333,19 +306,12 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<std::vec
         std::to_string(last_activation.rows()) + "," +
         std::to_string(last_activation.cols()) + ")");
   }
-  std::cout << "after final ln" << std::endl;
   current_grad = final_ln->backward(current_grad, last_activation);
-  std::cout << "After final LN grad dimensions: " << current_grad.rows() << "x"
-            << current_grad.cols() << std::endl;
 
   // Backward through layers in reverse order
   for (int i = layers.size() - 1; i >= 0; --i) {
     std::cout << "\nProcessing layer " << i << std::endl;
     const Matrix &layer_input = m_layer_activations[i];
-    std::cout << "Layer input dimensions: " << layer_input.rows() << "x"
-              << layer_input.cols() << std::endl;
-    std::cout << "Current grad dimensions: " << current_grad.rows() << "x"
-              << current_grad.cols() << std::endl;
 
     if (current_grad.rows() != layer_input.rows() ||
         current_grad.cols() != layer_input.cols()) {
@@ -375,14 +341,10 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<std::vec
   
   // First step of SAM
   optimizer->first_step(param_ptrs, grads);
-  std::cout << "after first step" << std::endl;
   // Recompute gradients at the perturbed point
   Matrix perturbed_output = forward(batch_tokens);
-  std::cout << "after perturbed output" << std::endl;
   Matrix perturbed_grad = compute_loss_gradients(perturbed_output, batch_tokens);
-  std::cout << "after perturbed grad" << std::endl;
   auto& perturbed_grads = parameter_gradients();
-  std::cout << "after perturbed grads" << std::endl;
   
   // Second step of SAM
   optimizer->second_step(param_ptrs, perturbed_grads);
@@ -397,17 +359,11 @@ void Transformer::update_parameters(float learning_rate) {
   auto &params = parameters();
   auto &grads = parameter_gradients();
 
-  std::cout << "Number of matrix parameters: " << params.size() << std::endl;
-  std::cout << "Number of matrix gradients: " << grads.size() << std::endl;
 
   for (size_t i = 0; i < params.size(); ++i) {
     Matrix &param = params[i];
     const Matrix &grad = grads[i];
 
-    std::cout << "Updating matrix parameter " << i << ": ";
-    std::cout << "param shape=" << param.rows() << "x" << param.cols()
-              << ", grad shape=" << grad.rows() << "x" << grad.cols()
-              << std::endl;
 
     if (param.rows() != grad.rows() || param.cols() != grad.cols()) {
       throw std::runtime_error("Dimension mismatch in matrix update: param(" +
@@ -551,12 +507,14 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
                        size_t num_epochs, float learning_rate,
                        std::function<void(size_t)> checkpoint_callback) {
     const size_t validate_every = 100;
+    const size_t flush_every = 10;  // Flush logs every 10 batches
     size_t step = 0;
     float total_loss = 0.0f;
     size_t batch_count = 0;
     
-    std::cout << "Starting training with " << training_data.size() << " samples\n";
-    std::cout << "Config batch size: " << config.batch_size << "\n";
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    std::cout << "Starting training with " << training_data.size() << " samples" << std::endl;
     
     for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
         std::cout << "\nEpoch " << epoch + 1 << "/" << num_epochs << "\n";
@@ -565,27 +523,45 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
 
         // Group data into batches
         for (size_t batch_start = 0; batch_start < training_data.size(); batch_start += config.batch_size) {
+            auto batch_start_time = std::chrono::high_resolution_clock::now();
+            
             size_t batch_end = std::min(batch_start + config.batch_size, training_data.size());
             std::vector<std::vector<int>> batch_inputs;
             std::vector<std::vector<int>> batch_targets;
             
+            auto tokenize_start = std::chrono::high_resolution_clock::now();
             // Collect batch_size samples
             for (size_t i = batch_start; i < batch_end; i++) {
                 const auto& [input_text, target_text] = training_data[i];
                 batch_inputs.push_back(tokenizer->encode(input_text));
                 batch_targets.push_back(tokenizer->encode(target_text));
             }
+            auto tokenize_end = std::chrono::high_resolution_clock::now();
             
             optimizer->zero_grad();
             
+            auto forward_start = std::chrono::high_resolution_clock::now();
             Matrix output = forward(batch_inputs);
-            std::cout << "output shape: " << output.rows() << "x" << output.cols() << std::endl;
-            std::cout << "hello govna!" << std::endl;
+            auto forward_end = std::chrono::high_resolution_clock::now();
+
+            auto backward_start = std::chrono::high_resolution_clock::now();
+            backward(output, batch_inputs, learning_rate);
+            auto backward_end = std::chrono::high_resolution_clock::now();
+
+            auto batch_end_time = std::chrono::high_resolution_clock::now();
+            
+            if (batch_count % flush_every == 0) {
+                std::cout << "Batch timing:\n"
+                          << "  Tokenization: " << std::chrono::duration_cast<std::chrono::milliseconds>(tokenize_end - tokenize_start).count() << "ms\n"
+                          << "  Forward pass: " << std::chrono::duration_cast<std::chrono::milliseconds>(forward_end - forward_start).count() << "ms\n"
+                          << "  Backward pass: " << std::chrono::duration_cast<std::chrono::milliseconds>(backward_end - backward_start).count() << "ms\n"
+                          << "  Total batch time: " << std::chrono::duration_cast<std::chrono::milliseconds>(batch_end_time - batch_start_time).count() << "ms\n"
+                          << std::flush;
+            }
 
             // Create batched target distribution
             size_t max_seq_len = output.rows() / batch_inputs.size();
             Matrix target_distribution(output.rows(), config.vocab_size, 0.0f);
-            std::cout << "target distribution shape: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
             for (size_t b = 0; b < batch_inputs.size(); b++) {
                 if (batch_targets[b].size() > max_seq_len) {
                     std::cout << "Warning: Truncating sequence " << b << " from length " 
@@ -597,7 +573,6 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
                     }
                 }
             }
-            std::cout << "target distribution shape afterwards: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
             float batch_loss = Utils::compute_batch_loss(output, target_distribution);
             std::cout << "Batch " << batch_count + 1 << "/" << training_data.size() 
                      << ", Loss: " << batch_loss << "\n";
@@ -608,9 +583,7 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
             ++epoch_batch_count;
             ++batch_count;
             
-            std::cout << "Starting backward pass...\n";
             backward(output, batch_inputs, learning_rate);
-            std::cout << "Backward pass complete\n";
             
             if (++step % validate_every == 0) {
                 std::cout << "\nStarting validation...\n";

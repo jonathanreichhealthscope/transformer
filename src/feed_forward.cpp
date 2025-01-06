@@ -176,16 +176,19 @@ Matrix FeedForward::backward(const Matrix &grad_output, const Matrix &input) {
   // Create local copy of cache to prevent it being moved/destroyed
   Matrix cache_copy = intermediate_cache;
 
-  std::cout << "Computing d_intermediate..." << std::endl;
   Matrix d_intermediate = matmul(grad_output, w2.transpose());
-  std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x"
-            << d_intermediate.cols() << std::endl;
+
+  static size_t backward_count = 0;
+  if (++backward_count % 10 == 0) {
+    std::cout << "Computing d_intermediate..." << std::endl
+              << "d_intermediate dims: " << d_intermediate.rows() << "x"
+              << d_intermediate.cols() << std::endl
+              << std::flush;
+  }
 
   // Ensure d_intermediate matches cache dimensions before GELU derivative
   if (d_intermediate.rows() != cache_copy.rows() ||
       d_intermediate.cols() != cache_copy.cols()) {
-    std::cout << "Reshaping d_intermediate to match cache dimensions..."
-              << std::endl;
     Matrix reshaped_d_intermediate(cache_copy.rows(), cache_copy.cols());
     for (size_t i = 0; i < cache_copy.rows(); ++i) {
       for (size_t j = 0; j < cache_copy.cols(); ++j) {

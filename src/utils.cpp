@@ -45,8 +45,6 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
     float loss = 0.0f;
     const float epsilon = 1e-10f;
-    std::cout << "logits shape: " << logits.shape() << std::endl;
-    std::cout << "target distribution shape: " << target_distribution.shape() << std::endl;
     for (size_t i = 0; i < logits.rows(); i++) {
         // Find max logit for numerical stability
         float max_logit = -std::numeric_limits<float>::infinity();

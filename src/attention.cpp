@@ -154,6 +154,15 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
   Matrix K = matmul(x, key_proj);
   Matrix V = matmul(x, value_proj);
 
+  static size_t forward_count = 0;
+  if (++forward_count % 10 == 0) {  // Only log and flush every 10th forward pass
+      std::cout << "Attention dimensions:" << std::endl
+                << "Q: " << Q.rows() << "x" << Q.cols() << std::endl
+                << "K: " << K.rows() << "x" << K.cols() << std::endl
+                << "V: " << V.rows() << "x" << V.cols() << std::endl
+                << std::flush;
+  }
+
   // Handle batched attention computation
   if (use_flash_attention) {
     // Modify flash_attention to handle batches
@@ -194,17 +203,9 @@ void MultiHeadAttention::save(std::ostream &os) const {
 
   // Save projection matrices
   std::cout << "\nSaving projection matrices..." << std::endl;
-  std::cout << "Query projection shape: " << query_proj.rows() << "x"
-            << query_proj.cols() << std::endl;
   query_proj.save(os);
-  std::cout << "Key projection shape: " << key_proj.rows() << "x"
-            << key_proj.cols() << std::endl;
   key_proj.save(os);
-  std::cout << "Value projection shape: " << value_proj.rows() << "x"
-            << value_proj.cols() << std::endl;
   value_proj.save(os);
-  std::cout << "Output projection shape: " << output_proj.rows() << "x"
-            << output_proj.cols() << std::endl;
   output_proj.save(os);
 
   std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
@@ -400,11 +401,6 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
   // Calculate dimensions
   size_t seq_len = Q.rows();
   size_t head_size = Q.cols() / num_heads;
-
-  std::cout << "Dimensions:" << std::endl;
-  std::cout << "- Sequence length: " << seq_len << std::endl;
-  std::cout << "- Head size: " << head_size << std::endl;
-  std::cout << "- Number of heads: " << num_heads << std::endl;
 
   // Always create a proper mask
   Matrix effective_mask(seq_len, seq_len,
@@ -623,14 +619,6 @@ Matrix MultiHeadAttention::compute_attention(const Matrix &Q, const Matrix &K,
   size_t seq_len = Q.rows();
   size_t head_size = Q.cols() / num_heads;
 
-  // Debug dimensions
-  std::cout << "Attention dimensions:" << std::endl;
-  std::cout << "Q: " << Q.rows() << "x" << Q.cols() << std::endl;
-  std::cout << "K: " << K.rows() << "x" << K.cols() << std::endl;
-  std::cout << "V: " << V.rows() << "x" << V.cols() << std::endl;
-  std::cout << "seq_len: " << seq_len << ", head_size: " << head_size
-            << ", num_heads: " << num_heads << std::endl;
-
   // Reshape maintaining [seq_len, hidden_size] as the basic shape
   Tensor Q_reshaped =
       reshape_for_attention(Q, 1, num_heads, seq_len, head_size);
@@ -774,18 +762,9 @@ Tensor MultiHeadAttention::compute_attention(const Matrix &Q, const Matrix &K,
 
 void MultiHeadAttention::initialize_rope_cache(size_t max_seq_len, size_t dim) {
   std::cout << "Initializing RoPE cache:" << std::endl;
-  std::cout << "- max_seq_len: " << max_seq_len << std::endl;
-  std::cout << "- dim: " << dim << std::endl;
-  std::cout << "- num_heads: " << num_heads << std::endl;
 
   cos_cached = Matrix(max_seq_len, dim * num_heads);
   sin_cached = Matrix(max_seq_len, dim * num_heads);
-
-  std::cout << "Created cache matrices:" << std::endl;
-  std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols()
-            << std::endl;
-  std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols()
-            << std::endl;
 
   for (size_t pos = 0; pos < max_seq_len; pos++) {
     for (size_t h = 0; h < num_heads; h++) {

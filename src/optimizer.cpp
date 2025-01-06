@@ -1,5 +1,5 @@
 #include "../include/optimizer.hpp"
-
+#include <string>
 Optimizer::Optimizer(float lr, float b1, float b2, float eps)
     : learning_rate(lr), beta1(b1), beta2(b2), epsilon(eps), t(0) {}
 

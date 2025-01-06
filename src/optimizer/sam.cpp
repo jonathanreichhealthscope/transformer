@@ -75,16 +75,10 @@ void SAM::first_step(std::vector<Matrix *> &params,
 
 void SAM::second_step(std::vector<Matrix *> &params,
                       const std::vector<Matrix> &grads) {
-  std::cout << "second step" << std::endl;
-  std::cout << "params size: " << params.size() << std::endl;
-  std::cout << "grads size: " << grads.size() << std::endl;
   // Restore original parameters
-  std::cout << "restoring parameters" << std::endl;
   restore_parameters(params);
-  std::cout << "parameters restored" << std::endl;
   // Apply base optimizer update using step() instead of update()
   base_optimizer->step(params, grads);
-  std::cout << "second step done" << std::endl;
 }
 
 void SAM::update_bias(std::vector<std::reference_wrapper<FloatVector>> &biases,

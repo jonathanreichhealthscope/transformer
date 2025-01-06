@@ -24,8 +24,6 @@ public:
         hidden_size_(hidden_size) {
     float scale = std::sqrt(1.0f / hidden_size);
     std::cout << "LM Head initialization:" << std::endl;
-    std::cout << "Creating projection matrix: [" << hidden_size << " × "
-              << vocab_size << "]" << std::endl;
     projection.randomize(-scale, scale);
     bias.randomize(-scale, scale);
   }
@@ -51,11 +49,8 @@ public:
 
   Matrix backward_pass(const Matrix &grad_output, const Matrix &hidden_states) {
     // Compute gradients for projection and bias
-    std::cout << "Computing gradients for projection and bias" << std::endl;
     Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
-    std::cout << "grad projection shape: " << grad_proj.shape() << std::endl;
     Vector grad_bias = grad_output.row_sum();
-    std::cout << "grad bias size: " << grad_bias.size() << std::endl;
 
     // Apply weight updates with adaptive learning rate
     float lr = 0.001f;    // Base learning rate
@@ -76,18 +71,14 @@ public:
     std::cout << "updating projection matrix using Adam optimizer" << std::endl;
     for (size_t i = 0; i < projection.rows(); ++i) {
       for (size_t j = 0; j < projection.cols(); ++j) {
-        std::cout << "updating momentum" << std::endl;
         // Update momentum
         m_proj(i, j) = beta1 * m_proj(i, j) + (1 - beta1) * grad_proj(i, j);
-        std::cout << "updating RMSprop" << std::endl;
         // Update RMSprop
         v_proj(i, j) = beta2 * v_proj(i, j) +
                        (1 - beta2) * grad_proj(i, j) * grad_proj(i, j);
-        std::cout << "calculating bias correction" << std::endl;
         // Bias correction
         float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
         float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
-        std::cout << "updating weights" << std::endl;
         // Update weights
         projection(i, j) -= lr * m_hat / (std::sqrt(v_hat) + eps);
       }
@@ -95,25 +86,16 @@ public:
 
     // Update bias vector using Adam optimizer
     for (size_t i = 0; i < bias.size(); ++i) {
-      std::cout << "updating momentum" << std::endl;
       // Update momentum
       m_bias[i] = beta1 * m_bias[i] + (1 - beta1) * grad_bias[i];
-      std::cout << "updating RMSprop" << std::endl;
       // Update RMSprop
       v_bias[i] = beta2 * v_bias[i] + (1 - beta2) * grad_bias[i] * grad_bias[i];
-      std::cout << "calculating bias correction" << std::endl;
       // Bias correction
       float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
       float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
-      std::cout << "updating bias" << std::endl;
       // Update bias
       bias[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
     }
-    std::cout << "Gradient with respect to input" << std::endl;
-    std::cout << "grad_output dims: " << grad_output.rows() << "x"
-              << grad_output.cols() << std::endl;
-    std::cout << "projection dims: " << projection.rows() << "x"
-              << projection.cols() << std::endl;
     // Compute gradient with respect to input
     Matrix grad_input = matmul(grad_output, projection);
     if (grad_input.cols() != hidden_states.cols()) {

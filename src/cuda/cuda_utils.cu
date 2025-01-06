@@ -77,8 +77,6 @@ Matrix cuda_matmul(const Matrix &A, const Matrix &B) {
 
   Matrix C(A.rows(), B.cols(), 0.0f);
   Matrix C_gpu = C.to_gpu();
-  std::cout << "Created output matrix C: " << C.rows() << "x" << C.cols()
-            << std::endl;
 
   try {
     status = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.cols(), A.rows(),
