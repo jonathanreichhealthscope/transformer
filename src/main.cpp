@@ -9,7 +9,7 @@
 int main() {
     try {
         // Initialize the logger
-        Logger::getInstance().startLogging("build/transformer.log");
+        Logger::getInstance().startLogging("transformer.log");
 
         // Log the start of the program
         Logger::getInstance().log("Starting transformer program");
