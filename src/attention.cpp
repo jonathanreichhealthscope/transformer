@@ -644,35 +644,23 @@ Matrix MultiHeadAttention::compute_attention(const Matrix &Q, const Matrix &K,
   Matrix K_mat = K_reshaped.to_matrix(); // [num_heads * seq_len, head_size]
   Matrix V_mat = V_reshaped.to_matrix(); // [num_heads * seq_len, head_size]
 
-  // Compute attention scores
-  Matrix scores =
-      matmul(Q_mat, K_mat.transpose()); // [num_heads * seq_len, seq_len]
-
-  // Scale scores
+  // Pre-compute scaling factor
   const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
+  
+  // Use BLAS for matrix multiplications
+  Matrix scores = matmul(Q_mat, K_mat.transpose());
   scores *= scale;
-
+  
+  // Vectorized mask application
   if (!mask.mask.empty()) {
-    // Create expanded mask for all attention heads
-    Matrix expanded_mask(scores.rows(), scores.cols(), 1.0f);
-
-    // Repeat the mask for each attention head
-    for (size_t h = 0; h < num_heads; ++h) {
-      for (size_t i = 0; i < seq_len; ++i) {
-        for (size_t j = 0; j < seq_len; ++j) {
-          expanded_mask(h * seq_len + i, h * seq_len + j) = mask.mask(i, j);
-        }
+      #pragma omp parallel for collapse(2)
+      for (size_t i = 0; i < scores.rows(); i++) {
+          for (size_t j = 0; j < scores.cols(); j++) {
+              if (mask.mask(i, j) == 0.0f) {
+                  scores.data()[i * scores.cols() + j] = -std::numeric_limits<float>::infinity();
+              }
+          }
       }
-    }
-
-    std::cout << "Original mask shape: " << mask.mask.rows() << "x"
-              << mask.mask.cols() << std::endl;
-    std::cout << "Expanded mask shape: " << expanded_mask.rows() << "x"
-              << expanded_mask.cols() << std::endl;
-    std::cout << "Scores shape: " << scores.rows() << "x" << scores.cols()
-              << std::endl;
-
-    apply_mask(scores, expanded_mask);
   }
 
   apply_stable_softmax(scores);

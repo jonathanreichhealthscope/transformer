@@ -22,31 +22,45 @@ void Optimizer::update(const std::vector<Matrix>& params, const std::vector<Matr
 }
 
 void Optimizer::step(std::vector<Matrix*>& params, const std::vector<Matrix>& grads) {
+    // Validate input sizes
+    if (params.size() != grads.size()) {
+        throw std::runtime_error("Parameter and gradient count mismatch in step(): params=" + 
+                                std::to_string(params.size()) + " grads=" + 
+                                std::to_string(grads.size()));
+    }
+
     // Convert vector of pointers to vector of references
     std::vector<Matrix> param_refs;
     param_refs.reserve(params.size());
     for (auto* param : params) {
+        if (!param) {
+            throw std::runtime_error("Null parameter pointer in optimizer step");
+        }
         param_refs.push_back(*param);
     }
+    
     update(param_refs, grads);
     t++;  // Increment timestep
-    
-    for (size_t i = 0; i < parameters.size(); ++i) {
-        Matrix& param = *parameters[i];
+
+    // Compute learning rate once
+    float lr_t = learning_rate * std::sqrt(1.0f - std::pow(beta2, t)) / 
+                 (1.0f - std::pow(beta1, t));
+
+    for (size_t i = 0; i < params.size(); ++i) {
+        Matrix& param = *params[i];
         const Matrix& grad = gradients[i];
         
-        // Apply Adam-style update
-        for (size_t r = 0; r < param.rows(); ++r) {
-            for (size_t c = 0; c < param.cols(); ++c) {
-                float g = grad(r, c);
-                
-                // Bias correction
-                float lr_t = learning_rate * std::sqrt(1.0f - std::pow(beta2, t)) / 
-                           (1.0f - std::pow(beta1, t));
-                
-                // Update parameter
-                param(r, c) -= lr_t * g;
-            }
+        // Validate dimensions
+        if (param.size() != grad.size()) {
+            throw std::runtime_error("Parameter and gradient size mismatch: param=" + 
+                                    std::to_string(param.size()) + " grad=" + 
+                                    std::to_string(grad.size()));
+        }
+
+        // Vectorized update
+        #pragma omp parallel for
+        for (size_t j = 0; j < param.size(); ++j) {
+            param.data()[j] -= lr_t * grad.data()[j];
         }
     }
 }

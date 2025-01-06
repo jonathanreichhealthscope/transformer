@@ -1,6 +1,7 @@
 #include "../include/embeddings.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <random>
 #include <string>
@@ -43,20 +44,18 @@ Matrix TokenEmbedding::forward(const std::vector<std::vector<int>> &batch_tokens
   Matrix output(batch_tokens.size() * max_seq_len, embedding_dim_);
 
   // Copy embeddings
+  #pragma omp parallel for
   for (size_t b = 0; b < batch_tokens.size(); b++) {
-    for (size_t i = 0; i < batch_tokens[b].size(); ++i) {
+    const auto& tokens = batch_tokens[b];  // Cache the reference
+    for (size_t i = 0; i < tokens.size(); ++i) {
       size_t row = b * max_seq_len + i;
-      int token = batch_tokens[b][i];
+      int token = tokens[i];
       if (token < 0 || static_cast<size_t>(token) >= vocab_size_) {
         throw std::runtime_error("Token id out of range");
       }
-      for (size_t j = 0; j < embedding_dim_; ++j) {
-        float val = weights_(token, j);
-        if (std::isnan(val) || std::isinf(val)) {
-          throw std::runtime_error("Invalid embedding value");
-        }
-        output(row, j) = val;
-      }
+      float* out_row = output.data() + row * embedding_dim_;
+      const float* weight_row = weights_.data() + token * embedding_dim_;
+      std::memcpy(out_row, weight_row, embedding_dim_ * sizeof(float));
     }
   }
 

@@ -325,6 +325,7 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<std::vec
 
   if (current_grad.rows() != last_activation.rows() ||
       current_grad.cols() != last_activation.cols()) {
+        std::cout << "dimension mismatch in final layer norm!!!" << std::endl;
     throw std::runtime_error(
         "Dimension mismatch in final layer norm backward: grad(" +
         std::to_string(current_grad.rows()) + "," +
@@ -332,7 +333,7 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<std::vec
         std::to_string(last_activation.rows()) + "," +
         std::to_string(last_activation.cols()) + ")");
   }
-
+  std::cout << "after final ln" << std::endl;
   current_grad = final_ln->backward(current_grad, last_activation);
   std::cout << "After final LN grad dimensions: " << current_grad.rows() << "x"
             << current_grad.cols() << std::endl;
@@ -578,22 +579,29 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
             optimizer->zero_grad();
             
             Matrix output = forward(batch_inputs);
-            
+            std::cout << "output shape: " << output.rows() << "x" << output.cols() << std::endl;
+            std::cout << "hello govna!" << std::endl;
+
             // Create batched target distribution
             size_t max_seq_len = output.rows() / batch_inputs.size();
             Matrix target_distribution(output.rows(), config.vocab_size, 0.0f);
-            
+            std::cout << "target distribution shape: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
             for (size_t b = 0; b < batch_inputs.size(); b++) {
-                for (size_t i = 0; i < batch_targets[b].size(); i++) {
+                if (batch_targets[b].size() > max_seq_len) {
+                    std::cout << "Warning: Truncating sequence " << b << " from length " 
+                              << batch_targets[b].size() << " to " << max_seq_len << std::endl;
+                }
+                for (size_t i = 0; i < std::min(batch_targets[b].size(), max_seq_len); i++) {
                     if (batch_targets[b][i] >= 0 && batch_targets[b][i] < config.vocab_size) {
                         target_distribution(b * max_seq_len + i, batch_targets[b][i]) = 1.0f;
                     }
                 }
             }
-            
+            std::cout << "target distribution shape afterwards: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
             float batch_loss = Utils::compute_batch_loss(output, target_distribution);
             std::cout << "Batch " << batch_count + 1 << "/" << training_data.size() 
                      << ", Loss: " << batch_loss << "\n";
+            std::cout << "batch loss: " << batch_loss << std::endl;
             
             epoch_loss += batch_loss;
             total_loss += batch_loss;

@@ -62,8 +62,8 @@ int main() {
         auto training_data = Utils::create_training_data();
         Logger::getInstance().log("Loaded training data");
 
-        // Load validation data
-        auto validation_data = Utils::load_validation_data();
+    // Load validation data
+    auto validation_data = Utils::load_validation_data();
         Logger::getInstance().log("Loaded validation data");
 
         // Train model with checkpoint callback
@@ -124,6 +124,6 @@ int main() {
     } catch (const std::exception& e) {
         Logger::getInstance().log("Error: " + std::string(e.what()), true);
         Logger::getInstance().stopLogging();
-        return 1;
+      return 1;
     }
 }
