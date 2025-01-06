@@ -538,18 +538,42 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
     float total_loss = 0.0f;
     size_t batch_count = 0;
     
+    std::cout << "Starting training with " << training_data.size() << " samples\n";
+    std::cout << "Config batch size: " << config.batch_size << "\n";
+    
     for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
         std::cout << "\nEpoch " << epoch + 1 << "/" << num_epochs << "\n";
         float epoch_loss = 0.0f;
         size_t epoch_batch_count = 0;
 
-        for (const auto& [input_text, target_text] : training_data) {
+        // Group data into batches
+        for (size_t batch_start = 0; batch_start < training_data.size(); batch_start += config.batch_size) {
+            size_t batch_end = std::min(batch_start + config.batch_size, training_data.size());
+            std::vector<std::vector<int>> batch_inputs;
+            std::vector<std::vector<int>> batch_targets;
+            
+            // Collect batch_size samples
+            for (size_t i = batch_start; i < batch_end; i++) {
+                const auto& [input_text, target_text] = training_data[i];
+                batch_inputs.push_back(tokenizer->encode(input_text));
+                batch_targets.push_back(tokenizer->encode(target_text));
+            }
+
+            std::cout << "\nProcessing batch " << batch_count + 1 << ":\n";
+            std::cout << "Input text length: " << batch_inputs[0].size() << "\n";
+            std::cout << "Target text length: " << batch_targets[0].size() << "\n";
+            
             optimizer->zero_grad();
             
-            std::vector<int> input_tokens = tokenizer->encode(input_text);
-            std::vector<int> target_tokens = tokenizer->encode(target_text);
+            std::vector<int> input_tokens = batch_inputs[0];
+            std::vector<int> target_tokens = batch_targets[0];
+            
+            std::cout << "Encoded tokens - Input: " << input_tokens.size() 
+                      << ", Target: " << target_tokens.size() << "\n";
             
             Matrix output = forward(input_tokens);
+            std::cout << "Forward pass complete - Output shape: " 
+                      << output.rows() << "x" << output.cols() << "\n";
             
             // Create target distribution matrix
             Matrix target_distribution(output.rows(), config.vocab_size, 0.0f);
@@ -562,7 +586,6 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
             }
             
             float batch_loss = Utils::compute_batch_loss(output, target_distribution);
-            
             std::cout << "Batch " << batch_count + 1 << "/" << training_data.size() 
                      << ", Loss: " << batch_loss << "\n";
             
@@ -571,15 +594,19 @@ void Transformer::train(const std::vector<std::pair<std::string, std::string>>& 
             ++epoch_batch_count;
             ++batch_count;
             
+            std::cout << "Starting backward pass...\n";
             backward(output, input_tokens, learning_rate);
+            std::cout << "Backward pass complete\n";
             
             if (++step % validate_every == 0) {
+                std::cout << "\nStarting validation...\n";
                 float val_loss = Utils::evaluate_validation(*this, *tokenizer, validation_data);
                 std::cout << "Epoch " << epoch + 1 << ", Step " << step 
                          << ", Validation loss: " << val_loss << std::endl;
             }
             
             checkpoint_callback(step);
+            std::cout << "Batch complete\n";
         }
         
         float avg_epoch_loss = epoch_loss / epoch_batch_count;
