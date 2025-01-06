@@ -223,7 +223,8 @@ public:
                       bool use_cache = false);
   void train(const std::vector<std::pair<std::string, std::string>>& training_data,
              const std::vector<std::pair<std::string, std::string>>& validation_data,
-             size_t num_epochs, float learning_rate);
+             size_t num_epochs, float learning_rate,
+             std::function<void(size_t)> checkpoint_callback);
   void save_model(const std::string &path) const;
   static Transformer load_model(const std::string &path);
   void clear_kv_cache();

@@ -238,39 +238,49 @@ Transformer::Transformer(const TransformerConfig& config, std::unique_ptr<SAM> s
 Matrix Transformer::forward(const std::vector<int> &input_tokens,
                             bool use_cache) {
   std::cout << "\n=== Transformer::forward START ===" << std::endl;
-
+  std::cout << "before embeddings" << std::endl;
   // Get embeddings
   Matrix embeddings = token_embedding->forward(input_tokens);
-
+  std::cout << "after embeddings" << std::endl;
   // Add positional encodings
+  std::cout << "before position ids" << std::endl;
   Matrix position_ids(input_tokens.size(), 1);
   for (size_t i = 0; i < input_tokens.size(); ++i) {
     position_ids(i, 0) = static_cast<float>(i);
   }
+  std::cout << "after position ids" << std::endl;
   Matrix pos_encodings = pos_encoding->forward(position_ids);
+  std::cout << "after pos encoding forward" << std::endl;
   embeddings += pos_encodings;
-
+  std::cout << "after embeddings + pos encodings" << std::endl;
   // Create causal mask for next-token prediction
+  std::cout << "before mask" << std::endl;
   AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
-
+  std::cout << "after mask" << std::endl;
+  std::cout << "before hidden states" << std::endl;
   // Forward through layers
   hidden_states = embeddings;
+  std::cout << "after hidden states" << std::endl;
   std::vector<Matrix> activations;
   activations.reserve(layers.size());
-
+  std::cout << "before activations" << std::endl;
   for (size_t i = 0; i < layers.size(); ++i) {
     activations.push_back(hidden_states);
     hidden_states = layers[i]->forward(
         hidden_states, mask,
         use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
   }
-
+  std::cout << "after activations" << std::endl;
   // Final layer normalization
+  std::cout << "before final ln" << std::endl;
   hidden_states = final_ln->forward(hidden_states);
-
+  std::cout << "after final ln" << std::endl;
   // Store activations for backward pass
+  std::cout << "before last hidden states" << std::endl;
   last_hidden_states = hidden_states;
+  std::cout << "after last hidden states" << std::endl;
   m_layer_activations = std::move(activations);
+  std::cout << "after layer activations" << std::endl;
 
   std::cout << "=== Transformer::forward END ===\n" << std::endl;
   return hidden_states;
@@ -286,6 +296,7 @@ void Transformer::backward(const Matrix &grad_output,
                            const std::vector<int> &input_tokens,
                            float learning_rate) {
   std::cout << "\n=== Transformer::backward START ===" << std::endl;
+  std::cout << "before grad output" << std::endl;
 
   Matrix current_grad = grad_output;
   std::cout << "Initial grad dimensions: " << current_grad.rows() << "x"
@@ -347,11 +358,14 @@ void Transformer::backward(const Matrix &grad_output,
   
   // First step of SAM
   optimizer->first_step(param_ptrs, grads);
-  
+  std::cout << "after first step" << std::endl;
   // Recompute gradients at the perturbed point
   Matrix perturbed_output = forward(input_tokens);
+  std::cout << "after perturbed output" << std::endl;
   Matrix perturbed_grad = compute_loss_gradients(perturbed_output, input_tokens);
+  std::cout << "after perturbed grad" << std::endl;
   auto& perturbed_grads = parameter_gradients();
+  std::cout << "after perturbed grads" << std::endl;
   
   // Second step of SAM
   optimizer->second_step(param_ptrs, perturbed_grads);
@@ -517,32 +531,65 @@ Transformer::~Transformer() {
 
 void Transformer::train(const std::vector<std::pair<std::string, std::string>>& training_data,
                        const std::vector<std::pair<std::string, std::string>>& validation_data,
-                       size_t num_epochs, float learning_rate) {
-    const size_t validate_every = 100; // Validate every 100 training steps
+                       size_t num_epochs, float learning_rate,
+                       std::function<void(size_t)> checkpoint_callback) {
+    const size_t validate_every = 100;
     size_t step = 0;
+    float total_loss = 0.0f;
+    size_t batch_count = 0;
     
     for (size_t epoch = 0; epoch < num_epochs; ++epoch) {
+        std::cout << "\nEpoch " << epoch + 1 << "/" << num_epochs << "\n";
+        float epoch_loss = 0.0f;
+        size_t epoch_batch_count = 0;
+
         for (const auto& [input_text, target_text] : training_data) {
             optimizer->zero_grad();
             
-            // Tokenize input and target
             std::vector<int> input_tokens = tokenizer->encode(input_text);
             std::vector<int> target_tokens = tokenizer->encode(target_text);
             
-            // Forward pass
             Matrix output = forward(input_tokens);
             
-            // Compute loss and gradients
+            // Create target distribution matrix
+            Matrix target_distribution(output.rows(), config.vocab_size, 0.0f);
+            size_t target_token_val = std::min(target_tokens.size(), target_distribution.rows());
+            
+            for (size_t i = 0; i < target_token_val; i++) {
+                if (target_tokens[i] >= 0 && target_tokens[i] < config.vocab_size) {
+                    target_distribution(i, target_tokens[i]) = 1.0f;
+                }
+            }
+            
+            float batch_loss = Utils::compute_batch_loss(output, target_distribution);
+            
+            std::cout << "Batch " << batch_count + 1 << "/" << training_data.size() 
+                     << ", Loss: " << batch_loss << "\n";
+            
+            epoch_loss += batch_loss;
+            total_loss += batch_loss;
+            ++epoch_batch_count;
+            ++batch_count;
+            
             backward(output, input_tokens, learning_rate);
             
-            // Validate periodically
             if (++step % validate_every == 0) {
                 float val_loss = Utils::evaluate_validation(*this, *tokenizer, validation_data);
-                std::cout << "Epoch " << epoch << ", Step " << step 
+                std::cout << "Epoch " << epoch + 1 << ", Step " << step 
                          << ", Validation loss: " << val_loss << std::endl;
             }
+            
+            checkpoint_callback(step);
         }
+        
+        float avg_epoch_loss = epoch_loss / epoch_batch_count;
+        float avg_total_loss = total_loss / batch_count;
+        std::cout << "\nEpoch " << epoch + 1 << " Summary:\n";
+        std::cout << "Average Epoch Loss: " << avg_epoch_loss << "\n";
+        std::cout << "Average Total Loss: " << avg_total_loss << "\n";
     }
+    
+    std::cout << "Final Average Loss: " << (total_loss / batch_count) << "\n";
 }
 
 Matrix Transformer::compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets) {
@@ -582,4 +629,30 @@ Matrix Transformer::compute_loss_gradients(const Matrix& logits, const std::vect
     }
     
     return loss_grad;
+}
+
+void Transformer::save_model(const std::string &path) const {
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("Failed to open file for saving model: " + path);
+    }
+
+    // Save token embedding
+    token_embedding->save(ofs);
+
+    // Save positional encoding
+    pos_encoding->save(ofs);
+
+    // Save transformer layers
+    for (const auto &layer : layers) {
+        layer->save(ofs);
+    }
+
+    // Save final layer normalization
+    final_ln->save(ofs);
+
+    // Save language model head
+    lm_head->save(ofs);
+
+    ofs.close();
 }

@@ -85,8 +85,8 @@ Matrix FeedForward::forward(const Matrix &x) {
   std::cout << "intermediate shape: " << intermediate.shape() << std::endl;
   intermediate.add_bias(b1);
   intermediate.apply_gelu();
+  std::cout << "w2 shape: " << w2.shape() << std::endl;
   std::cout << "intermediate after gelu: " << intermediate.shape() << std::endl;
-
   // Store intermediate values for backward pass
   intermediate_cache = intermediate; // Direct assignment instead of deep copy
   std::cout << "intermediate_cache shape: " << intermediate_cache.shape()

@@ -45,23 +45,24 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
     float loss = 0.0f;
     const float epsilon = 1e-10f;
-    
+    std::cout << "logits shape: " << logits.shape() << std::endl;
+    std::cout << "target distribution shape: " << target_distribution.shape() << std::endl;
     for (size_t i = 0; i < logits.rows(); i++) {
         // Find max logit for numerical stability
         float max_logit = -std::numeric_limits<float>::infinity();
         for (size_t j = 0; j < logits.cols(); j++) {
             max_logit = std::max(max_logit, logits(i, j));
         }
-        
+        std::cout << "max logit: " << max_logit << std::endl;
         // Compute softmax with improved numerical stability
         float sum_exp = 0.0f;
         std::vector<float> probs(logits.cols());
-        
+        std::cout << "probs shape: " << probs.size() << std::endl;
         for (size_t j = 0; j < logits.cols(); j++) {
             probs[j] = std::exp(logits(i, j) - max_logit);
             sum_exp += probs[j];
         }
-        
+        std::cout << "sum exp: " << sum_exp << std::endl;
         // Compute cross-entropy loss
         for (size_t j = 0; j < logits.cols(); j++) {
             probs[j] /= (sum_exp + epsilon);
@@ -69,6 +70,7 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
                 loss -= target_distribution(i, j) * std::log(probs[j] + epsilon);
             }
         }
+        std::cout << "loss: " << loss << std::endl;
     }
     
     return loss / logits.rows();
