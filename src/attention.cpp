@@ -999,3 +999,40 @@ float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
     }
     return sin_cached(pos, dim_idx);
 }
+
+Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matrix& K) {
+    Matrix scores = matmul(Q, K.transpose());
+    
+    // Scale scores with careful handling of numerical stability
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    
+    // Clip extremely large values to prevent overflow
+    const float max_score = 100.0f;  // Prevent exp overflow
+    
+    for (size_t i = 0; i < scores.rows(); ++i) {
+        // Find max for numerical stability in softmax
+        float row_max = -std::numeric_limits<float>::infinity();
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) *= scale;
+            scores(i, j) = std::min(scores(i, j), max_score);
+            row_max = std::max(row_max, scores(i, j));
+        }
+        
+        // Compute softmax with improved numerical stability
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) = std::exp(scores(i, j) - row_max);
+            sum_exp += scores(i, j);
+        }
+        
+        // Normalize with careful handling of small values
+        const float eps = 1e-6f;
+        if (sum_exp < eps) sum_exp = eps;
+        
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) /= sum_exp;
+        }
+    }
+    
+    return scores;
+}

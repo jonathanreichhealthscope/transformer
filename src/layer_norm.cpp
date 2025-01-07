@@ -3,25 +3,51 @@
 #include <omp.h>
 
 Matrix LayerNorm::forward(const Matrix &x) {
-  // Compute mean and variance
-  float mean = 0.0f, var = 0.0f;
-  #pragma omp parallel for reduction(+:mean,var)
-  for (size_t i = 0; i < x.size(); i++) {
-    mean += x.data()[i];
-    var += x.data()[i] * x.data()[i];
-  }
-  mean /= x.size();
-  var = var / x.size() - mean * mean;
-  float std = sqrt(var + eps);
-
-  // Store normalized values for backward pass
-  normalized = Matrix(x.rows(), x.cols());
-  Matrix output(x.rows(), x.cols());
+  const float eps = 1e-5f;  // Increased epsilon for better stability
+  
+  size_t batch_size = x.rows();
+  size_t hidden_size = x.cols();
+  Matrix output(batch_size, hidden_size);
+  
   #pragma omp parallel for
-  for (size_t i = 0; i < x.size(); i++) {
-    normalized.data()[i] = (x.data()[i] - mean) / std;
-    output.data()[i] = gamma[i % hidden_size] * normalized.data()[i] + beta[i % hidden_size];
+  for (size_t i = 0; i < batch_size; i++) {
+    // Compute mean with Kahan summation for numerical stability
+    double mean = 0.0;
+    double c = 0.0;  // Compensation term
+    for (size_t j = 0; j < hidden_size; j++) {
+      double y = x(i, j) - c;
+      double t = mean + y;
+      c = (t - mean) - y;
+      mean = t;
+    }
+    mean /= hidden_size;
+    
+    // Compute variance with two-pass algorithm for stability
+    double var = 0.0;
+    c = 0.0;
+    for (size_t j = 0; j < hidden_size; j++) {
+      double diff = x(i, j) - mean;
+      double y = diff * diff - c;
+      double t = var + y;
+      c = (t - var) - y;
+      var = t;
+    }
+    var = var / hidden_size;
+    
+    // Normalize with bounds checking
+    float std_dev = std::sqrt(var + eps);
+    if (std_dev < eps) {
+      std_dev = eps;  // Prevent division by very small numbers
+    }
+    
+    for (size_t j = 0; j < hidden_size; j++) {
+      float normalized = (x(i, j) - mean) / std_dev;
+      // Clip extreme values
+      normalized = std::max(std::min(normalized, 1e4f), -1e4f);
+      output(i, j) = normalized * gamma[j] + beta[j];
+    }
   }
+  
   return output;
 }
 
