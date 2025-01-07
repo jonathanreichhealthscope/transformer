@@ -28,9 +28,9 @@
     },
     "paths": {
         "save_directory": "models",
-        "model_name": "cuda_transformer",
+        "model_name": "transformer_new_corpus",
         "checkpoint_frequency": 2
     },
-    "load_from_checkpoint": true,
-    "checkpoint_to_load": "models/cuda_transformer_checkpoint_2.ckpt"
+    "load_from_checkpoint": false,
+    "checkpoint_to_load": ""
 } 

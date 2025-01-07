@@ -518,4 +518,520 @@ Endodontists treat in the|office
 Periodontists work in the|clinic
 Prosthodontists work in the|office
 Lab technicians work in the|dental lab
-Dental lab workers craft in the|laboratory 
+Dental lab workers craft in the|laboratory
+Surgeons operate in the|theater
+Nurses function in the|emergency room
+Teachers instruct in the|classroom
+Students learn in the|lecture hall
+Artists create in the|workshop
+Musicians perform in the|auditorium
+Chefs cook in the|restaurant
+Baristas brew in the|cafe
+Scientists experiment in the|research center
+Engineers design in the|development center
+Lawyers practice in the|firm
+Judges preside in the|supreme court
+Athletes compete in the|sports center
+Dancers move in the|performance space
+Writers compose in the|quiet room
+Researchers analyze in the|testing facility
+Developers code in the|tech hub
+Designers create in the|innovation space
+Analysts work in the|data center
+Consultants meet in the|conference suite
+Executives gather in the|boardroom
+Managers supervise in the|control center
+Technicians repair in the|service bay
+Specialists operate in the|treatment room
+Instructors teach in the|training center
+Pilots navigate from the|flight deck
+Controllers monitor from the|command center
+Operators manage from the|operations room
+Supervisors oversee from the|monitoring station
+Coordinators organize from the|logistics center
+Planners arrange in the|event space
+Directors lead from the|main office
+Administrators work in the|system room
+Assistants help in the|support center
+Inspectors check in the|quality room
+Mechanics fix in the|repair shop
+Fabricators build in the|production area
+Assemblers work in the|manufacturing plant
+Processors handle in the|processing center
+Packagers work in the|distribution center
+Shippers organize in the|shipping dock
+Receivers work in the|receiving bay
+Sorters organize in the|sorting facility
+Handlers process in the|materials center
+Movers work in the|transport hub
+Drivers operate from the|vehicle depot
+Dispatchers coordinate from the|control office
+Responders gather at the|response center
+Guards patrol in the|security office
+Monitors watch from the|surveillance room
+Attendants assist in the|service area
+Cleaners work in the|maintenance area
+Caretakers maintain in the|facility center
+Groundskeepers work on the|premises
+Landscapers maintain in the|garden center
+Painters work in the|finishing room
+Decorators design in the|styling studio
+Craftsmen create in the|artisan space
+Welders work in the|metal shop
+Carpenters build in the|wood shop
+Electricians wire in the|electrical room
+Plumbers work in the|utility space
+Installers set up in the|installation bay
+Repairmen fix in the|maintenance shop
+Operators run the|control station
+Programmers code in the|development space
+Architects design in the|planning office
+Engineers calculate in the|engineering lab
+Scientists research in the|investigation room
+Professors lecture in the|teaching hall
+Students study in the|learning center
+Researchers experiment in the|testing lab
+Technologists work in the|innovation lab
+Specialists consult in the|expertise center
+Experts analyze in the|assessment room
+Professionals work in the|practice center
+Practitioners treat in the|wellness room
+Therapists counsel in the|treatment space
+Advisors meet in the|consultation room
+Coaches train in the|coaching center
+Instructors demonstrate in the|instruction room
+Mentors guide in the|mentoring space
+Trainers work in the|training facility
+Teachers educate in the|education center
+Tutors help in the|tutoring space
+Educators work in the|learning environment
+Facilitators lead in the|facilitation room
+Presenters speak in the|presentation hall
+Speakers present in the|speaking room
+Performers entertain in the|entertainment space
+Artists create in the|creative studio
+Musicians play in the|music room
+Dancers practice in the|dance studio
+Actors rehearse in the|rehearsal space
+Directors film in the|production studio
+Producers work in the|production office
+Editors edit in the|editing suite
+Writers write in the|writing room
+Authors compose in the|composition space
+Journalists report from the|news room
+Reporters broadcast from the|broadcast center
+Anchors present from the|news studio
+Hosts speak from the|hosting booth
+Commentators analyze from the|commentary box
+Reviewers evaluate in the|review room
+Critics assess in the|assessment space
+Judges evaluate in the|judging chamber
+Referees officiate in the|officials room
+Umpires oversee from the|umpire station
+Officials regulate from the|regulation office
+Inspectors examine in the|inspection room
+Auditors review in the|audit space
+Investigators search in the|investigation room
+Detectives work in the|detective office
+Analysts examine in the|analysis center
+Researchers study in the|research facility
+Scientists observe in the|observation room
+Technicians measure in the|measurement lab
+Engineers test in the|testing facility
+Developers debug in the|debugging room
+Programmers solve in the|solution space
+Designers sketch in the|design studio
+Architects plan in the|planning room
+Builders construct in the|construction site
+Workers assemble in the|assembly area
+Craftspeople create in the|craft space
+Artisans work in the|artisan studio
+Makers build in the|maker space
+Creators innovate in the|innovation hub
+Inventors experiment in the|invention lab
+Developers prototype in the|prototyping space
+Botanists study in the|greenhouse
+Zoologists observe in the|wildlife center
+Astronomers work in the|observatory
+Meteorologists forecast from the|weather station
+Geologists analyze in the|rock lab
+Paleontologists excavate at the|dig site
+Marine biologists research in the|aquatic center
+Ecologists study in the|field station
+Microbiologists examine in the|microbiology lab
+Geneticists sequence in the|genetics lab
+Biochemists analyze in the|biochemistry lab
+Neuroscientists research in the|brain lab
+Pharmacologists test in the|drug lab
+Immunologists study in the|immunology center
+Virologists work in the|virology lab
+Pathologists examine in the|pathology lab
+Radiologists review in the|imaging suite
+Dermatologists treat in the|skin clinic
+Psychiatrists counsel in the|mental health center
+Nutritionists advise in the|wellness center
+Chiropractors adjust in the|adjustment room
+Acupuncturists treat in the|healing center
+Massage therapists work in the|massage suite
+Physiotherapists rehabilitate in the|physio center
+Podiatrists treat in the|foot clinic
+Optometrists examine in the|vision center
+Speech therapists practice in the|speech clinic
+Art therapists work in the|art therapy room
+Music therapists perform in the|music therapy space
+Dance therapists move in the|movement studio
+Drama therapists practice in the|drama space
+Counselors meet in the|counseling room
+Psychologists assess in the|psychology office
+Social workers assist in the|community center
+Case managers work in the|service center
+Youth workers engage in the|youth center
+Elder care workers assist in the|senior center
+Disability support workers help in the|support facility
+Crisis workers respond in the|crisis center
+Outreach workers serve in the|outreach center
+Librarians organize in the|book room
+Archivists preserve in the|archive room
+Curators arrange in the|exhibition space
+Conservators restore in the|conservation lab
+Collection managers work in the|collection room
+Digital archivists work in the|digital lab
+Rare book specialists work in the|rare book room
+Manuscript experts study in the|manuscript room
+Map librarians work in the|map room
+Media librarians organize in the|media center
+Sommeliers serve in the|wine cellar
+Mixologists create in the|cocktail bar
+Brewers work in the|brewery
+Distillers operate in the|distillery
+Vintners process in the|winery
+Beer crafters work in the|craft brewery
+Cider makers press in the|cider house
+Tea masters serve in the|tea house
+Coffee roasters work in the|roastery
+Juice makers blend in the|juice bar
+Bakers prepare in the|bakery kitchen
+Pastry chefs create in the|pastry kitchen
+Chocolatiers craft in the|chocolate lab
+Confectioners work in the|candy kitchen
+Ice cream makers mix in the|ice cream parlor
+Cake decorators design in the|cake studio
+Bread bakers work in the|bread kitchen
+Pizza makers toss in the|pizza kitchen
+Sushi chefs prepare in the|sushi bar
+Grill masters cook in the|grill station
+Florists arrange in the|flower studio
+Garden designers plan in the|garden office
+Plant specialists work in the|plant nursery
+Horticulturists grow in the|greenhouse
+Arborists work in the|tree nursery
+Seed specialists sort in the|seed room
+Bulb growers cultivate in the|growing house
+Orchid specialists tend in the|orchid house
+Succulent experts care in the|succulent house
+Herb gardeners grow in the|herb garden
+Watchmakers repair in the|watch shop
+Jewelers craft in the|jewelry studio
+Goldsmiths work in the|gold workshop
+Silversmiths create in the|silver studio
+Gem cutters polish in the|gem room
+Diamond setters work in the|setting room
+Pearl stringers work in the|pearl room
+Metal engravers etch in the|engraving studio
+Stone carvers work in the|stone shop
+Crystal cutters shape in the|crystal workshop
+Fashion designers sketch in the|fashion studio
+Pattern makers cut in the|pattern room
+Seamstresses sew in the|sewing room
+Tailors fit in the|fitting room
+Costume designers create in the|costume shop
+Milliners shape in the|hat studio
+Shoe designers sketch in the|footwear studio
+Leather workers craft in the|leather shop
+Textile designers weave in the|textile studio
+Embroiderers stitch in the|embroidery room
+Glass blowers shape in the|hot shop
+Potters throw in the|pottery studio
+Woodturners work in the|woodturning shop
+Furniture makers build in the|furniture studio
+Cabinet makers craft in the|cabinet shop
+Upholsterers work in the|upholstery shop
+Metalworkers forge in the|metal studio
+Sculptors carve in the|sculpture studio
+Mosaic artists create in the|mosaic studio
+Stained glass artists craft in the|glass studio
+Sound engineers mix in the|recording booth
+Audio technicians work in the|audio room
+Recording artists perform in the|recording studio
+Music producers work in the|production booth
+Foley artists create in the|foley room
+Voice actors record in the|voice booth
+Mixing engineers work in the|mixing room
+Mastering engineers polish in the|mastering suite
+Studio musicians play in the|live room
+Session drummers perform in the|drum room
+Game designers create in the|game studio
+Level designers build in the|level room
+Character artists draw in the|character studio
+Environment artists create in the|environment room
+Animation riggers work in the|rigging room
+Texture artists paint in the|texture studio
+UI designers create in the|interface room
+Sound designers work in the|sound studio
+Game testers play in the|testing room
+Bug fixers work in the|debug room
+Data analysts work in the|analytics room
+Business analysts review in the|strategy room
+Market researchers study in the|research room
+Financial analysts work in the|finance office
+Risk assessors evaluate in the|risk room
+Compliance officers check in the|compliance office
+Quality analysts test in the|quality room
+Process engineers work in the|process lab
+Systems analysts work in the|systems room
+Performance testers measure in the|performance lab
+Network engineers manage in the|server room
+Security analysts monitor in the|security center
+Cloud architects design in the|cloud center
+Database administrators work in the|database room
+Infrastructure engineers build in the|infrastructure room
+DevOps engineers code in the|operations center
+Site reliability engineers work in the|reliability center
+Mobile developers code in the|mobile lab
+Frontend developers work in the|frontend room
+Backend developers code in the|backend room
+Full stack developers work in the|development center
+AI researchers experiment in the|AI lab
+Machine learning engineers train in the|ML lab
+Robotics engineers build in the|robotics lab
+Computer vision engineers work in the|vision lab
+Natural language processors work in the|NLP lab
+Deep learning specialists train in the|deep learning lab
+Data scientists analyze in the|data lab
+Algorithm developers code in the|algorithms room
+Neural network trainers work in the|neural lab
+Quantum computing researchers work in the|quantum lab
+Cryptographers work in the|encryption lab
+Blockchain developers code in the|blockchain lab
+IoT engineers build in the|IoT lab
+Hardware testers check in the|hardware lab
+Circuit designers work in the|electronics lab
+Chip architects design in the|semiconductor lab
+FPGA developers program in the|FPGA lab
+Embedded systems engineers code in the|embedded lab
+Signal processors work in the|signal lab
+RF engineers test in the|RF chamber
+Antenna designers work in the|antenna lab
+Power engineers operate in the|power lab
+Battery researchers test in the|battery lab
+Solar engineers work in the|solar lab
+Wind engineers test in the|wind tunnel
+Thermal engineers measure in the|thermal lab
+Acoustic engineers work in the|acoustic chamber
+Optical engineers calibrate in the|optics lab
+Laser technicians work in the|laser lab
+Hologram creators design in the|holography lab
+Nanotechnologists work in the|nano lab
+Materials scientists test in the|materials lab
+Polymer chemists mix in the|polymer lab
+Surface scientists analyze in the|surface lab
+Crystallographers study in the|crystal lab
+Metallurgists work in the|metallurgy lab
+Ceramics researchers test in the|ceramics lab
+Composite engineers develop in the|composites lab
+Coating specialists work in the|coating lab
+Adhesive developers mix in the|adhesives lab
+Food scientists test in the|food lab
+Flavor chemists mix in the|flavor lab
+Sensory analysts work in the|sensory lab
+Nutritional scientists research in the|nutrition lab
+Fermentation specialists work in the|fermentation lab
+Preservation experts test in the|preservation lab
+Quality testers check in the|quality lab
+Safety inspectors verify in the|safety lab
+Regulatory specialists work in the|compliance office
+Standards engineers check in the|standards lab
+Validation engineers test in the|validation lab
+Verification specialists check in the|verification lab
+Calibration technicians work in the|calibration lab
+Measurement specialists work in the|metrology lab
+Inspection technicians check in the|inspection room
+Documentation specialists write in the|documentation center
+Technical writers work in the|writing center
+Content creators produce in the|content studio
+Media specialists work in the|media lab
+Videographers film in the|video studio
+Photographers shoot in the|photo studio
+Lighting technicians work in the|lighting studio
+Special effects artists create in the|effects studio
+Motion capture artists work in the|mocap studio
+Virtual reality developers code in the|VR lab
+Augmented reality designers create in the|AR lab
+Mixed reality engineers work in the|XR lab
+Simulation developers code in the|simulation lab
+Digital twin engineers work in the|digital twin lab
+3D modelers create in the|3D studio
+CAD designers work in the|CAD room
+BIM modelers design in the|BIM studio
+Parametric designers work in the|parametric studio
+Computational designers code in the|computational lab
+Generative artists create in the|generative studio
+Interactive designers work in the|interactive studio
+Experience designers create in the|experience lab
+Service designers work in the|service studio
+Product designers create in the|product studio
+Industrial designers work in the|industrial studio
+Ergonomics specialists test in the|ergonomics lab
+Human factors engineers study in the|human factors lab
+Usability researchers test in the|usability lab
+Accessibility specialists work in the|accessibility lab
+Color scientists study in the|color lab
+Typography designers create in the|type studio
+Layout artists work in the|layout studio
+Print designers create in the|print studio
+Package designers work in the|packaging studio
+Brand designers create in the|branding studio
+Marketing designers work in the|marketing studio
+Advertising designers create in the|advertising studio
+Campaign managers work in the|campaign room
+Digital marketers work in the|digital studio
+SEO specialists optimize in the|SEO room
+Analytics experts work in the|analytics lab
+Growth hackers work in the|growth lab
+Conversion specialists optimize in the|conversion lab
+Email marketers work in the|email studio
+Social media managers post from the|social media room
+Community managers engage in the|community room
+Customer success managers work in the|success center
+Support specialists help in the|support center
+Training coordinators teach in the|training room
+Learning designers create in the|learning studio
+Educational technologists work in the|edtech lab
+Curriculum developers design in the|curriculum studio
+Assessment designers create in the|assessment studio
+Instructional designers work in the|instruction studio
+E-learning developers build in the|e-learning studio
+Distance learning specialists work in the|remote learning center
+Virtual teachers instruct from the|virtual classroom
+Online tutors teach from the|online room
+Remote coaches train from the|remote coaching room
+Digital librarians organize in the|digital library
+Information architects design in the|information center
+Knowledge managers work in the|knowledge center
+Taxonomy specialists organize in the|taxonomy room
+Metadata specialists work in the|metadata room
+Search specialists optimize in the|search room
+Classification experts work in the|classification room
+Indexing specialists organize in the|indexing room
+Cataloging experts work in the|cataloging room
+Archive managers preserve in the|preservation room
+Quantum physicists research in the|quantum lab
+Particle physicists work in the|particle accelerator
+String theorists calculate in the|theory room
+Cosmologists study in the|cosmology lab
+Astrophysicists observe in the|observatory
+Plasma physicists experiment in the|plasma lab
+Nuclear engineers work in the|nuclear facility
+Fusion researchers test in the|fusion lab
+Superconductor scientists study in the|low-temp lab
+Dark matter researchers work in the|underground lab
+Bioinformaticians analyze in the|bioinfo lab
+Genomics specialists sequence in the|genomics center
+Proteomics researchers study in the|proteomics lab
+Systems biologists model in the|systems lab
+Synthetic biologists engineer in the|synbio lab
+Metabolomics experts analyze in the|metabolomics lab
+Cell biologists observe in the|cell lab
+Tissue engineers grow in the|tissue lab
+Stem cell researchers culture in the|stem cell lab
+Regenerative scientists experiment in the|regeneration lab
+Drone pilots operate from the|control room
+Robotics operators control from the|robotics center
+Automation engineers program in the|automation lab
+PLC programmers code in the|controls lab
+Motion control specialists calibrate in the|motion lab
+Industrial automation techs work in the|factory floor
+Process automation engineers design in the|process center
+Manufacturing technologists work in the|smart factory
+Industry 4.0 specialists integrate in the|integration center
+Smart systems engineers develop in the|systems lab
+Cybersecurity analysts monitor in the|SOC room
+Threat hunters search in the|threat center
+Malware analysts investigate in the|malware lab
+Penetration testers work in the|pentest lab
+Security researchers hack in the|security lab
+Incident responders work in the|incident room
+Digital forensics experts analyze in the|forensics lab
+Vulnerability researchers test in the|vulnerability lab
+Crypto analysts work in the|crypto lab
+Security architects design in the|secure room
+UX researchers study in the|user lab
+UI prototypers test in the|prototype lab
+Interaction designers create in the|interaction lab
+Behavioral analysts observe in the|behavior lab
+Eye tracking specialists measure in the|eye tracking lab
+Cognitive scientists study in the|cognition lab
+Design ethnographers observe in the|observation room
+User researchers interview in the|research room
+Experience strategists plan in the|strategy room
+Design thinking facilitators lead in the|design studio
+Data engineers build in the|data center
+ETL developers code in the|ETL room
+Data warehouse architects design in the|warehouse center
+Business intelligence analysts work in the|BI lab
+Data visualization experts create in the|viz lab
+Report developers build in the|reporting center
+Dashboard designers create in the|dashboard studio
+Analytics engineers code in the|analytics center
+Data pipeline engineers develop in the|pipeline room
+Data quality analysts check in the|quality center
+Cloud security engineers protect in the|cloud security center
+DevSecOps engineers code in the|secure dev center
+Platform engineers build in the|platform center
+Reliability engineers monitor in the|reliability center
+Infrastructure architects design in the|infrastructure room
+Network architects plan in the|network center
+System integrators work in the|integration lab
+Cloud native developers code in the|cloud native center
+Microservices engineers develop in the|microservices lab
+API developers build in the|API center
+Quantum algorithm developers code in the|quantum computing lab
+Quantum software engineers work in the|quantum software center
+Quantum circuit designers build in the|quantum circuit lab
+Quantum error correction specialists work in the|error lab
+Quantum systems engineers integrate in the|quantum systems lab
+Quantum control engineers operate in the|quantum control room
+Quantum network engineers develop in the|quantum network lab
+Quantum security specialists protect in the|quantum security lab
+Quantum applications developers code in the|quantum apps lab
+Quantum simulation experts model in the|quantum simulation lab
+Sustainability engineers work in the|sustainability lab
+Environmental technologists monitor in the|environmental center
+Green energy specialists design in the|green energy lab
+Carbon capture engineers work in the|carbon capture lab
+Renewable energy technicians maintain in the|renewable lab
+Waste management engineers work in the|waste center
+Circular economy specialists design in the|circular lab
+Energy efficiency experts analyze in the|efficiency lab
+Environmental impact analysts study in the|impact lab
+Climate solution engineers develop in the|climate lab
+Fintech developers code in the|fintech lab
+Blockchain architects design in the|blockchain center
+Smart contract developers write in the|smart contract lab
+DeFi engineers build in the|DeFi lab
+Cryptocurrency specialists work in the|crypto trading floor
+Digital payment developers code in the|payment lab
+Financial algorithm designers create in the|algo trading room
+Risk modeling engineers work in the|risk modeling center
+Quantitative analysts calculate in the|quant lab
+Trading systems engineers build in the|trading systems room
+Digital health developers code in the|health tech lab
+Telemedicine engineers build in the|telemedicine center
+Health informatics specialists work in the|health informatics lab
+Medical software developers code in the|medical software lab
+Clinical systems engineers design in the|clinical systems room
+Healthcare AI developers build in the|healthcare AI lab
+Medical device programmers code in the|device lab
+Patient monitoring systems engineers work in the|monitoring center
+Health analytics specialists analyze in the|health analytics lab
+Medical robotics engineers develop in the|medical robotics lab 
