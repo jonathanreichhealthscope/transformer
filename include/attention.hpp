@@ -153,6 +153,8 @@ public:
       return param_gradients;
   }
 
+  Matrix compute_attention_scores(const Matrix& Q, const Matrix& K);
+
 private:
   Parameters params;         // Trainable parameters
   mutable Parameters param_gradients;  // Parameter gradients
@@ -289,68 +291,18 @@ private:
        }
    }
    
-   void apply_stable_softmax(Matrix& x) const {
-       const float EPSILON = 1e-8f;  // Smaller epsilon for better precision
-       const float MIN_SCORE = -1e4f;  // Lower minimum for better dynamic range
-       
-       for (size_t i = 0; i < x.rows(); i++) {
-           // Find max excluding extreme negative values
-           float max_val = MIN_SCORE;
-           for (size_t j = 0; j < x.cols(); j++) {
-               if (x(i,j) > MIN_SCORE) {
-                   max_val = std::max(max_val, x(i,j));
-               }
-           }
-           
-           // Skip if all values are extremely negative
-           if (max_val <= MIN_SCORE) {
-               for (size_t j = 0; j < x.cols(); j++) {
-                   x(i,j) = 1.0f / x.cols();  // Uniform distribution
-               }
-               continue;
-           }
-           
-           // Compute exp and sum with numerical stability
-           float sum = 0.0f;
-           for (size_t j = 0; j < x.cols(); j++) {
-               if (x(i,j) <= MIN_SCORE) {
-                   x(i,j) = 0.0f;
-               } else {
-                   x(i,j) = std::exp(x(i,j) - max_val);
-                   sum += x(i,j);
-               }
-           }
-           
-           // Normalize with epsilon to prevent zeros
-           if (sum < EPSILON) {
-               // If sum is too small, use uniform distribution
-               for (size_t j = 0; j < x.cols(); j++) {
-                   x(i,j) = 1.0f / x.cols();
-               }
-           } else {
-               for (size_t j = 0; j < x.cols(); j++) {
-                   x(i,j) = x(i,j) / sum;
-                   // Add small noise to prevent exact zeros
-                   if (x(i,j) > 0 && x(i,j) < EPSILON) {
-                       x(i,j) += EPSILON * (1.0f + std::cos(static_cast<float>(j)));
-                   }
-               }
-           }
-       }
-   }
+   void apply_stable_softmax(Matrix& x) const;
 
    // Add these new methods to handle Tensors directly
    void apply_mask(Tensor& scores, const Matrix& mask) const {
        Matrix scores_mat = scores.to_matrix();
        apply_mask(scores_mat, mask);
-       // Convert back to tensor with same dimensions
        scores = Tensor(scores_mat, {scores.dims()[0], scores.dims()[1], scores.dims()[2], scores.dims()[3]});
    }
 
    void apply_stable_softmax(Tensor& scores) const {
        Matrix scores_mat = scores.to_matrix();
        apply_stable_softmax(scores_mat);
-       // Convert back to tensor with same dimensions
        scores = Tensor(scores_mat, {scores.dims()[0], scores.dims()[1], scores.dims()[2], scores.dims()[3]});
    }
 

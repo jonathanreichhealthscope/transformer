@@ -46,6 +46,7 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
     float loss = 0.0f;
     const float epsilon = 1e-10f;
     
+    // Compute cross-entropy loss
     for (size_t i = 0; i < logits.rows(); i++) {
         // Find max logit for numerical stability
         float max_logit = -std::numeric_limits<float>::infinity();
@@ -71,6 +72,7 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
         }
     }
     
+    // Return average loss
     return loss / logits.rows();
 }
 

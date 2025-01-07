@@ -532,8 +532,8 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_,
 }
 
 Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
-                                              const Matrix &V,
-                                              const AttentionMask &mask) {
+                                           const Matrix &V,
+                                           const AttentionMask &mask) {
     std::cout << "\n=== MultiHeadAttention::standard_attention START ===" << std::endl;
     
     // Calculate dimensions
@@ -546,30 +546,21 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
     std::cout << "- Number of heads: " << num_heads << std::endl;
     
     // Always create a proper mask
-    Matrix effective_mask(seq_len, seq_len, 1.0f);  // Default to allowing all attention
+    Matrix effective_mask(seq_len, seq_len, 1.0f);
     
     if (!mask.mask.empty()) {
-        std::cout << "Original mask shape: " << mask.mask.rows() << "x" << mask.mask.cols() << std::endl;
-        
-        if (mask.mask.rows() != seq_len || mask.mask.cols() != seq_len) {
-            std::cout << "WARNING: Mask size mismatch. Creating new mask..." << std::endl;
-            // Create a new causal mask of the correct size
-            AttentionMask new_mask = AttentionMask::create_causal_mask(seq_len);
-            effective_mask = new_mask.mask;
-        } else {
-            effective_mask = mask.mask;
-        }
+        effective_mask = mask.mask;
     }
-    
-    std::cout << "Effective mask shape: " << effective_mask.rows() << "x" << effective_mask.cols() << std::endl;
     
     // First reshape inputs to separate heads
     Tensor Q_4d = reshape_for_attention(Q, 1, num_heads, seq_len, head_size);
     Tensor K_4d = reshape_for_attention(K, 1, num_heads, seq_len, head_size);
     Tensor V_4d = reshape_for_attention(V, 1, num_heads, seq_len, head_size);
     
-    // Process each head separately
+    // Process each head separately with improved numerical stability
     Matrix final_output(seq_len, num_heads * head_size);
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
+    const float max_score = 100.0f;  // Prevent exp overflow
     
     for (size_t h = 0; h < num_heads; ++h) {
         // Extract matrices for current head
@@ -586,47 +577,45 @@ Matrix MultiHeadAttention::standard_attention(const Matrix &Q, const Matrix &K,
             }
         }
         
-        // Compute attention scores for this head
-        Matrix scores = matmul(Q_head, K_head.transpose());  // [seq_len, seq_len]
-        
-        // Scale scores
-        float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
+        // Compute attention scores with numerical stability
+        Matrix scores = matmul(Q_head, K_head.transpose());
         scores *= scale;
         
-        // Apply mask if provided
-        if (!effective_mask.empty()) {
-            std::cout << "Applying mask for head " << h << std::endl;
-            std::cout << "Scores shape: " << scores.rows() << "x" << scores.cols() << std::endl;
-            std::cout << "Effective mask shape: " << effective_mask.rows() << "x" << effective_mask.cols() << std::endl;
-            
-            // Now the dimensions should match
-            for (size_t i = 0; i < seq_len; ++i) {
-                for (size_t j = 0; j < seq_len; ++j) {
-                    if (effective_mask(i, j) == 0.0f) {
-                        scores(i, j) = -1e6f;
-                    }
+        // Apply mask and numerical stability improvements
+        for (size_t i = 0; i < seq_len; ++i) {
+            // Find max for numerical stability in softmax
+            float row_max = -std::numeric_limits<float>::infinity();
+            for (size_t j = 0; j < seq_len; ++j) {
+                if (effective_mask(i, j) == 0.0f) {
+                    scores(i, j) = -std::numeric_limits<float>::infinity();
+                } else {
+                    scores(i, j) = std::min(scores(i, j), max_score);
+                    row_max = std::max(row_max, scores(i, j));
                 }
             }
-        }
-        
-        // Apply softmax
-        for (size_t i = 0; i < scores.rows(); ++i) {
-            float max_val = scores(i, 0);
-            for (size_t j = 1; j < scores.cols(); ++j) {
-                max_val = std::max(max_val, scores(i, j));
+            
+            // Compute softmax with improved numerical stability
+            float sum_exp = 0.0f;
+            for (size_t j = 0; j < seq_len; ++j) {
+                if (scores(i, j) != -std::numeric_limits<float>::infinity()) {
+                    scores(i, j) = std::exp(scores(i, j) - row_max);
+                    sum_exp += scores(i, j);
+                } else {
+                    scores(i, j) = 0.0f;
+                }
             }
-            float sum = 0.0f;
-            for (size_t j = 0; j < scores.cols(); ++j) {
-                scores(i, j) = std::exp(scores(i, j) - max_val);
-                sum += scores(i, j);
-            }
-            for (size_t j = 0; j < scores.cols(); ++j) {
-                scores(i, j) /= (sum + 1e-6f);
+            
+            // Normalize with careful handling of small values
+            const float eps = 1e-6f;
+            if (sum_exp < eps) sum_exp = eps;
+            
+            for (size_t j = 0; j < seq_len; ++j) {
+                scores(i, j) /= sum_exp;
             }
         }
         
         // Compute attention output for this head
-        Matrix head_output = matmul(scores, V_head);  // [seq_len, head_size]
+        Matrix head_output = matmul(scores, V_head);
         
         // Store this head's output in the final result
         for (size_t s = 0; s < seq_len; ++s) {
@@ -998,4 +987,82 @@ float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
                                 std::to_string(pos) + ", dim=" + std::to_string(dim_idx));
     }
     return sin_cached(pos, dim_idx);
+}
+
+Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matrix& K) {
+    Matrix scores = matmul(Q, K.transpose());
+    
+    // Scale scores with careful handling of numerical stability
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    
+    // Clip extremely large values to prevent overflow
+    const float max_score = 100.0f;  // Prevent exp overflow
+    
+    for (size_t i = 0; i < scores.rows(); ++i) {
+        // Find max for numerical stability in softmax
+        float row_max = -std::numeric_limits<float>::infinity();
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) *= scale;
+            scores(i, j) = std::min(scores(i, j), max_score);
+            row_max = std::max(row_max, scores(i, j));
+        }
+        
+        // Compute softmax with improved numerical stability
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) = std::exp(scores(i, j) - row_max);
+            sum_exp += scores(i, j);
+        }
+        
+        // Normalize with careful handling of small values
+        const float eps = 1e-6f;
+        if (sum_exp < eps) sum_exp = eps;
+        
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) /= sum_exp;
+        }
+    }
+    
+    return scores;
+}
+
+void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
+    const float EPSILON = 1e-8f;
+    const float TEMPERATURE = 0.7f;
+    const float MIN_SCORE = -1e4f;
+    
+    for (size_t i = 0; i < x.rows(); i++) {
+        // Find max for numerical stability
+        float max_val = MIN_SCORE;
+        for (size_t j = 0; j < x.cols(); j++) {
+            if (x(i,j) > MIN_SCORE) {
+                max_val = std::max(max_val, x(i,j));
+            }
+        }
+        
+        // Apply temperature scaling and compute sum
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < x.cols(); j++) {
+            if (x(i,j) > MIN_SCORE) {
+                x(i,j) = std::exp((x(i,j) - max_val) / TEMPERATURE);
+                sum_exp += x(i,j);
+            } else {
+                x(i,j) = 0.0f;
+            }
+        }
+        
+        // Normalize
+        if (sum_exp < EPSILON) {
+            // If sum is too small, use uniform distribution
+            float uniform_val = 1.0f / x.cols();
+            for (size_t j = 0; j < x.cols(); j++) {
+                x(i,j) = uniform_val;
+            }
+        } else {
+            // Normal normalization
+            for (size_t j = 0; j < x.cols(); j++) {
+                x(i,j) /= sum_exp;
+            }
+        }
+    }
 }

@@ -31,7 +31,8 @@ public:
         : hidden_size(hidden_size_), eps(eps_),
           gamma(hidden_size, 1.0f), beta(hidden_size, 0.0f),
           mean_cache(hidden_size), var_cache(hidden_size), norm_cache(hidden_size),
-          gamma_grad(hidden_size), beta_grad(hidden_size) {
+          gamma_grad(hidden_size), beta_grad(hidden_size),
+          normalized(1, hidden_size) {
         // Initialize parameter references
         params = {std::ref(gamma), std::ref(beta)};
         grad_params = {std::ref(gamma_grad), std::ref(beta_grad)};

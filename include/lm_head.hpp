@@ -14,21 +14,12 @@ private:
   size_t vocab_size_;
   size_t hidden_size_;
   Matrix hidden_states;
+  std::vector<float> token_frequencies;
   void backward_linear(const Matrix& grad_output);
   Matrix forward_impl(const Matrix &hidden_states);
 
 public:
-  LanguageModelHead(size_t hidden_size, size_t vocab_size, float dropout = 0.1)
-      : projection(Matrix(hidden_size, vocab_size)), bias(Vector(vocab_size)),
-        dropout_prob(dropout), vocab_size_(vocab_size),
-        hidden_size_(hidden_size) {
-    float scale = std::sqrt(1.0f / hidden_size);
-    std::cout << "LM Head initialization:" << std::endl;
-    std::cout << "Creating projection matrix: [" << hidden_size << " × "
-              << vocab_size << "]" << std::endl;
-    projection.randomize(-scale, scale);
-    bias.randomize(-scale, scale);
-  }
+  LanguageModelHead(size_t hidden_size, size_t vocab_size);
 
   LanguageModelHead(const LanguageModelHead &other)
       : projection(other.projection), bias(other.bias),
@@ -155,4 +146,19 @@ public:
   const Matrix &get_projection() const { return projection; }
 
   Matrix backward(const Matrix& grad_output, const Matrix& target_distribution = Matrix());
+
+  void update_token_frequencies(const std::vector<int>& tokens) {
+    // Decay old frequencies slightly
+    const float decay_rate = 0.99f;
+    for (auto& freq : token_frequencies) {
+      freq *= decay_rate;
+    }
+    
+    // Update frequencies from new tokens
+    for (int token : tokens) {
+      if (token >= 0 && static_cast<size_t>(token) < token_frequencies.size()) {
+        token_frequencies[token] += 1.0f;
+      }
+    }
+  }
 };

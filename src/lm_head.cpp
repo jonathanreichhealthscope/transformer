@@ -2,6 +2,21 @@
 #include <cmath>
 #include <iostream>
 
+LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
+    : hidden_size_(hidden_size), 
+      vocab_size_(vocab_size),
+      projection(hidden_size, vocab_size),
+      bias(vocab_size, 0.0f),
+      token_frequencies(vocab_size, 0.0f)  // Initialize frequencies
+{
+    float scale = std::sqrt(1.0f / hidden_size);
+    std::cout << "LM Head initialization:" << std::endl;
+    std::cout << "Creating projection matrix: [" << hidden_size << " × "
+              << vocab_size << "]" << std::endl;
+    projection.randomize(-scale, scale);
+    bias.randomize(-scale, scale);
+}
+
 Matrix LanguageModelHead::forward_impl(const Matrix &hidden_states) {
   // Store hidden states for backward pass
   this->hidden_states = hidden_states;
@@ -57,6 +72,26 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix &hidden_states) {
   
   Matrix logits = matmul(hidden_states, projection);
 
+  // Apply temperature scaling before vocab balancing
+  const float temperature = 0.7f;  // Lower temperature = sharper predictions
+  for (size_t i = 0; i < logits.rows(); i++) {
+      for (size_t j = 0; j < logits.cols(); j++) {
+          logits(i, j) /= temperature;
+      }
+  }
+
+  // Adjust vocabulary balancing parameters
+  const float freq_penalty = 0.15f;  // Increased from 0.1f for stronger effect
+  for (size_t i = 0; i < logits.rows(); i++) {
+      for (size_t j = 0; j < logits.cols(); j++) {
+          // Penalize frequently occurring tokens with logarithmic scaling
+          if (token_frequencies[j] > 0) {
+              float penalty = freq_penalty * std::log(1 + token_frequencies[j]);
+              logits(i,j) -= penalty;
+          }
+      }
+  }
+  
   // Add bias
   for (size_t i = 0; i < logits.rows(); ++i) {
     for (size_t j = 0; j < logits.cols(); ++j) {

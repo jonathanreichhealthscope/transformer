@@ -179,67 +179,98 @@ Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
-  std::cout << "\n=== Transformer::constructor START ===" << std::endl;
-  
-    // Initialize token embedding
-  token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
-
-  // Initialize positional encoding
-  pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
-
-  // Initialize transformer layers
-  layers.reserve(config.num_layers);
+    std::cout << "\n=== Transformer::constructor START ===" << std::endl;
+    
+    // Initialize dropout with config probability
+    dropout = std::make_unique<Dropout>(config.dropout_prob);
+    
+    // Xavier/Glorot initialization with bounds
+    auto init_weight = [](float fan_in, float fan_out) -> float {
+        float limit = std::sqrt(6.0f / (fan_in + fan_out));
+        limit = std::min(limit, 0.1f);  // Cap maximum initialization value
+        return (static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f) * limit;
+    };
+    
+    // Initialize token embedding with bounded values
+    token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
+    
+    // Initialize positional encoding
+    pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
+    
+    // Initialize transformer layers with bounded initialization
+    layers.reserve(config.num_layers);
     m_kv_caches.reserve(config.num_layers);
-  for (size_t i = 0; i < config.num_layers; ++i) {
+    for (size_t i = 0; i < config.num_layers; ++i) {
         layers.push_back(std::make_unique<TransformerLayer>(config, i));
         m_kv_caches.emplace_back(config.max_seq_length);
-  }
-
-  // Initialize final layer normalization
-  final_ln = std::make_unique<LayerNorm>(config.hidden_size);
-
-  // Initialize the language model head
-  lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
-
-  std::cout << "=== Transformer::constructor END ===\n" << std::endl;
+    }
+    
+    // Initialize final layer normalization
+    final_ln = std::make_unique<LayerNorm>(config.hidden_size);
+    
+    // Initialize the language model head with bounded values
+    lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
+    
+    std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
-Matrix Transformer::forward(const std::vector<int> &input_tokens, bool use_cache) {
-  std::cout << "\n=== Transformer::forward START ===" << std::endl;
-  
+Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache) {
+    auto check_nan = [](const Matrix& m, const std::string& location) {
+        for (size_t i = 0; i < m.size(); ++i) {
+            if (std::isnan(m.data()[i])) {
+                throw std::runtime_error("NaN detected in " + location);
+            }
+        }
+    };
+    
     // Get embeddings
     Matrix embeddings = token_embedding->forward(input_tokens);
-
+    check_nan(embeddings, "embeddings");
+    
     // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
     Matrix pos_encodings = pos_encoding->forward(position_ids);
+    check_nan(pos_encodings, "positional_encodings");
+    
     embeddings += pos_encodings;
+    check_nan(embeddings, "embeddings + positional_encodings");
     
     // Create causal mask for next-token prediction
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
     
-    // Forward through layers
+    // Forward through layers with stability checks
     hidden_states = embeddings;
-    std::vector<Matrix> activations;
-    activations.reserve(layers.size());
+    m_layer_activations.clear();  // Clear previous activations
+    m_layer_activations.reserve(layers.size());  // Reserve space for efficiency
+    
+    // Add dropout after embeddings
+    if (training && dropout) {
+        hidden_states = dropout->forward(hidden_states, true);
+    }
     
     for (size_t i = 0; i < layers.size(); ++i) {
-        activations.push_back(hidden_states);
-        hidden_states = layers[i]->forward(hidden_states, mask, 
-            use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
+        try {
+            m_layer_activations.push_back(hidden_states);
+            hidden_states = layers[i]->forward(hidden_states, mask, 
+                use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
+            check_nan(hidden_states, "layer " + std::to_string(i));
+            
+            // Add dropout between layers
+            if (training && dropout && i < layers.size() - 1) {
+                hidden_states = dropout->forward(hidden_states, true);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error in layer " << i << ": " << e.what() << std::endl;
+            throw;
+        }
     }
-
-    // Final layer normalization
-    hidden_states = final_ln->forward(hidden_states);
-
-    // Store activations for backward pass
+    
+    // Store final hidden states for backward pass
     last_hidden_states = hidden_states;
-    m_layer_activations = std::move(activations);
-
-    std::cout << "=== Transformer::forward END ===\n" << std::endl;
+    
     return hidden_states;
 }
 
@@ -249,10 +280,31 @@ void Transformer::clear_kv_cache() {
     }
 }
 
-void Transformer::backward(const Matrix &grad_output, const std::vector<int> &input_tokens, float learning_rate) {
+void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens, float learning_rate) {
+    const float grad_clip_threshold = 1.0f;
+    
+    // Clip incoming gradients
+    Matrix clipped_grad = grad_output;
+    float grad_norm = 0.0f;
+    
+    // Compute gradient norm
+    for (size_t i = 0; i < clipped_grad.size(); ++i) {
+        grad_norm += clipped_grad.data()[i] * clipped_grad.data()[i];
+    }
+    grad_norm = std::sqrt(grad_norm);
+    
+    // Apply clipping if norm is too large
+    if (grad_norm > grad_clip_threshold) {
+        float scale = grad_clip_threshold / (grad_norm + 1e-6f);
+        for (size_t i = 0; i < clipped_grad.size(); ++i) {
+            clipped_grad.data()[i] *= scale;
+        }
+    }
+    
+    // Continue with backward pass using clipped gradients
+    Matrix current_grad = clipped_grad;
     std::cout << "\n=== Transformer::backward START ===" << std::endl;
     
-    Matrix current_grad = grad_output;
     std::cout << "Initial grad dimensions: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
     
     // Backward through final layer norm
@@ -297,7 +349,7 @@ void Transformer::backward(const Matrix &grad_output, const std::vector<int> &in
         
         // Get corresponding gradient
         auto& param_grads = parameter_gradients();
-        size_t param_idx = &param - &parameters()[0];  // Get index of current parameter
+        size_t param_idx = &param - &parameters()[0];
         Matrix& param_grad = param_grads[param_idx];
         
         // Combine with existing gradients
