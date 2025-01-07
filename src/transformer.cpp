@@ -240,8 +240,12 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
     
     // Forward through layers with stability checks
     hidden_states = embeddings;
+    m_layer_activations.clear();  // Clear previous activations
+    m_layer_activations.reserve(layers.size());  // Reserve space for efficiency
+    
     for (size_t i = 0; i < layers.size(); ++i) {
         try {
+            m_layer_activations.push_back(hidden_states);  // Store current state before layer
             hidden_states = layers[i]->forward(hidden_states, mask, 
                 use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
             check_nan(hidden_states, "layer " + std::to_string(i));
@@ -250,6 +254,9 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
             throw;
         }
     }
+    
+    // Store final hidden states for backward pass
+    last_hidden_states = hidden_states;
     
     return hidden_states;
 }

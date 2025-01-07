@@ -8,6 +8,7 @@ Matrix LayerNorm::forward(const Matrix &x) {
   size_t batch_size = x.rows();
   size_t hidden_size = x.cols();
   Matrix output(batch_size, hidden_size);
+  normalized = Matrix(batch_size, hidden_size);  // Store normalized values
   
   #pragma omp parallel for
   for (size_t i = 0; i < batch_size; i++) {
@@ -41,10 +42,11 @@ Matrix LayerNorm::forward(const Matrix &x) {
     }
     
     for (size_t j = 0; j < hidden_size; j++) {
-      float normalized = (x(i, j) - mean) / std_dev;
+      float norm_val = (x(i, j) - mean) / std_dev;
       // Clip extreme values
-      normalized = std::max(std::min(normalized, 1e4f), -1e4f);
-      output(i, j) = normalized * gamma[j] + beta[j];
+      norm_val = std::max(std::min(norm_val, 1e4f), -1e4f);
+      normalized(i, j) = norm_val;  // Store normalized value
+      output(i, j) = norm_val * gamma[j] + beta[j];
     }
   }
   
