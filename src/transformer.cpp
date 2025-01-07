@@ -181,6 +181,9 @@ Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
     std::cout << "\n=== Transformer::constructor START ===" << std::endl;
     
+    // Initialize dropout with config probability
+    dropout = std::make_unique<Dropout>(config.dropout_prob);
+    
     // Xavier/Glorot initialization with bounds
     auto init_weight = [](float fan_in, float fan_out) -> float {
         float limit = std::sqrt(6.0f / (fan_in + fan_out));
@@ -243,12 +246,22 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
     m_layer_activations.clear();  // Clear previous activations
     m_layer_activations.reserve(layers.size());  // Reserve space for efficiency
     
+    // Add dropout after embeddings
+    if (training && dropout) {
+        hidden_states = dropout->forward(hidden_states, true);
+    }
+    
     for (size_t i = 0; i < layers.size(); ++i) {
         try {
-            m_layer_activations.push_back(hidden_states);  // Store current state before layer
+            m_layer_activations.push_back(hidden_states);
             hidden_states = layers[i]->forward(hidden_states, mask, 
                 use_cache ? std::optional<KVCache>(m_kv_caches[i]) : std::nullopt);
             check_nan(hidden_states, "layer " + std::to_string(i));
+            
+            // Add dropout between layers
+            if (training && dropout && i < layers.size() - 1) {
+                hidden_states = dropout->forward(hidden_states, true);
+            }
         } catch (const std::exception& e) {
             std::cerr << "Error in layer " << i << ": " << e.what() << std::endl;
             throw;
@@ -336,7 +349,7 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
         
         // Get corresponding gradient
         auto& param_grads = parameter_gradients();
-        size_t param_idx = &param - &parameters()[0];  // Get index of current parameter
+        size_t param_idx = &param - &parameters()[0];
         Matrix& param_grad = param_grads[param_idx];
         
         // Combine with existing gradients

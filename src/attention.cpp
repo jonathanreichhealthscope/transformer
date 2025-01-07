@@ -1025,3 +1025,44 @@ Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matri
     
     return scores;
 }
+
+void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
+    const float EPSILON = 1e-8f;
+    const float TEMPERATURE = 0.7f;
+    const float MIN_SCORE = -1e4f;
+    
+    for (size_t i = 0; i < x.rows(); i++) {
+        // Find max for numerical stability
+        float max_val = MIN_SCORE;
+        for (size_t j = 0; j < x.cols(); j++) {
+            if (x(i,j) > MIN_SCORE) {
+                max_val = std::max(max_val, x(i,j));
+            }
+        }
+        
+        // Apply temperature scaling and compute sum
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < x.cols(); j++) {
+            if (x(i,j) > MIN_SCORE) {
+                x(i,j) = std::exp((x(i,j) - max_val) / TEMPERATURE);
+                sum_exp += x(i,j);
+            } else {
+                x(i,j) = 0.0f;
+            }
+        }
+        
+        // Normalize
+        if (sum_exp < EPSILON) {
+            // If sum is too small, use uniform distribution
+            float uniform_val = 1.0f / x.cols();
+            for (size_t j = 0; j < x.cols(); j++) {
+                x(i,j) = uniform_val;
+            }
+        } else {
+            // Normal normalization
+            for (size_t j = 0; j < x.cols(); j++) {
+                x(i,j) /= sum_exp;
+            }
+        }
+    }
+}

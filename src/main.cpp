@@ -315,6 +315,11 @@ int main(int argc, char *argv[]) {
                     // Print performance metrics
                     metrics.print_metrics();
                 }
+
+                // In the training loop, after processing each batch
+                for (const auto& tokens : input_batch) {
+                    lm_head->update_token_frequencies(tokens);
+                }
             }
             
             std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs 

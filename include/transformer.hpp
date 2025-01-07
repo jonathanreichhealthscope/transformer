@@ -175,6 +175,7 @@ private:
   std::vector<std::unique_ptr<TransformerLayer>> layers;
   std::unique_ptr<LayerNorm> final_ln;
   std::unique_ptr<LanguageModelHead> lm_head;
+  std::unique_ptr<Dropout> dropout;
   bool cuda_initialized = false;
   
   // Cached states for backward pass
@@ -212,7 +213,7 @@ private:
     return parameter_grads.value();
   }
 
-  bool training = false;
+  bool training = true;
 
 public:
   Transformer() = default;
@@ -279,4 +280,6 @@ public:
            !layers.empty() && std::all_of(layers.begin(), layers.end(), 
            [](const auto& layer) { return layer != nullptr; });
   }
+
+  bool is_training() const { return training; }
 };
