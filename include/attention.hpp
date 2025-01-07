@@ -153,6 +153,8 @@ public:
       return param_gradients;
   }
 
+  Matrix compute_attention_scores(const Matrix& Q, const Matrix& K);
+
 private:
   Parameters params;         // Trainable parameters
   mutable Parameters param_gradients;  // Parameter gradients

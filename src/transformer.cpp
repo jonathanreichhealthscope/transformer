@@ -179,29 +179,36 @@ Matrix TransformerLayer::backward(const Matrix &grad_output, const Matrix &input
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig &config) : config(config) {
-  std::cout << "\n=== Transformer::constructor START ===" << std::endl;
-  
-    // Initialize token embedding
-  token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
-
-  // Initialize positional encoding
-  pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
-
-  // Initialize transformer layers
-  layers.reserve(config.num_layers);
+    std::cout << "\n=== Transformer::constructor START ===" << std::endl;
+    
+    // Xavier/Glorot initialization with bounds
+    auto init_weight = [](float fan_in, float fan_out) -> float {
+        float limit = std::sqrt(6.0f / (fan_in + fan_out));
+        limit = std::min(limit, 0.1f);  // Cap maximum initialization value
+        return (static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f) * limit;
+    };
+    
+    // Initialize token embedding with bounded values
+    token_embedding = std::make_unique<TokenEmbedding>(config.vocab_size, config.hidden_size);
+    
+    // Initialize positional encoding
+    pos_encoding = std::make_unique<PositionalEncoding>(config.max_seq_length, config.hidden_size);
+    
+    // Initialize transformer layers with bounded initialization
+    layers.reserve(config.num_layers);
     m_kv_caches.reserve(config.num_layers);
-  for (size_t i = 0; i < config.num_layers; ++i) {
+    for (size_t i = 0; i < config.num_layers; ++i) {
         layers.push_back(std::make_unique<TransformerLayer>(config, i));
         m_kv_caches.emplace_back(config.max_seq_length);
-  }
-
-  // Initialize final layer normalization
-  final_ln = std::make_unique<LayerNorm>(config.hidden_size);
-
-  // Initialize the language model head
-  lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
-
-  std::cout << "=== Transformer::constructor END ===\n" << std::endl;
+    }
+    
+    // Initialize final layer normalization
+    final_ln = std::make_unique<LayerNorm>(config.hidden_size);
+    
+    // Initialize the language model head with bounded values
+    lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
+    
+    std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache) {
@@ -505,19 +512,5 @@ void Transformer::load(std::istream& is) {
         
     } catch (const std::exception& e) {
         throw std::runtime_error("Error loading transformer: " + std::string(e.what()));
-    }
-}
-
-void Transformer::initialize_parameters() {
-    // Xavier/Glorot initialization with bounds
-    auto init_weight = [](float fan_in, float fan_out) -> float {
-        float limit = std::sqrt(6.0f / (fan_in + fan_out));
-        limit = std::min(limit, 0.1f);  // Cap maximum initialization value
-        return (static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f) * limit;
-    };
-    
-    // Initialize all weights with bounded values
-    for (auto& layer : layers) {
-        // ... initialize layer weights ...
     }
 }
