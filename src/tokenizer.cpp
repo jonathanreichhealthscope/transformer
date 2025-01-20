@@ -5,7 +5,14 @@
 #include <algorithm>
 
 // Define the special character map
-extern const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
+const std::unordered_map<char, std::string> Tokenizer::SPECIAL_CHAR_MAP = {
+    {'\n', "<newline>"},
+    {'\t', "<tab>"},
+    {'.', "<period>"},
+    {'!', "<exclamation>"},
+    {'?', "<question>"},
+    {',', "<comma>"}
+};
 
 Tokenizer::Tokenizer() : vocab(std::make_unique<Vocabulary>()) {}
 
@@ -77,23 +84,48 @@ std::vector<int> Tokenizer::encode(const std::string &text) const {
     return tokens;
 }
 
-std::string Tokenizer::decode(const std::vector<int> &tokens) const {
+std::string Tokenizer::decode(const std::vector<int>& tokens) const {
     std::string result;
+    bool skip_space = false;  // To handle consecutive whitespace tokens
+
     for (int token : tokens) {
         std::string token_str = vocab->get_token(token);
-        if (token_str != "<pad>" && token_str != "<bos>" && token_str != "<eos>") {
-            // Handle special tokens during decoding
-            if (token_str == "<whitespace>") {
+        
+        // Skip special control tokens
+        if (token_str == "<pad>" || token_str == "<bos>" || token_str == "<eos>") {
+            continue;
+        }
+
+        // Handle special character tokens
+        if (token_str == "<whitespace>") {
+            if (!skip_space) {
                 result += " ";
-            } else if (token_str == "<newline>") {
-                result += "\n";
-            } else if (token_str == "<tab>") {
-                result += "\t";
-            } else {
-                result += token_str;
+                skip_space = true;
             }
+        } else if (token_str == "<newline>") {
+            result += "\n";
+            skip_space = false;
+        } else if (token_str == "<tab>") {
+            result += "\t";
+            skip_space = false;
+        } else if (token_str == "<period>") {
+            result += ".";
+            skip_space = false;
+        } else if (token_str == "<exclamation>") {
+            result += "!";
+            skip_space = false;
+        } else if (token_str == "<question>") {
+            result += "?";
+            skip_space = false;
+        } else if (token_str == "<comma>") {
+            result += ",";
+            skip_space = false;
+        } else {
+            result += token_str;
+            skip_space = false;
         }
     }
+
     return result;
 }
 
@@ -139,14 +171,31 @@ bool Tokenizer::is_special_token(int token_id) const {
            token.find("<") == 0; // Check for other special tokens
 }
 
-void Tokenizer::preprocess_text(std::string &text) const {
-    // Preserve whitespace with special tokens
-    std::regex whitespace_re("\\s+");
-    text = std::regex_replace(text, whitespace_re, " <whitespace> ");
-    
-    // Handle special characters
-    for (const auto& [special_char, token] : SPECIAL_CHAR_MAP) {
-        std::string char_str(1, special_char);
-        text = std::regex_replace(text, std::regex(std::regex_replace(char_str, std::regex("[.?*+^$()\\[\\]{}|\\\\]"), "\\$&")), token);
+void Tokenizer::preprocess_text(std::string& text) const {
+    std::string result;
+    bool in_whitespace = false;
+
+    for (size_t i = 0; i < text.length(); ++i) {
+        char c = text[i];
+        
+        // Handle whitespace
+        if (std::isspace(c)) {
+            if (!in_whitespace) {
+                result += " <whitespace> ";
+                in_whitespace = true;
+            }
+            continue;
+        }
+        in_whitespace = false;
+
+        // Handle special characters
+        auto it = SPECIAL_CHAR_MAP.find(c);
+        if (it != SPECIAL_CHAR_MAP.end()) {
+            result += it->second;
+        } else {
+            result += c;
+        }
     }
+
+    text = result;
 }

@@ -18,16 +18,6 @@ float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 size_t global_step = 0;
 
-// Define the special character map (definition)
-const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP = {
-    {'\n', "<newline>"},
-    {'\t', "<tab>"},
-    {'.', "<period>"},
-    {'!', "<exclamation>"},
-    {'?', "<question>"},
-    {',', "<comma>"}
-};
-
 int main(int argc, char *argv[]) {
     std::cout << "entering main" << std::endl;
     Logger &logger = Logger::getInstance();

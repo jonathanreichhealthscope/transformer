@@ -36,6 +36,11 @@ public:
     
     const Vocabulary& get_vocabulary() const { return *vocab; }
     
+    // Add a method to access the map if needed
+    static const std::unordered_map<char, std::string>& get_special_char_map() {
+        return SPECIAL_CHAR_MAP;
+    }
+    
 private:
     std::unique_ptr<Vocabulary> vocab;
     mutable std::unordered_map<std::string, std::vector<int>> encoding_cache;
@@ -43,6 +48,7 @@ private:
     
     void save_vocabulary(std::ostream& os) const;
     static std::unique_ptr<Vocabulary> load_vocabulary(std::istream& is);
+    
+    // Add the special character map as a static const member
+    static const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
 };
-
-extern const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
