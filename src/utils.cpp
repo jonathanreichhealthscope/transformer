@@ -139,6 +139,23 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         config.use_gradient_checkpointing = optimization["use_gradient_checkpointing"];
         config.memory_pool_size = optimization["memory_pool_size"];
         
+        // Parse beam search settings
+        if (j.contains("beam_search")) {
+            auto& beam = j["beam_search"];
+            config.beam_size = beam["beam_size"];
+            config.length_penalty = beam["length_penalty"];
+            config.temperature = beam["temperature"];
+            config.top_p = beam["top_p"];
+            config.max_length = beam["max_length"];
+        } else {
+            // Default values if not specified
+            config.beam_size = 5;
+            config.length_penalty = 0.6f;
+            config.temperature = 1.0f;
+            config.top_p = 0.9f;
+            config.max_length = 20;
+        }
+        
         // Add checkpoint loading settings
         if (j.contains("load_from_checkpoint")) {
             config.load_from_checkpoint = j["load_from_checkpoint"].get<bool>();
@@ -415,4 +432,60 @@ float Utils::evaluate_validation(Transformer& transformer, const Tokenizer& toke
     std::cout << "correct predictions: " << correct_predictions << std::endl;
     transformer.set_training(true);  // Reset to training mode
     return total_predictions > 0 ? total_loss / total_predictions : 0.0f;
+}
+
+void Utils::apply_sampling_parameters(std::vector<float>& logits, float temperature, float top_p) {
+    // Apply temperature scaling first
+    if (temperature != 1.0f) {
+        for (auto& logit : logits) {
+            logit /= temperature;
+        }
+    }
+
+    // Apply top-p (nucleus) sampling if enabled
+    if (top_p < 1.0f) {
+        // Convert logits to probabilities
+        std::vector<std::pair<float, size_t>> probs_with_indices;
+        float max_logit = *std::max_element(logits.begin(), logits.end());
+        float sum_exp = 0.0f;
+        
+        for (size_t i = 0; i < logits.size(); i++) {
+            float prob = std::exp(logits[i] - max_logit);
+            sum_exp += prob;
+            probs_with_indices.push_back({prob, i});
+        }
+        
+        // Normalize probabilities
+        for (auto& pair : probs_with_indices) {
+            pair.first /= sum_exp;
+        }
+        
+        // Sort by probability in descending order
+        std::sort(probs_with_indices.begin(), probs_with_indices.end(),
+                 std::greater<std::pair<float, size_t>>());
+        
+        // Find cutoff index for top-p
+        float cumsum = 0.0f;
+        size_t cutoff_idx = probs_with_indices.size() - 1;
+        for (size_t i = 0; i < probs_with_indices.size(); i++) {
+            cumsum += probs_with_indices[i].first;
+            if (cumsum > top_p) {
+                cutoff_idx = i;
+                break;
+            }
+        }
+        
+        // Create mask for filtered tokens
+        std::vector<bool> keep_token(logits.size(), false);
+        for (size_t i = 0; i <= cutoff_idx; i++) {
+            keep_token[probs_with_indices[i].second] = true;
+        }
+        
+        // Apply mask to logits
+        for (size_t i = 0; i < logits.size(); i++) {
+            if (!keep_token[i]) {
+                logits[i] = -std::numeric_limits<float>::infinity();
+            }
+        }
+    }
 } 

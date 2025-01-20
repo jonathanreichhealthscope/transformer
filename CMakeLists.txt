@@ -58,6 +58,7 @@ set(CORE_SOURCES
     src/performance_metrics.cpp
     src/gqa.cpp
     src/beam_search.cpp
+    src/config.cpp
 )
 
 # Neural network components
@@ -217,6 +218,7 @@ if(CUDAToolkit_FOUND)
         cuda_kernels
     )
 
+    # Link CUDA libraries to transformer_lib
     target_link_libraries(transformer_lib
         PUBLIC ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
         PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
