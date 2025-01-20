@@ -18,7 +18,7 @@
         "use_rope": true,
         "use_sliding_window": false,
         "window_size": 512,
-        "use_gqa": false,
+        "use_gqa": true,
         "num_kv_heads": 2
     },
     "optimization": {

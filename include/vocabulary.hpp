@@ -13,6 +13,7 @@ private:
   int pad_token_id;
   int bos_token_id;
   int eos_token_id;
+  int mask_token_id;
 
   void add_word(const std::string &word);
 
@@ -29,6 +30,7 @@ public:
   int get_unk_token_id() const { return unk_token_id; }
   int get_bos_token_id() const { return bos_token_id; }
   int get_eos_token_id() const { return eos_token_id; }
+  int get_mask_token_id() const { return mask_token_id; }
 
   void print_vocabulary_mappings() const;
   bool verify_mappings() const;

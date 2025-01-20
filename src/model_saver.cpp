@@ -92,10 +92,53 @@ bool ModelSaver::saveCheckpoint(const Transformer &transformer,
                                 const std::string &model_name, int epoch,
                                 float loss) {
     try {
+        // Create directory first and check permissions
+        fs::path dir_path(directory);
+        if (!fs::exists(dir_path)) {
+            if (!fs::create_directories(dir_path)) {
+                logger.log("Failed to create directory: " + directory + 
+                          " (Check permissions and path)", true);
+                return false;
+            }
+        } else if (!fs::is_directory(dir_path)) {
+            logger.log("Path exists but is not a directory: " + directory, true);
+            return false;
+        }
+
+        // Check directory permissions
+        std::error_code ec;
+        auto perms = fs::status(dir_path, ec).permissions();
+        if (ec) {
+            logger.log("Failed to check directory permissions: " + ec.message(), true);
+            return false;
+        }
+        
+        if ((perms & fs::perms::owner_write) == fs::perms::none) {
+            logger.log("Directory is not writable: " + directory, true);
+            return false;
+        }
+
         std::string checkpoint_file = getCheckpointFilename(directory, model_name, epoch);
         logger.log("Saving checkpoint to: " + checkpoint_file);
 
-        // Create checkpoint metadata
+        // Test file writability before proceeding
+        {
+            std::ofstream test_file(checkpoint_file);
+            if (!test_file) {
+                logger.log("Cannot write to checkpoint file: " + checkpoint_file + 
+                          " (Check permissions)", true);
+                return false;
+            }
+        }
+
+        // Open checkpoint file for actual writing
+        std::ofstream ckpt_file(checkpoint_file, std::ios::binary);
+        if (!ckpt_file) {
+            logger.log("Failed to open checkpoint file for writing: " + checkpoint_file, true);
+            return false;
+        }
+
+        // Write metadata as JSON to start of file
         json checkpoint_meta;
         const auto& config = transformer.getConfig();
         
@@ -110,23 +153,27 @@ bool ModelSaver::saveCheckpoint(const Transformer &transformer,
         };
         checkpoint_meta["batch_size"] = config.batch_size;
 
-        // Open single checkpoint file
-        std::ofstream ckpt_file(checkpoint_file, std::ios::binary);
-        if (!ckpt_file) {
-            logger.log("Failed to open checkpoint file for writing", true);
-            return false;
-        }
-
-        // Write metadata as JSON to start of file
         std::string meta_str = checkpoint_meta.dump();
         size_t meta_size = meta_str.size();
-        ckpt_file.write(reinterpret_cast<const char*>(&meta_size), sizeof(meta_size));
-        ckpt_file.write(meta_str.c_str(), meta_size);
+        
+        // Write metadata size and content
+        if (!ckpt_file.write(reinterpret_cast<const char*>(&meta_size), sizeof(meta_size)) ||
+            !ckpt_file.write(meta_str.c_str(), meta_size)) {
+            logger.log("Failed to write metadata to checkpoint file", true);
+            return false;
+        }
 
         // Save model state
         const auto &layers = transformer.getLayers();
         for (const auto &layer : layers) {
             layer->save(ckpt_file);
+        }
+
+        // Ensure everything is written
+        ckpt_file.flush();
+        if (!ckpt_file) {
+            logger.log("Error occurred while writing checkpoint file", true);
+            return false;
         }
 
         logger.log("Checkpoint saved successfully");
@@ -229,9 +276,9 @@ bool ModelSaver::loadLatestCheckpoint(Transformer &transformer,
 }
 
 std::string ModelSaver::createDirectory(const std::string &base_dir) const {
-  fs::path dir_path(base_dir);
-  fs::create_directories(dir_path);
-  return dir_path.string();
+    fs::path dir_path(base_dir);
+    fs::create_directories(dir_path);
+    return dir_path.string();
 }
 
 std::string ModelSaver::getCheckpointFilename(const std::string &directory,

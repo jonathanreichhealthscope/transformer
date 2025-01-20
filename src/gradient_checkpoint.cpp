@@ -5,15 +5,25 @@ std::unordered_map<size_t, Matrix> GradientCheckpoint::checkpoints;
 std::unordered_map<std::string, Matrix> GradientCheckpoint::activation_cache;
 
 void GradientCheckpoint::save_activation(const Matrix &activation, size_t layer) {
-    // Use memory pool for efficient allocation
-    Matrix &checkpoint = checkpoints[layer];
-    checkpoint = Matrix(activation.rows(), activation.cols());
+    try {
+        // Use memory pool for efficient allocation
+        Matrix &checkpoint = checkpoints[layer];
+        checkpoint = Matrix(activation.rows(), activation.cols());
+
+        if (checkpoint.size() == 0) {
+            throw std::runtime_error("Failed to allocate checkpoint matrix for layer " + 
+                                   std::to_string(layer));
+        }
 
 #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < activation.rows(); ++i) {
-        for (size_t j = 0; j < activation.cols(); ++j) {
-            checkpoint(i, j) = activation(i, j);
+        for (size_t i = 0; i < activation.rows(); ++i) {
+            for (size_t j = 0; j < activation.cols(); ++j) {
+                checkpoint(i, j) = activation(i, j);
+            }
         }
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error saving activation checkpoint: " + 
+                               std::string(e.what()));
     }
 }
 
@@ -27,7 +37,20 @@ Matrix GradientCheckpoint::get_activation(size_t layer) {
 }
 
 void GradientCheckpoint::cache_activation(const std::string& key, const Matrix& activation) {
-    activation_cache[key] = Matrix(activation); // Deep copy
+    try {
+        // Check if we have too many cached activations to prevent memory issues
+        if (activation_cache.size() > 1000) { // Arbitrary limit, adjust as needed
+            clear_cache();
+        }
+        
+        activation_cache[key] = Matrix(activation); // Deep copy
+        
+        if (activation_cache[key].size() == 0) {
+            throw std::runtime_error("Failed to allocate activation cache for key: " + key);
+        }
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error caching activation: " + std::string(e.what()));
+    }
 }
 
 Matrix GradientCheckpoint::get_activation(const std::string& key) {

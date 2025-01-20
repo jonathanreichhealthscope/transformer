@@ -19,6 +19,7 @@ Vocabulary::Vocabulary() {
   unk_token_id = 1;
   bos_token_id = 2;
   eos_token_id = 3;
+  mask_token_id = 4;
 
   initialize_basic_vocabulary();
 }
