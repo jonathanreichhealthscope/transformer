@@ -25,6 +25,7 @@ A pure C++ implementation of a decoder-only transformer model with CUDA support.
 ## Training Features
 
 - Batch processing
+- Beam Search
 - Dynamic learning rate adjustment
 - Gradient clipping
 - Loss computation and backpropagation

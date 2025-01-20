@@ -327,17 +327,32 @@ int main(int argc, char *argv[]) {
             
             // Save checkpoint
             if ((epoch + 1) % checkpoint_frequency == 0) {
+                std::cout << "Attempting to save checkpoint to: " << save_directory << "/" << model_name << std::endl;
+                
+                // Verify directory exists and is writable
+                if (!std::filesystem::exists(save_directory)) {
+                    std::cout << "Creating directory: " << save_directory << std::endl;
+                    if (!std::filesystem::create_directories(save_directory)) {
+                        std::cerr << "Failed to create directory: " << save_directory << std::endl;
+                        // Don't exit, just skip checkpoint
+                        continue;
+                    }
+                }
+                
+                // Try to save
                 if (!model_saver.saveCheckpoint(transformer, save_directory, model_name,
-                                                epoch + 1, epoch_loss)) {
-                    std::cout << "Failed to save checkpoint" << std::endl;
-                    return 1;
+                                              epoch + 1, epoch_loss)) {
+                    std::cerr << "Failed to save checkpoint, but continuing training" << std::endl;
+                    // Don't exit, just continue training
                 }
             }
 
             // Test prediction on a sample input
             if ((epoch + 1) % 2 == 0) {
+                std::cout << "\n=== Starting Text Generation Testing ===" << std::endl;
                 // Initialize beam search
                 BeamSearch beam_search(5, 0.6f); // beam width of 5, length penalty of 0.6
+                std::cout << "Initialized beam search with width=5, penalty=0.6" << std::endl;
                 
                 // Test multiple different contexts
                 std::vector<std::string> test_inputs = {
@@ -358,9 +373,10 @@ int main(int argc, char *argv[]) {
                     "Mechanics repair in the"   // Automotive context
                 };
 
+                std::cout << "Testing " << test_inputs.size() << " different prompts" << std::endl;
+                
                 for (const auto &test_input : test_inputs) {
-                    std::cout << "\nTesting: '" << test_input << "'\n";
-                    
+                    std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
                     // Preprocess input
                     std::string processed_input = test_input;
                     tokenizer->preprocess_text(processed_input);
@@ -370,7 +386,7 @@ int main(int argc, char *argv[]) {
                     Matrix test_hidden = transformer.forward(test_tokens);
                     Matrix initial_logits_matrix = lm_head->project_to_vocab(test_hidden);
                     
-                    // Convert last token's logits to vector for beam search
+                    // Convert matrix to vector for beam search
                     std::vector<float> initial_logits;
                     size_t last_token_idx = test_tokens.size() - 1;
                     for (size_t j = 0; j < initial_logits_matrix.cols(); ++j) {
@@ -379,11 +395,9 @@ int main(int argc, char *argv[]) {
                     
                     // Create next token function for beam search
                     auto next_token_fn = [&](const std::vector<int>& tokens) -> std::vector<float> {
-                        // Forward pass through model
                         Matrix hidden = transformer.forward(tokens);
                         Matrix logits = lm_head->project_to_vocab(hidden);
                         
-                        // Convert last token's logits to vector
                         std::vector<float> next_logits;
                         size_t last_idx = tokens.size() - 1;
                         for (size_t j = 0; j < logits.cols(); ++j) {
@@ -400,17 +414,17 @@ int main(int argc, char *argv[]) {
                         tokenizer->get_eos_token_id()
                     );
                     
-                    // Print top beam search results
-                    std::cout << "Top beam search completions:\n";
+                    // Print beam search results
+                    std::cout << "\nBeam Search Completions:\n";
                     for (size_t i = 0; i < std::min(size_t(3), beam_results.size()); ++i) {
                         const auto& hypothesis = beam_results[i];
                         std::string completion = tokenizer->decode(hypothesis.tokens);
-                        std::cout << i + 1 << ". " << test_input << completion 
+                        std::cout << i + 1 << ". " << completion 
                                  << " (score: " << hypothesis.score << ")\n";
                     }
                     
-                    // Also show the original greedy search result for comparison
-                    std::cout << "\nGreedy search completion:\n";
+                    // Also show greedy search result for comparison
+                    std::cout << "\nGreedy Search Completion:\n";
                     Utils::print_top_predictions(initial_logits_matrix, *tokenizer, 5);
                 }
             }
