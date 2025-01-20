@@ -9,11 +9,6 @@ PerformanceMetrics metrics;  // Single definition of the global metrics variable
 
 // Configuration constants
 const float INITIAL_LEARNING_RATE = 0.001f;
-const float MIN_LEARNING_RATE = 1e-6f;
-const float MAX_LEARNING_RATE = 0.1f;
-const float GRADIENT_CLIP_THRESHOLD = 1.0f;
-const float LOSS_SPIKE_THRESHOLD = 1.5f;
-const size_t WARMUP_STEPS = 100;
 float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 size_t global_step = 0;
