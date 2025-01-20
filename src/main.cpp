@@ -336,6 +336,9 @@ int main(int argc, char *argv[]) {
 
             // Test prediction on a sample input
             if ((epoch + 1) % 2 == 0) {
+                // Initialize beam search
+                BeamSearch beam_search(5, 0.6f); // beam width of 5, length penalty of 0.6
+                
                 // Test multiple different contexts
                 std::vector<std::string> test_inputs = {
                     "I go to",                  
@@ -357,13 +360,58 @@ int main(int argc, char *argv[]) {
 
                 for (const auto &test_input : test_inputs) {
                     std::cout << "\nTesting: '" << test_input << "'\n";
-                    // Add preprocessing step
+                    
+                    // Preprocess input
                     std::string processed_input = test_input;
                     tokenizer->preprocess_text(processed_input);
                     std::vector<int> test_tokens = tokenizer->encode(processed_input);
+                    
+                    // Get initial logits
                     Matrix test_hidden = transformer.forward(test_tokens);
-                    Matrix test_logits = lm_head->forward(test_hidden);
-                    Utils::print_top_predictions(test_logits, *tokenizer, 5);
+                    Matrix initial_logits_matrix = lm_head->project_to_vocab(test_hidden);
+                    
+                    // Convert last token's logits to vector for beam search
+                    std::vector<float> initial_logits;
+                    size_t last_token_idx = test_tokens.size() - 1;
+                    for (size_t j = 0; j < initial_logits_matrix.cols(); ++j) {
+                        initial_logits.push_back(initial_logits_matrix(last_token_idx, j));
+                    }
+                    
+                    // Create next token function for beam search
+                    auto next_token_fn = [&](const std::vector<int>& tokens) -> std::vector<float> {
+                        // Forward pass through model
+                        Matrix hidden = transformer.forward(tokens);
+                        Matrix logits = lm_head->project_to_vocab(hidden);
+                        
+                        // Convert last token's logits to vector
+                        std::vector<float> next_logits;
+                        size_t last_idx = tokens.size() - 1;
+                        for (size_t j = 0; j < logits.cols(); ++j) {
+                            next_logits.push_back(logits(last_idx, j));
+                        }
+                        return next_logits;
+                    };
+                    
+                    // Perform beam search
+                    auto beam_results = beam_search.search(
+                        initial_logits,
+                        next_token_fn,
+                        20,  // max sequence length
+                        tokenizer->get_eos_token_id()
+                    );
+                    
+                    // Print top beam search results
+                    std::cout << "Top beam search completions:\n";
+                    for (size_t i = 0; i < std::min(size_t(3), beam_results.size()); ++i) {
+                        const auto& hypothesis = beam_results[i];
+                        std::string completion = tokenizer->decode(hypothesis.tokens);
+                        std::cout << i + 1 << ". " << test_input << completion 
+                                 << " (score: " << hypothesis.score << ")\n";
+                    }
+                    
+                    // Also show the original greedy search result for comparison
+                    std::cout << "\nGreedy search completion:\n";
+                    Utils::print_top_predictions(initial_logits_matrix, *tokenizer, 5);
                 }
             }
 

@@ -15,6 +15,7 @@
 
 // Project includes
 #include "attention.hpp"
+#include "beam_search.hpp"
 #include "lm_head.hpp"
 #include "logger.hpp"
 #include "model_saver.hpp"

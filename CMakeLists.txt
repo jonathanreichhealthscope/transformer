@@ -57,6 +57,7 @@ set(CORE_SOURCES
     src/utils.cpp
     src/performance_metrics.cpp
     src/gqa.cpp
+    src/beam_search.cpp
 )
 
 # Neural network components
