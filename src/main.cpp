@@ -9,24 +9,9 @@ PerformanceMetrics metrics;  // Single definition of the global metrics variable
 
 // Configuration constants
 const float INITIAL_LEARNING_RATE = 0.001f;
-const float MIN_LEARNING_RATE = 1e-6f;
-const float MAX_LEARNING_RATE = 0.1f;
-const float GRADIENT_CLIP_THRESHOLD = 1.0f;
-const float LOSS_SPIKE_THRESHOLD = 1.5f;
-const size_t WARMUP_STEPS = 100;
 float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 size_t global_step = 0;
-
-// Define the special character map (definition)
-const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP = {
-    {'\n', "<newline>"},
-    {'\t', "<tab>"},
-    {'.', "<period>"},
-    {'!', "<exclamation>"},
-    {'?', "<question>"},
-    {',', "<comma>"}
-};
 
 int main(int argc, char *argv[]) {
     std::cout << "entering main" << std::endl;
@@ -350,9 +335,10 @@ int main(int argc, char *argv[]) {
             // Test prediction on a sample input
             if ((epoch + 1) % 2 == 0) {
                 std::cout << "\n=== Starting Text Generation Testing ===" << std::endl;
-                // Initialize beam search
-                BeamSearch beam_search(5, 0.6f); // beam width of 5, length penalty of 0.6
-                std::cout << "Initialized beam search with width=5, penalty=0.6" << std::endl;
+                // Initialize beam search with config parameters
+                BeamSearch beam_search(config.beam_size, config.length_penalty);
+                std::cout << "Initialized beam search with width=" << config.beam_size 
+                         << ", penalty=" << config.length_penalty << std::endl;
                 
                 // Test multiple different contexts
                 std::vector<std::string> test_inputs = {
@@ -393,7 +379,7 @@ int main(int argc, char *argv[]) {
                         initial_logits.push_back(initial_logits_matrix(last_token_idx, j));
                     }
                     
-                    // Create next token function for beam search
+                    // Create next token function for beam search with sampling
                     auto next_token_fn = [&](const std::vector<int>& tokens) -> std::vector<float> {
                         Matrix hidden = transformer.forward(tokens);
                         Matrix logits = lm_head->project_to_vocab(hidden);
@@ -403,14 +389,26 @@ int main(int argc, char *argv[]) {
                         for (size_t j = 0; j < logits.cols(); ++j) {
                             next_logits.push_back(logits(last_idx, j));
                         }
+                        
+                        // Apply temperature and top-p sampling
+                        Utils::apply_sampling_parameters(next_logits, 
+                                                      config.temperature,
+                                                      config.top_p);
+                        
                         return next_logits;
                     };
                     
-                    // Perform beam search
+                    // Also apply to initial logits
+                    std::vector<float> processed_initial_logits = initial_logits;
+                    Utils::apply_sampling_parameters(processed_initial_logits,
+                                                  config.temperature,
+                                                  config.top_p);
+                    
+                    // Perform beam search with processed logits
                     auto beam_results = beam_search.search(
-                        initial_logits,
+                        processed_initial_logits,
                         next_token_fn,
-                        20,  // max sequence length
+                        config.max_length,
                         tokenizer->get_eos_token_id()
                     );
                     

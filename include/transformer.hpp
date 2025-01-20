@@ -10,63 +10,13 @@
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
 #include "dropout.hpp"
+#include "config.hpp"
 #include <functional>
 #include <memory>
 #include <vector>
 
 // Forward declarations
 class TransformerLayer;
-
-class TransformerConfig {
-public:
-  size_t vocab_size;
-  size_t max_seq_length;
-  size_t hidden_size;
-  size_t num_layers;
-  size_t num_heads;
-  size_t head_dim;
-  size_t intermediate_size;
-  float dropout_prob;
-  bool use_flash_attention;
-  bool use_rope;
-  bool use_sliding_window;
-  size_t window_size;
-  bool use_gqa;
-  size_t num_kv_heads;
-  bool use_fp16;
-  bool use_gradient_checkpointing;
-  size_t memory_pool_size;
-  size_t batch_size;
-  size_t num_epochs;
-  float dropout_rate;
-  float weight_decay;
-  struct {
-    std::string save_directory;
-    std::string model_name;
-    size_t checkpoint_frequency;
-  } paths;
-  bool load_from_checkpoint;
-  std::string checkpoint_to_load;
-
-  TransformerConfig(size_t vocab_size = 32000, size_t max_seq_length = 512,
-                   size_t hidden_size = 768, size_t num_layers = 12,
-                   size_t num_heads = 12, size_t batch_size = 32,
-                   size_t num_epochs = 10);
-
-  friend bool operator!=(const TransformerConfig &lhs,
-                         const TransformerConfig &rhs) {
-    return lhs.vocab_size != rhs.vocab_size ||
-           lhs.max_seq_length != rhs.max_seq_length ||
-           lhs.hidden_size != rhs.hidden_size ||
-           lhs.num_layers != rhs.num_layers || lhs.num_heads != rhs.num_heads ||
-           lhs.use_flash_attention != rhs.use_flash_attention ||
-           lhs.use_rope != rhs.use_rope ||
-           lhs.use_sliding_window != rhs.use_sliding_window ||
-           lhs.window_size != rhs.window_size ||
-           lhs.batch_size != rhs.batch_size ||
-           lhs.num_epochs != rhs.num_epochs;
-  }
-};
 
 class TransformerLayer {
 private:
