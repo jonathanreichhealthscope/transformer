@@ -2,6 +2,7 @@
 #include "../include/cuda/cublas_check.cuh"
 #include "../include/cuda/cuda_check.cuh"
 #include "../include/logger.hpp"
+#include "../include/half_precision.hpp"
 #include <cublas_v2.h>
 #include <fstream>
 #include <iostream>
@@ -21,7 +22,7 @@ TransformerLayer::TransformerLayer(const TransformerConfig& config_, size_t idx)
     self_attention = std::make_unique<MultiHeadAttention>(
         config.hidden_size, config.num_heads, config.head_dim, config.dropout_prob,
         config.use_flash_attention, config.use_rope, config.use_sliding_window, config.window_size,
-        config.use_gqa, config.num_kv_heads, config.max_seq_length);
+        config.use_gqa, config.num_kv_heads, config.max_seq_length, config.use_fp16);
 
     attention_ln = std::make_unique<LayerNorm>(config.hidden_size);
     feed_forward = std::make_unique<FeedForward>(config.hidden_size, config.intermediate_size);
@@ -191,17 +192,14 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
 }
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache) {
-    auto check_nan = [](const Matrix& m, const std::string& location) {
-        for (size_t i = 0; i < m.size(); ++i) {
-            if (std::isnan(m.data()[i])) {
-                throw std::runtime_error("NaN detected in " + location);
-            }
-        }
-    };
+    static const bool use_fp16 = config.use_fp16;
 
     // Get embeddings
     Matrix embeddings = token_embedding->forward(input_tokens);
-    check_nan(embeddings, "embeddings");
+    
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(embeddings);
+    }
 
     // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
@@ -209,10 +207,12 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
         position_ids(i, 0) = static_cast<float>(i);
     }
     Matrix pos_encodings = pos_encoding->forward(position_ids);
-    check_nan(pos_encodings, "positional_encodings");
+    
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(pos_encodings);
+    }
 
     embeddings += pos_encodings;
-    check_nan(embeddings, "embeddings + positional_encodings");
 
     // Create causal mask for next-token prediction
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
@@ -233,7 +233,11 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
             hidden_states = layers[i]->forward(hidden_states, mask,
                                                use_cache ? std::optional<KVCache>(m_kv_caches[i])
                                                          : std::nullopt);
-            check_nan(hidden_states, "layer " + std::to_string(i));
+            
+            // Convert back to FP32 at the end
+            if (use_fp16 && i == layers.size() - 1) {
+                HalfPrecisionTraining::convert_to_fp32(hidden_states);
+            }
 
             // Add dropout between layers
             if (training && dropout && i < layers.size() - 1) {
@@ -259,10 +263,17 @@ void Transformer::clear_kv_cache() {
 
 void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens,
                            float learning_rate) {
+    static const bool use_fp16 = config.use_fp16;
+    
+    Matrix grad = grad_output;
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(grad);
+    }
+
     const float grad_clip_threshold = 1.0f;
 
     // Clip incoming gradients
-    Matrix clipped_grad = grad_output;
+    Matrix clipped_grad = grad;
     float grad_norm = 0.0f;
 
     // Compute gradient norm
@@ -327,6 +338,11 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
                   << current_grad.cols() << std::endl;
     }
 
+    // Convert back to FP32 before parameter updates
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp32(current_grad);
+    }
+    
     // Update parameters with L2 regularization
     for (auto& param : parameters()) {
         // L2 regularization gradient

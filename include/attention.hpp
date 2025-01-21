@@ -2,6 +2,7 @@
 #include "cache.hpp"
 #include "components.hpp"
 #include "tensor.hpp"
+#include "config.hpp"
 #include <optional>
 using FloatVector = Vector;
 
@@ -63,11 +64,12 @@ class MultiHeadAttention {
      * @param use_gqa_ Whether to use grouped query attention
      * @param num_kv_heads_ Number of key/value heads for GQA
      * @param max_seq_length_ Maximum sequence length supported
+     * @param use_fp16_ Whether to use fp16 for computation
      */
     MultiHeadAttention(size_t hidden_size_, size_t num_heads_, size_t head_dim_,
                        float dropout_prob_, bool use_flash_, bool use_rope_,
                        bool use_sliding_window_, size_t window_size_, bool use_gqa_,
-                       size_t num_kv_heads_, size_t max_seq_length_);
+                       size_t num_kv_heads_, size_t max_seq_length_, bool use_fp16);
 
     /**
      * @brief Performs the forward pass of the attention mechanism.
@@ -106,11 +108,10 @@ class MultiHeadAttention {
     /**
      * @brief Loads attention layer parameters from a stream.
      * @param is Input stream to load from
-     * @param config Transformer configuration
+     * @param config Configuration object
      * @return Unique pointer to the loaded attention layer
      */
-    static std::unique_ptr<MultiHeadAttention> load(std::istream& is,
-                                                    const class TransformerConfig& config);
+    static std::unique_ptr<MultiHeadAttention> load(std::istream& is, const TransformerConfig& config);
 
     /**
      * @brief Gets references to all trainable weight matrices.
@@ -148,9 +149,7 @@ class MultiHeadAttention {
           dropout_prob(other.dropout_prob), use_rope(other.use_rope), use_flash(other.use_flash),
           use_sliding_window(other.use_sliding_window), window_size(other.window_size),
           use_gqa(other.use_gqa), num_kv_heads(other.num_kv_heads),
-          max_seq_length(other.max_seq_length),
-          cos_cached(other.cos_cached),
-          sin_cached(other.sin_cached) {}
+          max_seq_length(other.max_seq_length), use_fp16_(other.use_fp16_) {}
 
     MultiHeadAttention& operator=(const MultiHeadAttention& other) {
         if (this != &other) {
@@ -181,8 +180,7 @@ class MultiHeadAttention {
             use_gqa = other.use_gqa;
             num_kv_heads = other.num_kv_heads;
             max_seq_length = other.max_seq_length;
-            cos_cached = other.cos_cached;
-            sin_cached = other.sin_cached;
+            use_fp16_ = other.use_fp16_;
         }
         return *this;
     }
@@ -426,6 +424,9 @@ class MultiHeadAttention {
     void initialize_rope_cache(size_t max_seq_len, size_t dim_idx);
     float get_cos_cached(size_t pos, size_t dim_idx) const;
     float get_sin_cached(size_t pos, size_t dim_idx) const;
+
+    // Add use_fp16 as a member variable
+    bool use_fp16_;
 };
 
 // Add sliding window attention

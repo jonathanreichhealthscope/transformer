@@ -3,11 +3,13 @@
 #include "../include/gqa.hpp"
 #include "../include/performance_metrics.hpp"
 #include "../include/transformer.hpp"
+#include "../include/config.hpp"
 #include "attention.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <string>
+#include "../include/half_precision.hpp"
 
 extern PerformanceMetrics metrics;
 
@@ -138,6 +140,15 @@ Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
                                    const std::optional<KVCache>& kv_cache) {
     metrics.start_timer("attention_computation");
 
+    // Get use_fp16 from member variable instead of global config
+    static const bool use_fp16 = use_fp16_;
+    
+    // Convert input to FP16 if needed
+    Matrix input_matrix = x;
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(input_matrix);
+    }
+
     std::cout << "Checking GQA configuration:" << std::endl;
     std::cout << "- use_gqa: " << (use_gqa ? "true" : "false") << std::endl;
     std::cout << "- num_heads: " << num_heads << std::endl;
@@ -147,7 +158,20 @@ Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
     if (use_gqa && num_kv_heads != num_heads) {
         std::cout << "About to call GroupedQueryAttention::forward" << std::endl;
         GroupedQueryAttention gqa(hidden_size, num_heads, num_kv_heads, head_dim, dropout_prob);
-        return gqa.forward(x, mask, kv_cache);
+        
+        // Convert back to FP32 before GQA if using FP16
+        if (use_fp16) {
+            HalfPrecisionTraining::convert_to_fp32(input_matrix);
+        }
+        
+        Matrix gqa_output = gqa.forward(input_matrix, mask, kv_cache);
+        
+        // Convert GQA output to FP16 if needed
+        if (use_fp16) {
+            HalfPrecisionTraining::convert_to_fp16(gqa_output);
+        }
+        
+        return gqa_output;
     }
 
     // Regular attention implementation continues...
@@ -172,7 +196,7 @@ Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
     std::cout << "Moving matrices to GPU..." << std::endl;
     Matrix Q, K, V;
     try {
-        Matrix x_gpu = x.to_gpu();
+        Matrix x_gpu = input_matrix.to_gpu();
         std::cout << "x moved to GPU successfully" << std::endl;
         Matrix query_proj_gpu = query_proj.to_gpu();
         std::cout << "query_proj moved to GPU successfully" << std::endl;
@@ -195,16 +219,23 @@ Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
         std::cerr << "CUDA error: " << e.what() << std::endl;
         std::cerr << "Falling back to CPU implementation" << std::endl;
         // Fall back to CPU implementation
-        Q = matmul(x, query_proj);
-        K = matmul(x, key_proj);
-        V = matmul(x, value_proj);
+        Q = matmul(input_matrix, query_proj);
+        K = matmul(input_matrix, key_proj);
+        V = matmul(input_matrix, value_proj);
     }
 #else
     // CPU fallback
-    Matrix Q = matmul(x, query_proj);
-    Matrix K = matmul(x, key_proj);
-    Matrix V = matmul(x, value_proj);
+    Q = matmul(input_matrix, query_proj);
+    K = matmul(input_matrix, key_proj);
+    V = matmul(input_matrix, value_proj);
 #endif
+
+    // Convert Q,K,V to FP16 if needed
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(Q);
+        HalfPrecisionTraining::convert_to_fp16(K);
+        HalfPrecisionTraining::convert_to_fp16(V);
+    }
 
     // Handle KV cache if present
     if (kv_cache) {
@@ -294,6 +325,11 @@ Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
         attention_output = standard_attention(Q, K, V, mask);
     }
 
+    // Convert back to FP32 for output projection
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp32(attention_output);
+    }
+
     std::cout << "Attention output before projection shape: " << attention_output.rows() << "x"
               << attention_output.cols() << std::endl;
 
@@ -352,8 +388,7 @@ void MultiHeadAttention::save(std::ostream& os) const {
     std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
 }
 
-std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is,
-                                                             const TransformerConfig& config) {
+std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, const TransformerConfig& config) {
     std::cout << "\n=== MultiHeadAttention::load START ===" << std::endl;
 
     // Read configuration
@@ -366,11 +401,12 @@ std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is,
 
     size_t hidden_size = num_heads * head_dim;
 
-    // Use default values instead of config
+    // Create attention instance with config parameters
     auto attention = std::make_unique<MultiHeadAttention>(
-        hidden_size, num_heads, head_dim, config.dropout_rate, config.use_flash_attention,
-        config.use_rope, config.use_sliding_window, config.window_size, config.use_gqa, num_heads,
-        config.max_seq_length);
+        hidden_size, num_heads, head_dim, config.dropout_rate, 
+        config.use_flash_attention, config.use_rope, 
+        config.use_sliding_window, config.window_size, 
+        config.use_gqa, num_heads, config.max_seq_length, config.use_fp16);
 
     // Load projection matrices
     std::cout << "\nLoading projection matrices..." << std::endl;
@@ -406,11 +442,12 @@ std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is,
 MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, size_t head_dim_,
                                        float dropout_prob_, bool use_flash_, bool use_rope_,
                                        bool use_sliding_window_, size_t window_size_, bool use_gqa_,
-                                       size_t num_kv_heads_, size_t max_seq_length_)
+                                       size_t num_kv_heads_, size_t max_seq_length_, bool use_fp16)
     : num_heads(num_heads_), head_dim(head_dim_), hidden_size(hidden_size_),
       dropout_prob(dropout_prob_), use_flash(use_flash_), use_rope(use_rope_),
       use_sliding_window(use_sliding_window_), window_size(window_size_), use_gqa(use_gqa_),
       num_kv_heads(num_kv_heads_), max_seq_length(max_seq_length_),
+      use_fp16_(use_fp16),
       // Initialize matrices with correct dimensions
       query_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
       key_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
@@ -625,7 +662,18 @@ Matrix MultiHeadAttention::standard_attention(const Matrix& Q, const Matrix& K, 
 
 Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input,
                                     const Matrix& target_distribution) {
-    validate_dimensions(grad_output, input, target_distribution);
+    // Get use_fp16 from member variable instead of global config
+    static const bool use_fp16 = use_fp16_;
+    
+    Matrix grad = grad_output;
+    Matrix input_matrix = input;
+    
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(grad);
+        HalfPrecisionTraining::convert_to_fp16(input_matrix);
+    }
+
+    validate_dimensions(grad, input_matrix, target_distribution);
 
     // Initialize gradients if not already done
     if (query_proj_grad.empty()) {
@@ -636,24 +684,24 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
     }
 
     // Compute gradients for attention mechanism
-    Matrix d_query = compute_query_gradients(grad_output, input);
-    Matrix d_key = compute_key_gradients(grad_output, input);
-    Matrix d_value = compute_value_gradients(grad_output, input);
+    Matrix d_query = compute_query_gradients(grad, input_matrix);
+    Matrix d_key = compute_key_gradients(grad, input_matrix);
+    Matrix d_value = compute_value_gradients(grad, input_matrix);
 
     // Combine gradients
     Matrix d_input = combine_gradients(d_query, d_key, d_value);
 
     // Update projection gradients
-    query_proj_grad += matmul(input.transpose(), d_query);
-    key_proj_grad += matmul(input.transpose(), d_key);
-    value_proj_grad += matmul(input.transpose(), d_value);
-    output_proj_grad += matmul(grad_output.transpose(), input);
+    query_proj_grad += matmul(input_matrix.transpose(), d_query);
+    key_proj_grad += matmul(input_matrix.transpose(), d_key);
+    value_proj_grad += matmul(input_matrix.transpose(), d_value);
+    output_proj_grad += matmul(grad.transpose(), input_matrix);
 
     // Update bias gradients
     Vector d_query_bias = d_query.row_sum();
     Vector d_key_bias = d_key.row_sum();
     Vector d_value_bias = d_value.row_sum();
-    Vector d_output_bias = grad_output.row_sum();
+    Vector d_output_bias = grad.row_sum();
 
     // Update bias gradients element by element
     for (size_t i = 0; i < query_bias_grad.size(); ++i) {
@@ -664,6 +712,11 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
 
     for (size_t i = 0; i < output_bias_grad.size(); ++i) {
         output_bias_grad[i] += d_output_bias[i];
+    }
+
+    // Convert gradients back to FP32 before returning
+    if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp32(grad);
     }
 
     return d_input;
