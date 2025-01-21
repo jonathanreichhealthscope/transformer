@@ -1,0 +1,19 @@
+var searchData=
+[
+  ['b1_0',['b1',['../classFeedForward.html#aea4cee3f92300bcb7669618115d662f7',1,'FeedForward']]],
+  ['b1_5fgrad_1',['b1_grad',['../classFeedForward.html#a058af1d4220965d99c79c140ea48b241',1,'FeedForward']]],
+  ['b2_2',['b2',['../classFeedForward.html#ad08d533f0eecdb23261372b77cb49e12',1,'FeedForward']]],
+  ['b2_5fgrad_3',['b2_grad',['../classFeedForward.html#a30e4f33de054453643a0ecd82284164a',1,'FeedForward']]],
+  ['base_5foptimizer_4',['base_optimizer',['../classSAM.html#af369b0f3a8ed5421c628ef0a6773753f',1,'SAM']]],
+  ['batch_5fsize_5',['batch_size',['../classTransformerConfig.html#a299c442bb7da917532b605c58b1fc847',1,'TransformerConfig']]],
+  ['beam_5fsize_6',['beam_size',['../classTransformerConfig.html#a402c680e0386356ffc38fe901be0c179',1,'TransformerConfig']]],
+  ['beam_5fwidth_5f_7',['beam_width_',['../classBeamSearch.html#a7e933dae05e6074e68561596d0955266',1,'BeamSearch']]],
+  ['beta_8',['beta',['../classLayerNorm.html#acf7af90cbd4922cd69c8c0a3eb3229fb',1,'LayerNorm']]],
+  ['beta1_9',['beta1',['../classOptimizer.html#a9e5881c613f0a360195647e8a327c402',1,'Optimizer']]],
+  ['beta2_10',['beta2',['../classOptimizer.html#a972de4b05f31097f0ec6360b88415b54',1,'Optimizer']]],
+  ['beta_5fgrad_11',['beta_grad',['../classLayerNorm.html#a8521fab951f8d9e56a7eefdbe4c30001',1,'LayerNorm']]],
+  ['bias_12',['bias',['../classLanguageModelHead.html#ae405853e2ad3bb1bb5563b48fc8e51a0',1,'LanguageModelHead']]],
+  ['bits_13',['bits',['../classQuantizer.html#ab08cdb02eeb7fbae33087e5f25b0d4cc',1,'Quantizer::bits'],['../structQuantizationAwareTraining_1_1QuantizationParams.html#af38a9cf5a83579a94221ed9079f2a1f8',1,'QuantizationAwareTraining::QuantizationParams::bits']]],
+  ['block_5fsize_14',['block_size',['../classMemoryPool.html#ab6e6a243e4e6285b4af4a795752e57a2',1,'MemoryPool']]],
+  ['bos_5ftoken_5fid_15',['bos_token_id',['../classVocabulary.html#a70150814e3390bf267c14c9526f35382',1,'Vocabulary']]]
+];

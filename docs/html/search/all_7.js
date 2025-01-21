@@ -1,0 +1,19 @@
+var searchData=
+[
+  ['hadamard_0',['hadamard',['../classMatrix.html#a4ffcbd620ad1cab89bcb26de673d35f0',1,'Matrix']]],
+  ['half_5fdata_1',['half_data',['../classHalfPrecisionTraining.html#a40aeb36f2996ae0ba2ae43611e7d08c3',1,'HalfPrecisionTraining']]],
+  ['half_5fprecision_2ecpp_2',['half_precision.cpp',['../half__precision_8cpp.html',1,'']]],
+  ['half_5fprecision_2ehpp_3',['half_precision.hpp',['../half__precision_8hpp.html',1,'']]],
+  ['half_5fprecision_5fkernels_2ecu_4',['half_precision_kernels.cu',['../half__precision__kernels_8cu.html',1,'']]],
+  ['half_5fprecision_5fkernels_2ecuh_5',['half_precision_kernels.cuh',['../half__precision__kernels_8cuh.html',1,'']]],
+  ['half_5ftype_6',['half_type',['../half__precision_8hpp.html#a3930898f18e44e2c278d3e1d5b27bf53',1,'half_precision.hpp']]],
+  ['halfprecisiontraining_7',['HalfPrecisionTraining',['../classHalfPrecisionTraining.html',1,'']]],
+  ['handle_8',['handle',['../classCudaMatrix.html#a1924561a9e7265aba9f3bbd48e4514e3',1,'CudaMatrix']]],
+  ['has_5factivation_9',['has_activation',['../classGradientCheckpoint.html#aa4d49d98b597179169e04640e04276ae',1,'GradientCheckpoint']]],
+  ['has_5ftoken_10',['has_token',['../classTokenizer.html#aaf79cebc3c833556e8292857c3d7862c',1,'Tokenizer::has_token()'],['../classVocabulary.html#a6ebeb6e03dc8ba7987f7c489aa38f2cc',1,'Vocabulary::has_token()']]],
+  ['head_5fdim_11',['head_dim',['../classMultiHeadAttention.html#a1e6e670e0c4ab3ef36a100394220fd07',1,'MultiHeadAttention::head_dim'],['../classGroupedQueryAttention.html#a1c4e3489c8ee408699dd22dab241f3ac',1,'GroupedQueryAttention::head_dim'],['../classTransformerConfig.html#a4527e84e27e3f33fd252d51f42761ef7',1,'TransformerConfig::head_dim']]],
+  ['hidden_5fsize_12',['hidden_size',['../classMultiHeadAttention.html#afa3559e2a63108418d209926f89d7f13',1,'MultiHeadAttention::hidden_size'],['../classTransformerConfig.html#a53797276e3b0b499748e63ad772d8c20',1,'TransformerConfig::hidden_size'],['../classGroupedQueryAttention.html#aa189f65c16f4d39d10429d0ab57f12e3',1,'GroupedQueryAttention::hidden_size'],['../classLayerNorm.html#a371c5c4438a82aba8cd1d3bc581e433f',1,'LayerNorm::hidden_size']]],
+  ['hidden_5fsize_5f_13',['hidden_size_',['../classPositionalEncoding.html#a4aaa50fccb0ebe31c264272201096621',1,'PositionalEncoding::hidden_size_'],['../classLanguageModelHead.html#a7fa944fd6fb5925585d21d18b9f9caa5',1,'LanguageModelHead::hidden_size_']]],
+  ['hidden_5fstates_14',['hidden_states',['../classLanguageModelHead.html#adcfc12dd3f12774380c598d057246a55',1,'LanguageModelHead::hidden_states'],['../classTransformer.html#ab3ef6de311e63e4f4ada34e12ce4efa4',1,'Transformer::hidden_states']]],
+  ['hypothesis_15',['Hypothesis',['../structBeamSearch_1_1Hypothesis.html',1,'BeamSearch']]]
+];

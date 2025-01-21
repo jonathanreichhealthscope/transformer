@@ -1,0 +1,21 @@
+var searchData=
+[
+  ['m_5fkv_5fcaches_0',['m_kv_caches',['../classTransformer.html#ada2c3dc124eeee9953e041a2793c5e68',1,'Transformer']]],
+  ['m_5flayer_5factivations_1',['m_layer_activations',['../classTransformer.html#a9be839b68c2d68d7386952b02c2d0717',1,'Transformer']]],
+  ['mask_2',['mask',['../classAttentionMask.html#a1a57ddbfcbf2055513909090747d063e',1,'AttentionMask']]],
+  ['mask_5finitialized_3',['mask_initialized',['../classDropout.html#a5658e7576277686441431e832b668249',1,'Dropout']]],
+  ['mask_5ftoken_5fid_4',['mask_token_id',['../classVocabulary.html#a81e9e5bc96a85b25349acf3c30708573',1,'Vocabulary']]],
+  ['matrices_5',['matrices',['../structMultiHeadAttention_1_1Parameters.html#a319c0f8caa514e508d35fe95f8d590a8',1,'MultiHeadAttention::Parameters::matrices'],['../structTokenEmbedding_1_1Parameters.html#a13b3bba3a801333c6d900698b617ae39',1,'TokenEmbedding::Parameters::matrices'],['../structFeedForward_1_1Parameters.html#a16a3ce93dc17069b164b02df7e740628',1,'FeedForward::Parameters::matrices']]],
+  ['max_5flength_6',['max_length',['../classTransformerConfig.html#a28b729eda8d40bf2917b516b20c53706',1,'TransformerConfig']]],
+  ['max_5fseq_5flength_7',['max_seq_length',['../classMultiHeadAttention.html#a47209d4557f013d808bcc1dd8aab374d',1,'MultiHeadAttention::max_seq_length'],['../classTransformerConfig.html#a0b988766f47cdbac7f2564d6d464092d',1,'TransformerConfig::max_seq_length']]],
+  ['max_5fseq_5flength_5f_8',['max_seq_length_',['../classPositionalEncoding.html#affed1f641993b0734d042218d0111aef',1,'PositionalEncoding']]],
+  ['max_5fsubword_5flength_9',['MAX_SUBWORD_LENGTH',['../classTokenizer.html#a0b6c726d07afa3c74b09f8bb74df9d63',1,'Tokenizer']]],
+  ['mean_5fcache_10',['mean_cache',['../classLayerNorm.html#aace3382e20161c52fbf1e9b40845539b',1,'LayerNorm']]],
+  ['memory_5fpool_11',['memory_pool',['../classCudaManager.html#a0ca421037853f6364e47bbf226595bc0',1,'CudaManager']]],
+  ['memory_5fpool_5fsize_12',['memory_pool_size',['../classTransformerConfig.html#af56fdf732d2923a6cbb1ecc153cf1b99',1,'TransformerConfig']]],
+  ['memory_5fsamples_13',['memory_samples',['../classPerformanceMetrics.html#aa616bbe99f116c6ed2730a6f2bb67326',1,'PerformanceMetrics']]],
+  ['metrics_14',['metrics',['../attention_8cpp.html#a420192cf7ad6664706c6e334d57142ff',1,'metrics:&#160;main.cpp'],['../main_8cpp.html#a420192cf7ad6664706c6e334d57142ff',1,'metrics:&#160;main.cpp'],['../main_8hpp.html#a420192cf7ad6664706c6e334d57142ff',1,'metrics:&#160;main.cpp']]],
+  ['model_5fname_15',['model_name',['../classTransformerConfig.html#a0782f8b32a0190a369c867f06564a5d3',1,'TransformerConfig']]],
+  ['momentum_16',['momentum',['../classSGD.html#a4ed441eb5a48373f18f69eab2261c3e2',1,'SGD']]],
+  ['momentum_5fbuffers_17',['momentum_buffers',['../classTransformer.html#ac0053eaeedd1c1153aa918a2ad1fc470',1,'Transformer']]]
+];
