@@ -9,11 +9,11 @@ using half_type = float; // Fallback to float when CUDA is not available
 #endif
 
 class HalfPrecisionTraining {
-public:
-  static void convert_to_fp16(Matrix &matrix);
+  public:
+    static void convert_to_fp16(Matrix& matrix);
 
-  static void convert_to_fp32(Matrix &matrix);
+    static void convert_to_fp32(Matrix& matrix);
 
-private:
-  static std::vector<half_type> half_data;
+  private:
+    static std::vector<half_type> half_data;
 };

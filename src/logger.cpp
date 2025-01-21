@@ -119,7 +119,7 @@ void Logger::log(const std::string& message, bool is_error) {
     std::string timestamp(std::ctime(&time));
     timestamp = timestamp.substr(0, timestamp.length() - 1); // Remove trailing newline
 
-    log_file << "[" << timestamp << "] " << (is_error ? "ERROR: " : "INFO: ") 
-             << message << std::endl;
+    log_file << "[" << timestamp << "] " << (is_error ? "ERROR: " : "INFO: ") << message
+             << std::endl;
     log_file.flush();
 }

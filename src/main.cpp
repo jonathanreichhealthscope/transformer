@@ -1,11 +1,11 @@
 #include "../include/main.hpp"
-#include <random>
-#include <nlohmann/json.hpp>
 #include <fstream>
+#include <nlohmann/json.hpp>
+#include <random>
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
-PerformanceMetrics metrics;  // Single definition of the global metrics variable
+PerformanceMetrics metrics; // Single definition of the global metrics variable
 
 // Configuration constants
 const float INITIAL_LEARNING_RATE = 0.001f;
@@ -13,9 +13,9 @@ float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 size_t global_step = 0;
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     std::cout << "entering main" << std::endl;
-    Logger &logger = Logger::getInstance();
+    Logger& logger = Logger::getInstance();
     logger.startLogging();
 
     try {
@@ -23,7 +23,7 @@ int main(int argc, char *argv[]) {
         std::filesystem::path exe_path = std::filesystem::current_path().parent_path();
         std::filesystem::path config_path = exe_path / "config" / "transformer_config.json";
         TransformerConfig config = Utils::load_config(config_path.string());
-        
+
         // Initialize random seed
         std::srand(static_cast<unsigned int>(std::time(nullptr)));
 
@@ -33,7 +33,7 @@ int main(int argc, char *argv[]) {
             std::cerr << "Failed to initialize CUDA device" << std::endl;
             return 1;
         }
-        
+
         // Create CUDA stream
         cudaStream_t stream;
         cudaStreamCreate(&stream);
@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
         tokenizer = std::make_unique<Tokenizer>();
         tokenizer->print_vocabulary_mappings();
         tokenizer->clear_cache();
-        
+
         // Get vocabulary size from the tokenizer
         size_t actual_vocab_size = tokenizer->vocab_size();
         std::cout << "Actual vocabulary size: " << actual_vocab_size << std::endl;
@@ -82,25 +82,27 @@ int main(int argc, char *argv[]) {
         tokenizer->print_vocabulary_mappings();
 
         if (!tokenizer->verify_mappings()) {
-          std::cerr << "Error: Vocabulary mappings are inconsistent!\n";
-          return 1;
+            std::cerr << "Error: Vocabulary mappings are inconsistent!\n";
+            return 1;
         }
 
         // Get training data
-        std::vector<std::pair<std::string, std::string>> training_data = Utils::create_training_data();
-        
+        std::vector<std::pair<std::string, std::string>> training_data =
+            Utils::create_training_data();
+
         // Preprocess the training data (convert to lowercase)
         training_data = TextPreprocessor::preprocess_training_data(training_data);
-        
+
         // Analyze token mappings
         Utils::analyze_token_mappings(training_data, *tokenizer);
-        
+
         // Print vocabulary for inspection
         std::cout << "\n=== Full Vocabulary Mapping ===\n";
         tokenizer->print_vocabulary_mappings();
         std::cout << "\n";
         // Training parameters
-        const size_t checkpoint_frequency = config.paths.checkpoint_frequency; // Save checkpoint every 2 epochs
+        const size_t checkpoint_frequency =
+            config.paths.checkpoint_frequency; // Save checkpoint every 2 epochs
 
         // Initialize model saver
         ModelSaver model_saver;
@@ -109,29 +111,34 @@ int main(int argc, char *argv[]) {
 
         // After transformer initialization but before training loop
         if (config.load_from_checkpoint) {
-            std::cout << "Attempting to load checkpoint from: " << config.checkpoint_to_load << std::endl;
-            
+            std::cout << "Attempting to load checkpoint from: " << config.checkpoint_to_load
+                      << std::endl;
+
             try {
                 if (!std::filesystem::exists(config.checkpoint_to_load)) {
-                    std::cout << "Warning: Checkpoint file does not exist: " << config.checkpoint_to_load << std::endl;
+                    std::cout << "Warning: Checkpoint file does not exist: "
+                              << config.checkpoint_to_load << std::endl;
                     std::cout << "Proceeding with training from scratch..." << std::endl;
                 } else {
                     // Attempt to load the checkpoint
                     if (!model_saver.loadCheckpoint(transformer, config.checkpoint_to_load)) {
-                        std::cerr << "Warning: Failed to load checkpoint from: " << config.checkpoint_to_load << std::endl;
+                        std::cerr << "Warning: Failed to load checkpoint from: "
+                                  << config.checkpoint_to_load << std::endl;
                         std::cout << "Proceeding with training from scratch..." << std::endl;
                     } else {
                         // Extract epoch number from checkpoint filename
-                        std::string filename = std::filesystem::path(config.checkpoint_to_load).filename().string();
+                        std::string filename =
+                            std::filesystem::path(config.checkpoint_to_load).filename().string();
                         size_t epoch_pos = filename.find("epoch_");
                         if (epoch_pos != std::string::npos) {
                             std::string epoch_str = filename.substr(epoch_pos + 6);
                             size_t end_pos = epoch_str.find_first_not_of("0123456789");
                             epoch_str = epoch_str.substr(0, end_pos);
-                            global_step = std::stoul(epoch_str) * (training_data.size() / config.batch_size);
+                            global_step =
+                                std::stoul(epoch_str) * (training_data.size() / config.batch_size);
                         }
-                        
-                        std::cout << "Successfully loaded checkpoint. Resuming from global step: " 
+
+                        std::cout << "Successfully loaded checkpoint. Resuming from global step: "
                                   << global_step << std::endl;
                     }
                 }
@@ -142,7 +149,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Training loop
-        size_t global_step = 0;  // Move outside epoch loop
+        size_t global_step = 0; // Move outside epoch loop
         Matrix last_hidden_states;
 
         // Load validation data
@@ -152,20 +159,21 @@ int main(int argc, char *argv[]) {
         for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
             std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
             float epoch_loss = 0.0f;
-            size_t total_batches = (training_data.size() + config.batch_size - 1) / config.batch_size;
-            
+            size_t total_batches =
+                (training_data.size() + config.batch_size - 1) / config.batch_size;
+
             // Process batches
             for (size_t batch = 0; batch < total_batches; ++batch) {
                 metrics.start_timer("batch_processing");
-                
+
                 size_t start_idx = batch * config.batch_size;
                 size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
                 size_t current_batch_size = end_idx - start_idx;
-                
+
                 // Create batch with validation
                 std::vector<std::vector<int>> input_batch;
                 std::vector<std::vector<int>> target_tokens;
-                
+
                 // Find maximum sequence length in this batch
                 size_t max_seq_len = 0;
                 for (size_t j = start_idx; j < end_idx; ++j) {
@@ -173,63 +181,65 @@ int main(int argc, char *argv[]) {
                     std::vector<int> input_tokens = tokenizer->encode(input_str);
                     max_seq_len = std::max(max_seq_len, input_tokens.size());
                 }
-                
+
                 // Fill and validate batch with padding
                 bool batch_valid = true;
                 for (size_t j = start_idx; j < end_idx; ++j) {
                     const auto& [input_str, target_str] = training_data[j];
-                    
+
                     // Preprocess both input and target
                     std::string processed_input = input_str;
                     std::string processed_target = target_str;
-                    
+
                     tokenizer->preprocess_text(processed_input);
                     tokenizer->preprocess_text(processed_target);
-                    
+
                     std::vector<int> input_tokens = tokenizer->encode(processed_input);
                     std::vector<int> curr_target_tokens = tokenizer->encode(processed_target);
-                    
+
                     // Validate sequences
-                    if (!Utils::validate_input_sequence(input_tokens, config.vocab_size) || 
+                    if (!Utils::validate_input_sequence(input_tokens, config.vocab_size) ||
                         !Utils::validate_input_sequence(curr_target_tokens, config.vocab_size)) {
                         std::cerr << "Invalid sequence at position " << j << std::endl;
                         batch_valid = false;
                         break;
                     }
-                    
+
                     // Pad sequences to max_seq_len
                     while (input_tokens.size() < max_seq_len) {
                         input_tokens.push_back(tokenizer->get_pad_token_id());
                     }
-                    
+
                     input_batch.push_back(input_tokens);
                     target_tokens.push_back(curr_target_tokens);
                 }
-                
-                if (!batch_valid) continue;  // Skip invalid batches
-                
+
+                if (!batch_valid)
+                    continue; // Skip invalid batches
+
                 // Create target distribution for entire batch
-                Matrix target_distribution = Utils::create_batch_target_distribution(target_tokens, *tokenizer, config.vocab_size);
-                
+                Matrix target_distribution = Utils::create_batch_target_distribution(
+                    target_tokens, *tokenizer, config.vocab_size);
+
                 // Process the batch as a single sequence
                 std::vector<int> flattened_batch;
                 flattened_batch.reserve(current_batch_size * max_seq_len);
-                
+
                 // Flatten the batch into a single sequence
                 for (const auto& sequence : input_batch) {
                     flattened_batch.insert(flattened_batch.end(), sequence.begin(), sequence.end());
                 }
-                
+
                 // Forward pass with the flattened batch
                 transformer.set_training(true);
                 metrics.start_timer("forward_pass");
                 Matrix hidden_states = transformer.forward(flattened_batch);
                 metrics.stop_timer("forward_pass");
-                
+
                 metrics.record_memory_usage(hidden_states.bytes());
-                
+
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
-                
+
                 // Take only the last token's logits for each sequence in the batch
                 Matrix final_logits(current_batch_size, config.vocab_size);
                 for (size_t i = 0; i < current_batch_size; i++) {
@@ -240,66 +250,65 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 }
-                
+
                 // Compute loss and its gradients
                 float batch_loss = Utils::compute_batch_loss(final_logits, target_distribution);
-                
+
                 // Compute softmax gradients for each sequence in the batch
                 Matrix loss_gradients = Matrix(logits.rows(), logits.cols(), 0.0f);
                 for (size_t i = 0; i < current_batch_size; i++) {
                     size_t seq_end_idx = (i + 1) * max_seq_len - 1;
-                    if (seq_end_idx >= logits.rows()) continue;
-                    
+                    if (seq_end_idx >= logits.rows())
+                        continue;
+
                     // Compute softmax for this sequence's logits
                     std::vector<float> sequence_logits;
                     float max_logit = -std::numeric_limits<float>::infinity();
-                    
+
                     for (size_t j = 0; j < config.vocab_size; j++) {
                         float logit = logits(seq_end_idx, j);
                         sequence_logits.push_back(logit);
                         max_logit = std::max(max_logit, logit);
                     }
-                    
+
                     float sum_exp = 0.0f;
                     std::vector<float> exp_logits(config.vocab_size);
-                    
+
                     for (size_t j = 0; j < config.vocab_size; j++) {
                         exp_logits[j] = std::exp(sequence_logits[j] - max_logit);
                         sum_exp += exp_logits[j];
                     }
-                    
+
                     // Compute gradients for cross-entropy loss
                     for (size_t j = 0; j < config.vocab_size; j++) {
                         float softmax_output = exp_logits[j] / sum_exp;
-                        loss_gradients(seq_end_idx, j) = 
+                        loss_gradients(seq_end_idx, j) =
                             (softmax_output - target_distribution(i, j)) / current_batch_size;
                     }
                 }
-                
+
                 // Update learning rate based on loss
                 float loss_ratio = batch_loss / (prev_loss + 1e-10f);
                 learning_rate = Utils::adjust_learning_rate(learning_rate, loss_ratio, global_step);
-                
+
                 // Backpropagate through the model
                 Matrix lm_head_gradients = lm_head->backward(loss_gradients);
                 transformer.backward(lm_head_gradients, flattened_batch, learning_rate);
-                
+
                 // Update tracking variables
                 prev_loss = batch_loss;
                 epoch_loss += batch_loss;
                 global_step++;
-                
+
                 metrics.stop_timer("batch_processing");
-                
+
                 // Print progress and metrics every 10 batches
                 if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
-                    std::cout << "\rBatch " << batch + 1 << "/" << total_batches 
-                             << " in epoch " << epoch + 1 
-                             << " (Loss: " << batch_loss 
-                             << ", Avg Loss: " << epoch_loss/(batch+1)
-                             << ", LR: " << learning_rate 
-                             << ")" << std::flush;
-                    
+                    std::cout << "\rBatch " << batch + 1 << "/" << total_batches << " in epoch "
+                              << epoch + 1 << " (Loss: " << batch_loss
+                              << ", Avg Loss: " << epoch_loss / (batch + 1)
+                              << ", LR: " << learning_rate << ")" << std::flush;
+
                     // Print performance metrics
                     metrics.print_metrics();
                 }
@@ -309,14 +318,15 @@ int main(int argc, char *argv[]) {
                     lm_head->update_token_frequencies(tokens);
                 }
             }
-            
-            std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs 
-                      << " (Loss: " << epoch_loss/total_batches << ")" << std::endl;
-            
+
+            std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs
+                      << " (Loss: " << epoch_loss / total_batches << ")" << std::endl;
+
             // Save checkpoint
             if ((epoch + 1) % checkpoint_frequency == 0) {
-                std::cout << "Attempting to save checkpoint to: " << save_directory << "/" << model_name << std::endl;
-                
+                std::cout << "Attempting to save checkpoint to: " << save_directory << "/"
+                          << model_name << std::endl;
+
                 // Verify directory exists and is writable
                 if (!std::filesystem::exists(save_directory)) {
                     std::cout << "Creating directory: " << save_directory << std::endl;
@@ -326,10 +336,10 @@ int main(int argc, char *argv[]) {
                         continue;
                     }
                 }
-                
+
                 // Try to save
-                if (!model_saver.saveCheckpoint(transformer, save_directory, model_name,
-                                              epoch + 1, epoch_loss)) {
+                if (!model_saver.saveCheckpoint(transformer, save_directory, model_name, epoch + 1,
+                                                epoch_loss)) {
                     std::cerr << "Failed to save checkpoint, but continuing training" << std::endl;
                     // Don't exit, just continue training
                 }
@@ -340,14 +350,14 @@ int main(int argc, char *argv[]) {
                 std::cout << "\n=== Starting Text Generation Testing ===" << std::endl;
                 // Initialize beam search with config parameters
                 BeamSearch beam_search(config.beam_size, config.length_penalty);
-                std::cout << "Initialized beam search with width=" << config.beam_size 
-                         << ", penalty=" << config.length_penalty << std::endl;
-                
+                std::cout << "Initialized beam search with width=" << config.beam_size
+                          << ", penalty=" << config.length_penalty << std::endl;
+
                 // Test multiple different contexts
                 std::vector<std::string> test_inputs = {
-                    "I go to",                  
-                    "Surgeons operate in the",  
-                    "Athletes train in the",    
+                    "I go to",
+                    "Surgeons operate in the",
+                    "Athletes train in the",
                     "Musicians perform in the", // Entertainment context
                     "Students research in the", // Educational context
                     "Chefs cook in the",        // Culinary context
@@ -363,84 +373,81 @@ int main(int argc, char *argv[]) {
                 };
 
                 std::cout << "Testing " << test_inputs.size() << " different prompts" << std::endl;
-                
-                for (const auto &test_input : test_inputs) {
+
+                for (const auto& test_input : test_inputs) {
                     std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
                     // Preprocess input
                     std::string processed_input = test_input;
                     tokenizer->preprocess_text(processed_input);
                     std::vector<int> test_tokens = tokenizer->encode(processed_input);
-                    
+
                     // Get initial logits
                     Matrix test_hidden = transformer.forward(test_tokens);
                     Matrix initial_logits_matrix = lm_head->project_to_vocab(test_hidden);
-                    
+
                     // Convert matrix to vector for beam search
                     std::vector<float> initial_logits;
                     size_t last_token_idx = test_tokens.size() - 1;
                     for (size_t j = 0; j < initial_logits_matrix.cols(); ++j) {
                         initial_logits.push_back(initial_logits_matrix(last_token_idx, j));
                     }
-                    
+
                     // Create next token function for beam search with sampling
                     auto next_token_fn = [&](const std::vector<int>& tokens) -> std::vector<float> {
                         Matrix hidden = transformer.forward(tokens);
                         Matrix logits = lm_head->project_to_vocab(hidden);
-                        
+
                         std::vector<float> next_logits;
                         size_t last_idx = tokens.size() - 1;
                         for (size_t j = 0; j < logits.cols(); ++j) {
                             next_logits.push_back(logits(last_idx, j));
                         }
-                        
+
                         // Apply temperature and top-p sampling
-                        Utils::apply_sampling_parameters(next_logits, 
-                                                      config.temperature,
-                                                      config.top_p);
-                        
+                        Utils::apply_sampling_parameters(next_logits, config.temperature,
+                                                         config.top_p);
+
                         return next_logits;
                     };
-                    
+
                     // Also apply to initial logits
                     std::vector<float> processed_initial_logits = initial_logits;
-                    Utils::apply_sampling_parameters(processed_initial_logits,
-                                                  config.temperature,
-                                                  config.top_p);
-                    
+                    Utils::apply_sampling_parameters(processed_initial_logits, config.temperature,
+                                                     config.top_p);
+
                     // Perform beam search with processed logits
-                    auto beam_results = beam_search.search(
-                        processed_initial_logits,
-                        next_token_fn,
-                        config.max_length,
-                        tokenizer->get_eos_token_id()
-                    );
-                    
+                    auto beam_results =
+                        beam_search.search(processed_initial_logits, next_token_fn,
+                                           config.max_length, tokenizer->get_eos_token_id());
+
                     // Print beam search results
                     std::cout << "\nBeam Search Completions:\n";
                     for (size_t i = 0; i < std::min(size_t(3), beam_results.size()); ++i) {
                         const auto& hypothesis = beam_results[i];
                         std::string completion = tokenizer->decode(hypothesis.tokens);
-                        std::cout << i + 1 << ". " << completion 
-                                 << " (score: " << hypothesis.score << ")\n";
+                        std::cout << i + 1 << ". " << completion << " (score: " << hypothesis.score
+                                  << ")\n";
                     }
-                    
+
                     // Also show greedy search result for comparison
                     std::cout << "\nGreedy Search Completion:\n";
                     Utils::print_top_predictions(initial_logits_matrix, *tokenizer, 5);
                 }
             }
 
-            if ((epoch + 1) % 5 == 0) {  // Clear cache every 5 epochs
+            if ((epoch + 1) % 5 == 0) { // Clear cache every 5 epochs
                 tokenizer->clear_cache();
             }
 
             // Run validation every 3 epochs
-            if ((epoch + 1) % 3 == 0) {  // Validate every 3 epochs
+            if ((epoch + 1) % 3 == 0) { // Validate every 3 epochs
                 std::cout << "\nRunning validation after epoch " << (epoch + 1) << "...\n";
-                float validation_loss = Utils::evaluate_validation(transformer, *tokenizer, validation_data);
-                
+                float validation_loss =
+                    Utils::evaluate_validation(transformer, *tokenizer, validation_data);
+
                 // Log validation results
-                std::cout << "Epoch " << (epoch + 1) << " Validation Loss: " << validation_loss << std::endl;
+                std::cout << "Epoch " << (epoch + 1) << " Validation Loss: " << validation_loss
+                          << std::endl;
             }
         }
 
@@ -450,20 +457,19 @@ int main(int argc, char *argv[]) {
         std::filesystem::create_directories(save_directory);
 
         // Save the trained model
-        std::cout << "\nSaving final model to " << save_directory << "/"
-                  << model_name << "...\n";
-        bool save_success =
-            model_saver.saveModel(transformer, save_directory, model_name);
+        std::cout << "\nSaving final model to " << save_directory << "/" << model_name << "...\n";
+        bool save_success = model_saver.saveModel(transformer, save_directory, model_name);
         if (save_success) {
-            std::cout << "Successfully saved model to " + save_directory + "/" +
-                       model_name << std::endl;
+            std::cout << "Successfully saved model to " + save_directory + "/" + model_name
+                      << std::endl;
             std::cout << "Model saved successfully!\n";
         } else {
-            std::cout << "Failed to save model to " + save_directory + "/" + model_name << std::endl;
+            std::cout << "Failed to save model to " + save_directory + "/" + model_name
+                      << std::endl;
             return 1;
         }
 
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }

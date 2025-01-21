@@ -1,9 +1,9 @@
 #pragma once
 #include "matrix.hpp"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <memory>
-#include <cmath>
-#include <algorithm>
 
 // Use Matrix and Vector from matrix.hpp
 // Rest of components.hpp content...

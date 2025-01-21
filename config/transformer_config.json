@@ -1,15 +1,15 @@
 {
     "model": {
         "vocab_size": 32000,
-        "hidden_size": 768,
-        "num_heads": 12,
-        "num_layers": 12,
+        "hidden_size": 384,
+        "num_heads": 6,
+        "num_layers": 6,
         "head_dim": 64,
-        "intermediate_size": 3072,
+        "intermediate_size": 1536,
         "max_seq_length": 32
     },
     "training": {
-        "batch_size": 64,
+        "batch_size": 128,
         "num_epochs": 6,
         "dropout_rate": 0.1,
         "weight_decay": 0.01
@@ -17,15 +17,15 @@
     "attention": {
         "use_flash_attention": true,
         "use_rope": true,
-        "use_sliding_window": true,
-        "window_size": 256,
+        "use_sliding_window": false,
+        "window_size": 32,
         "use_gqa": true,
-        "num_kv_heads": 4
+        "num_kv_heads": 2
     },
     "optimization": {
         "use_fp16": true,
-        "use_gradient_checkpointing": true,
-        "memory_pool_size": 1024
+        "use_gradient_checkpointing": false,
+        "memory_pool_size": 512
     },
     "paths": {
         "save_directory": "models",
@@ -33,11 +33,11 @@
         "checkpoint_frequency": 2
     },
     "beam_search": {
-        "beam_size": 5,
+        "beam_size": 4,
         "length_penalty": 0.6,
-        "temperature": 1.0,
+        "temperature": 0.8,
         "top_p": 0.9,
-        "max_length": 20
+        "max_length": 10
     },
     "load_from_checkpoint": false,
     "checkpoint_to_load": ""

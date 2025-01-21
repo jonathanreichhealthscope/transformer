@@ -1,9 +1,9 @@
 #pragma once
-#include <string>
 #include <cstddef>
+#include <string>
 
 class TransformerConfig {
-public:
+  public:
     // Model parameters
     size_t vocab_size;
     size_t max_seq_length = 1024;
@@ -50,14 +50,10 @@ public:
     size_t max_length;
 
     // Constructor
-    TransformerConfig(size_t vocab_size = 32000, 
-                     size_t max_seq_length = 512,
-                     size_t hidden_size = 768, 
-                     size_t num_layers = 12,
-                     size_t num_heads = 12, 
-                     size_t batch_size = 32,
-                     size_t num_epochs = 10);
+    TransformerConfig(size_t vocab_size = 32000, size_t max_seq_length = 512,
+                      size_t hidden_size = 768, size_t num_layers = 12, size_t num_heads = 12,
+                      size_t batch_size = 32, size_t num_epochs = 10);
 
     // Make operator!= a member function instead
     bool operator!=(const TransformerConfig& other) const;
-}; 
+};
