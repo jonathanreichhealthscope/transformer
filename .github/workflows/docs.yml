@@ -27,7 +27,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y doxygen graphviz cmake build-essential libcuda-dev nvidia-cuda-toolkit nlohmann-json3-dev libomp-dev
+        sudo apt-get install -y doxygen graphviz cmake build-essential nvidia-cuda-dev nvidia-cuda-toolkit nlohmann-json3-dev libomp-dev
 
     - name: Create Doxyfile
       run: |
