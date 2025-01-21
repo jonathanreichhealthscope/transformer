@@ -47,8 +47,14 @@ docs:
 	@mkdir -p $(DOCS_DIR)
 	@cd $(BUILD_DIR) && cmake --build . --target docs
 
+.PHONY: docs-clean
+docs-clean:
+	@echo "Cleaning documentation..."
+	@rm -rf $(DOCS_DIR)
+	@echo "Documentation cleaned"
+
 .PHONY: serve-docs
-serve-docs: docs
+docs-serve: docs
 	@echo "Starting documentation server at http://localhost:8000"
 	@cd $(DOCS_DIR)/html && python -m http.server 8000
 
@@ -64,6 +70,7 @@ help:
 	@echo "  make debug    - Build in debug mode"
 	@echo "  make release  - Build in release mode"
 	@echo "  make docs     - Generate documentation"
+	@echo "  make docs-clean - Remove generated documentation"
 	@echo "  make serve-docs - Generate and serve documentation at http://localhost:8000"
 	@echo "  make stop     - Stop the running transformer"
 
