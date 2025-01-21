@@ -1,6 +1,7 @@
 #pragma once
 
 #include "components.hpp"
+#include "config.hpp"  // Add this include for TransformerConfig
 #ifdef USE_CUDA
 #include <cuda_fp16.h>
 using half_type = __half;  ///< CUDA 16-bit floating point type
@@ -24,6 +25,13 @@ using half_type = float;   ///< Fallback to float when CUDA is not available
  */
 class HalfPrecisionTraining {
   public:
+    /**
+     * @brief Initializes the HalfPrecisionTraining class with the given configuration.
+     * 
+     * @param config The configuration object containing memory pool size information.
+     */
+    static void initialize(const TransformerConfig& config);
+
     /**
      * @brief Converts a matrix from FP32 to FP16 format.
      * 

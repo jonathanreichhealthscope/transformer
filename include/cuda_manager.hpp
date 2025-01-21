@@ -1,31 +1,38 @@
 #pragma once
 #include "components.hpp"
 #include "cuda/cuda_utils.cuh"
+#include "memory_pool.hpp"
 #include <cuda_runtime.h>
 #include <future>
 #include <memory>
 #include <vector>
 
 class CudaManager {
-  public:
-    explicit CudaManager(int device_id = 0) {
+private:
+    std::unique_ptr<MemoryPool> memory_pool;
+
+public:
+    explicit CudaManager(int device_id = 0, size_t pool_size = 0) {
         CUDA_CHECK(cudaSetDevice(device_id));
+        memory_pool = std::make_unique<MemoryPool>(pool_size > 0 ? pool_size : 512 * 1024 * 1024);
     }
+
     ~CudaManager() {
+        memory_pool.reset();  // Release pool before device reset
         CUDA_CHECK(cudaDeviceReset());
     }
 
     void synchronize() {
         CUDA_CHECK(cudaDeviceSynchronize());
     }
+
     void* allocate(size_t size) {
-        void* ptr;
-        CUDA_CHECK(cudaMalloc(&ptr, size));
-        return ptr;
+        return memory_pool->allocate(size);
     }
+
     void deallocate(void* ptr) {
         if (ptr) {
-            CUDA_CHECK(cudaFree(ptr));
+            memory_pool->deallocate(ptr);
         }
     }
 };

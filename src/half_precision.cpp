@@ -7,11 +7,24 @@
 #include <cuda_fp16.h>
 #endif
 #include "../include/cuda_manager.hpp"
+#include "../include/memory_pool.hpp"
+#include "../include/config.hpp"
 
 std::vector<half_type> HalfPrecisionTraining::half_data;
 
-// Add static instance for CUDA management
-static std::unique_ptr<CudaManager> cuda_manager = std::make_unique<CudaManager>();
+// Static instance with default pool size (512MB)
+static std::unique_ptr<CudaManager> cuda_manager = std::make_unique<CudaManager>(
+    0,  // device id
+    512 * 1024 * 1024  // default 512MB
+);
+
+// Initialize function to be called after config is loaded
+void HalfPrecisionTraining::initialize(const TransformerConfig& config) {
+    cuda_manager = std::make_unique<CudaManager>(
+        0,  // device id
+        config.memory_pool_size * 1024 * 1024  // convert MB to bytes
+    );
+}
 
 void HalfPrecisionTraining::convert_to_fp16(Matrix& matrix) {
     const size_t size = matrix.rows() * matrix.cols();
@@ -31,7 +44,7 @@ void HalfPrecisionTraining::convert_to_fp16(Matrix& matrix) {
     }
 
     try {
-        // Use CUDA manager for memory allocation
+        // Memory now comes from pool
         float* d_float = static_cast<float*>(cuda_manager->allocate(size * sizeof(float)));
         half_type* d_half = static_cast<half_type*>(cuda_manager->allocate(size * sizeof(half_type)));
 
@@ -58,7 +71,7 @@ void HalfPrecisionTraining::convert_to_fp16(Matrix& matrix) {
         // Copy result back to host
         CUDA_CHECK(cudaMemcpy(half_data.data(), d_half, size * sizeof(half_type), cudaMemcpyDeviceToHost));
 
-        // Safe cleanup
+        // Memory returns to pool instead of being freed
         cuda_manager->deallocate(d_float);
         cuda_manager->deallocate(d_half);
 

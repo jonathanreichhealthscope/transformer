@@ -61,7 +61,6 @@ set(CORE_SOURCES
     src/vector_ops.cpp
     src/logger.cpp
     src/model_saver.cpp
-    src/memory_pool.cpp
     src/half_precision.cpp
     src/gradient_checkpoint.cpp
     src/utils.cpp
@@ -84,10 +83,7 @@ set(NN_SOURCES
 set(UTIL_SOURCES
     src/tokenizer.cpp
     src/cache.cpp
-    src/trainer.cpp
-    src/memory_pool.cpp
     src/quantization.cpp
-    src/serialization.cpp
     src/optimizer.cpp
 )
 

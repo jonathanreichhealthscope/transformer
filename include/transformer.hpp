@@ -279,7 +279,6 @@ class Transformer {
         return all_weights;
     }
 
-    friend class TransformerTrainer;
     friend class QuantizationAwareTraining;
 
     const TransformerConfig& getConfig() const {
