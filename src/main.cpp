@@ -37,6 +37,9 @@ int main(int argc, char *argv[]) {
         // Create CUDA stream
         cudaStream_t stream;
         cudaStreamCreate(&stream);
+        std::cout << "CUDA is available" << std::endl;
+#else
+        std::cout << "CUDA is not available" << std::endl;
 #endif
         // Initialize tokenizer first to get vocab size
         tokenizer = std::make_unique<Tokenizer>();

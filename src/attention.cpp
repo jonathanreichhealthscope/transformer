@@ -146,7 +146,7 @@ Matrix MultiHeadAttention::forward(const Matrix &x, const AttentionMask &mask,
     
     // Use GQA if enabled
     if (use_gqa && num_kv_heads != num_heads) {
-        std::cout << "Using Grouped Query Attention" << std::endl;
+        std::cout << "About to call GroupedQueryAttention::forward" << std::endl;
         GroupedQueryAttention gqa(hidden_size, num_heads, num_kv_heads,
                                 head_dim, dropout_prob);
         return gqa.forward(x, mask, kv_cache);

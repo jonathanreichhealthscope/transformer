@@ -1,4 +1,5 @@
 #include "../include/gqa.hpp"
+#include "../include/cuda/gqa_kernels.cuh"
 #include <iostream>
 
 GroupedQueryAttention::GroupedQueryAttention(size_t hidden_size_, size_t num_heads_,
@@ -87,53 +88,71 @@ Matrix GroupedQueryAttention::compute_grouped_attention(
 
 Matrix GroupedQueryAttention::forward(const Matrix& x, const AttentionMask& mask,
                                     const std::optional<KVCache>& kv_cache) {
-    std::cout << "=== GroupedQueryAttention::forward START ===" << std::endl;
+    std::cout << "GroupedQueryAttention::forward called with CUDA_AVAILABLE="
+    #ifdef CUDA_AVAILABLE
+              << "true" << std::endl;
+    #else
+              << "false" << std::endl;
+    #endif
     
-    // Project input to Q, K, V
-    Matrix Q = matmul(x, query_proj);
-    Matrix K = matmul(x, key_proj);
-    Matrix V = matmul(x, value_proj);
-    
-    // Handle KV cache if present
-    if (kv_cache) {
-        Matrix cached_K = kv_cache->key_cache;
-        Matrix cached_V = kv_cache->value_cache;
+    #ifdef CUDA_AVAILABLE
+        // Project input to Q, K, V first
+        printf("=== GroupedQueryAttention::forward CUDA START ===\n");
+        Matrix Q = matmul(x, query_proj);
+        Matrix K = matmul(x, key_proj);
+        Matrix V = matmul(x, value_proj);
+
+        // Handle KV cache
+        if (kv_cache) {
+            K = kv_cache->key_cache;
+            V = kv_cache->value_cache;
+        }
+
+        // Calculate dimensions
+        size_t batch_size = x.rows();
+        size_t seq_len = mask.mask.rows();
+
+        // Move to GPU
+        Matrix Q_gpu = Q.to_gpu();
+        Matrix K_gpu = K.to_gpu();
+        Matrix V_gpu = V.to_gpu();
+        Matrix output_gpu(batch_size, hidden_size);
+
+        // Launch CUDA kernel
+        launch_gqa_kernel(
+            Q_gpu.data(), K_gpu.data(), V_gpu.data(),
+            output_gpu.data(), batch_size, num_heads, num_kv_heads,
+            seq_len, head_dim, nullptr
+        );
+
+        return output_gpu.to_cpu();
+    #else
+        // CPU implementation
+        std::cout << "=== GroupedQueryAttention::forward START ===" << std::endl;
         
-        // Concatenate current K/V with cached K/V
-        Matrix new_K(K.rows() + cached_K.rows(), K.cols());
-        Matrix new_V(V.rows() + cached_V.rows(), V.cols());
+        // Project input to Q, K, V
+        Matrix Q = matmul(x, query_proj);
+        Matrix K = matmul(x, key_proj);
+        Matrix V = matmul(x, value_proj);
         
-        // Copy cached values
-        for (size_t i = 0; i < cached_K.rows(); i++) {
-            for (size_t j = 0; j < cached_K.cols(); j++) {
-                new_K(i, j) = cached_K(i, j);
-                new_V(i, j) = cached_V(i, j);
-            }
+        // Handle KV cache if present
+        if (kv_cache) {
+            K = kv_cache->key_cache;
+            V = kv_cache->value_cache;
         }
         
-        // Copy new values
-        for (size_t i = 0; i < K.rows(); i++) {
-            for (size_t j = 0; j < K.cols(); j++) {
-                new_K(i + cached_K.rows(), j) = K(i, j);
-                new_V(i + cached_V.rows(), j) = V(i, j);
-            }
-        }
+        // Repeat K/V heads to match number of query heads
+        size_t num_repeats = num_heads / num_kv_heads;
+        K = repeat_kv_heads(K, num_repeats);
+        V = repeat_kv_heads(V, num_repeats);
         
-        K = std::move(new_K);
-        V = std::move(new_V);
-    }
-    
-    // Repeat K/V heads to match number of query heads
-    size_t num_repeats = num_heads / num_kv_heads;
-    K = repeat_kv_heads(K, num_repeats);
-    V = repeat_kv_heads(V, num_repeats);
-    
-    // Compute attention
-    Matrix attention_output = compute_grouped_attention(Q, K, V, mask);
-    
-    // Project output
-    Matrix output = matmul(attention_output, output_proj);
-    
-    std::cout << "=== GroupedQueryAttention::forward END ===" << std::endl;
-    return output;
+        // Compute attention
+        Matrix attention_output = compute_grouped_attention(Q, K, V, mask);
+        
+        // Project output
+        Matrix output = matmul(attention_output, output_proj);
+        
+        std::cout << "=== GroupedQueryAttention::forward END ===" << std::endl;
+        return output;
+    #endif
 } 

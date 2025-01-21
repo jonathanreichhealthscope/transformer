@@ -6,10 +6,10 @@ class TransformerConfig {
 public:
     // Model parameters
     size_t vocab_size;
-    size_t max_seq_length;
-    size_t hidden_size;
-    size_t num_layers;
-    size_t num_heads;
+    size_t max_seq_length = 1024;
+    size_t hidden_size = 1024;
+    size_t num_layers = 24;
+    size_t num_heads = 16;
     size_t head_dim;
     size_t intermediate_size;
     float dropout_prob;

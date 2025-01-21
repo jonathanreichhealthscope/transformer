@@ -197,6 +197,7 @@ if(CUDAToolkit_FOUND)
         src/cuda/cuda_init.cu
         src/cuda/token_embedding_cuda.cu
         src/cuda/layernorm_cuda.cu
+        src/cuda/gqa_kernels.cu
     )
 
     # Set CUDA properties for the kernels library
