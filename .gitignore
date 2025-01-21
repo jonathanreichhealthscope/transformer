@@ -2,3 +2,4 @@ build
 transformer_log.log
 transformer.log
 docs/
+bin/
