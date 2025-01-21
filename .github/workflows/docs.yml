@@ -37,12 +37,20 @@ jobs:
           libomp-dev \
           libopenblas-dev \
           liblapack-dev \
-          pkg-config
+          pkg-config \
+          g++ \
+          gcc
+
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cmake -B build \
+          -DCMAKE_CXX_COMPILER=$(which g++) \
+          -DCMAKE_C_COMPILER=$(which gcc) \
+          -DUSE_CUDA=OFF
 
     - name: Generate documentation
       run: |
-        mkdir -p build
-        cmake -B build
         make docs-clean
         make docs
 
