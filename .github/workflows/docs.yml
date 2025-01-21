@@ -31,6 +31,8 @@ jobs:
 
     - name: Generate documentation
       run: |
+        mkdir -p build
+        cmake -B build
         make docs-clean
         make docs
 
