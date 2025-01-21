@@ -6,8 +6,12 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #endif
+#include "../include/cuda_manager.hpp"
 
 std::vector<half_type> HalfPrecisionTraining::half_data;
+
+// Add static instance for CUDA management
+static std::unique_ptr<CudaManager> cuda_manager = std::make_unique<CudaManager>();
 
 void HalfPrecisionTraining::convert_to_fp16(Matrix& matrix) {
     const size_t size = matrix.rows() * matrix.cols();
@@ -26,28 +30,24 @@ void HalfPrecisionTraining::convert_to_fp16(Matrix& matrix) {
         throw std::runtime_error("GPU does not support FP16 operations");
     }
 
-    half_type* d_half = nullptr;
-    float* d_float = nullptr;
-    
     try {
+        // Use CUDA manager for memory allocation
+        float* d_float = static_cast<float*>(cuda_manager->allocate(size * sizeof(float)));
+        half_type* d_half = static_cast<half_type*>(cuda_manager->allocate(size * sizeof(half_type)));
+
         // Print debug info
         std::cout << "Converting matrix of size " << size << " to FP16" << std::endl;
         
-        // Allocate memory
-        CUDA_CHECK(cudaMalloc(&d_float, size * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_half, size * sizeof(half_type)));
-
         // Copy input to GPU
         CUDA_CHECK(cudaMemcpy(d_float, matrix.data(), size * sizeof(float), cudaMemcpyHostToDevice));
         
-        // Synchronize before kernel launch
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // Ensure synchronization
+        cuda_manager->synchronize();
 
         // Launch conversion
         launch_fp32_to_fp16(d_float, reinterpret_cast<__half*>(d_half), size);
         
-        // Synchronize after kernel launch
-        CUDA_CHECK(cudaDeviceSynchronize());
+        cuda_manager->synchronize();
 
         // Check for kernel execution errors
         cudaError_t error = cudaGetLastError();
@@ -58,18 +58,14 @@ void HalfPrecisionTraining::convert_to_fp16(Matrix& matrix) {
         // Copy result back to host
         CUDA_CHECK(cudaMemcpy(half_data.data(), d_half, size * sizeof(half_type), cudaMemcpyDeviceToHost));
 
-        // Free device memory
-        if (d_float) CUDA_CHECK(cudaFree(d_float));
-        if (d_half) CUDA_CHECK(cudaFree(d_half));
+        // Safe cleanup
+        cuda_manager->deallocate(d_float);
+        cuda_manager->deallocate(d_half);
 
         std::cout << "Successfully converted to FP16" << std::endl;
 
     } catch (const std::exception& e) {
-        std::cerr << "CUDA error in convert_to_fp16: " << e.what() << std::endl;
-        
-        // Clean up
-        if (d_float) cudaFree(d_float);
-        if (d_half) cudaFree(d_half);
+        std::cerr << "CUDA error: " << e.what() << std::endl;
         
         std::cerr << "Falling back to CPU implementation" << std::endl;
         
@@ -104,28 +100,24 @@ void HalfPrecisionTraining::convert_to_fp32(Matrix& matrix) {
         throw std::runtime_error("GPU does not support FP16 operations");
     }
 
-    float* d_float = nullptr;
-    half_type* d_half = nullptr;
-    
     try {
+        // Use CUDA manager for memory allocation
+        float* d_float = static_cast<float*>(cuda_manager->allocate(size * sizeof(float)));
+        half_type* d_half = static_cast<half_type*>(cuda_manager->allocate(size * sizeof(half_type)));
+
         // Print debug info
         std::cout << "Converting matrix of size " << size << " from FP16 to FP32" << std::endl;
-        
-        // Allocate memory
-        CUDA_CHECK(cudaMalloc(&d_float, size * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&d_half, size * sizeof(half_type)));
 
         // Copy input to GPU
         CUDA_CHECK(cudaMemcpy(d_half, half_data.data(), size * sizeof(half_type), cudaMemcpyHostToDevice));
         
-        // Synchronize before kernel launch
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // Ensure synchronization
+        cuda_manager->synchronize();
 
         // Launch conversion
         launch_fp16_to_fp32(reinterpret_cast<__half*>(d_half), d_float, size);
         
-        // Synchronize after kernel launch
-        CUDA_CHECK(cudaDeviceSynchronize());
+        cuda_manager->synchronize();
 
         // Check for kernel execution errors
         cudaError_t error = cudaGetLastError();
@@ -136,18 +128,14 @@ void HalfPrecisionTraining::convert_to_fp32(Matrix& matrix) {
         // Copy result back to host
         CUDA_CHECK(cudaMemcpy(matrix.data(), d_float, size * sizeof(float), cudaMemcpyDeviceToHost));
 
-        // Free device memory
-        if (d_float) CUDA_CHECK(cudaFree(d_float));
-        if (d_half) CUDA_CHECK(cudaFree(d_half));
+        // Safe cleanup
+        cuda_manager->deallocate(d_float);
+        cuda_manager->deallocate(d_half);
 
         std::cout << "Successfully converted to FP32" << std::endl;
 
     } catch (const std::exception& e) {
-        std::cerr << "CUDA error in convert_to_fp32: " << e.what() << std::endl;
-        
-        // Clean up
-        if (d_float) cudaFree(d_float);
-        if (d_half) cudaFree(d_half);
+        std::cerr << "CUDA error: " << e.what() << std::endl;
         
         std::cerr << "Falling back to CPU implementation" << std::endl;
         
