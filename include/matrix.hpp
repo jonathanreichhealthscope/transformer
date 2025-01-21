@@ -17,56 +17,129 @@
 class Matrix;
 class Vector;
 
+/**
+ * @brief A 2D matrix class optimized for neural network operations.
+ * 
+ * The Matrix class provides a fundamental building block for neural network computations,
+ * supporting both CPU and GPU operations. Features include:
+ * - Basic matrix operations (addition, multiplication, transposition)
+ * - Neural network specific operations (ReLU, GELU, Softmax)
+ * - CUDA acceleration support
+ * - Memory management for both CPU and GPU
+ * - Efficient data access patterns
+ */
 class Matrix {
   private:
-    std::vector<float> data_;
-    size_t rows_;
-    size_t cols_;
-    std::tuple<size_t, size_t> shape_;
-    bool owns_data_ = true;
+    std::vector<float> data_;        ///< Matrix data storage on CPU
+    size_t rows_;                    ///< Number of rows
+    size_t cols_;                    ///< Number of columns
+    std::tuple<size_t, size_t> shape_; ///< Matrix shape as (rows, cols)
+    bool owns_data_ = true;          ///< Whether this matrix owns its data or views external data
+
 #ifdef CUDA_AVAILABLE
-    float* gpu_data_ = nullptr;
-    bool is_on_gpu_ = false;
+    float* gpu_data_ = nullptr;      ///< Matrix data storage on GPU
+    bool is_on_gpu_ = false;         ///< Whether the data is currently on GPU
 #endif
 
   public:
-    // Constructor declarations only
+    /**
+     * @brief Default constructor.
+     */
     Matrix();
-    Matrix(size_t rows, size_t cols, float init_val = 0.0f);
-    Matrix(size_t rows, size_t cols, float* external_data);
-    Matrix(size_t rows, size_t cols, float* external_data, bool is_owner);
-    Matrix(size_t rows, size_t cols, size_t batch_size, float* external_data);
-    Matrix(size_t rows, size_t cols, const float* data);
 
-    // Rest of the class interface
+    /**
+     * @brief Constructs a matrix with specified dimensions.
+     * @param rows Number of rows
+     * @param cols Number of columns
+     * @param init_val Initial value for all elements (default: 0.0f)
+     */
+    Matrix(size_t rows, size_t cols, float init_val = 0.0f);
+
+    /**
+     * @brief Constructs a matrix using external data.
+     * @param rows Number of rows
+     * @param cols Number of columns
+     * @param external_data Pointer to external data
+     */
+    Matrix(size_t rows, size_t cols, float* external_data);
+
+    /**
+     * @brief Constructs a matrix using external data with ownership control.
+     * @param rows Number of rows
+     * @param cols Number of columns
+     * @param external_data Pointer to external data
+     * @param is_owner Whether this matrix should own the data
+     */
+    Matrix(size_t rows, size_t cols, float* external_data, bool is_owner);
+
+    /**
+     * @brief Gets the number of rows.
+     * @return Number of rows
+     */
     size_t rows() const {
         return rows_;
     }
+
+    /**
+     * @brief Gets the number of columns.
+     * @return Number of columns
+     */
     size_t cols() const {
         return cols_;
     }
+
+    /**
+     * @brief Gets the total number of elements.
+     * @return Number of elements
+     */
     size_t size() const {
         return data_.size();
     }
+
+    /**
+     * @brief Gets the total size in bytes.
+     * @return Size in bytes
+     */
     size_t bytes() const {
         return size() * sizeof(float);
     }
+
+    /**
+     * @brief Gets the matrix shape.
+     * @return Tuple of (rows, cols)
+     */
     std::tuple<size_t, size_t> shape() const {
         return shape_;
     }
+
+    /**
+     * @brief Checks if the matrix is empty.
+     * @return True if empty
+     */
     bool empty() const {
         return data_.empty();
     }
 
-    // Data access
+    /**
+     * @brief Gets the minimum value in the matrix.
+     * @return Minimum value
+     */
     float min() const {
         return *std::min_element(data_.begin(), data_.end());
     }
+
+    /**
+     * @brief Gets the maximum value in the matrix.
+     * @return Maximum value
+     */
     float max() const {
         return *std::max_element(data_.begin(), data_.end());
     }
 
-// Single unified data access method
+    /**
+     * @brief Gets a pointer to the underlying data.
+     * @return Const pointer to data (CPU or GPU based on current location)
+     */
 #ifdef CUDA_AVAILABLE
     const float* get_data() const {
         return is_on_gpu_ ? gpu_data_ : data_.data();
@@ -83,21 +156,86 @@ class Matrix {
     }
 #endif
 
-    // Matrix operations declarations
+    /**
+     * @brief Resizes the matrix.
+     * @param new_rows New number of rows
+     * @param new_cols New number of columns
+     */
     void resize(size_t new_rows, size_t new_cols);
+
+    /**
+     * @brief Element access operator.
+     * @param row Row index
+     * @param col Column index
+     * @return Reference to the element
+     */
     float& operator()(size_t row, size_t col);
     const float& operator()(size_t row, size_t col) const;
+
+    /**
+     * @brief Safe element access with bounds checking.
+     * @param row Row index
+     * @param col Column index
+     * @return Reference to the element
+     * @throws std::out_of_range if indices are invalid
+     */
     float& at(size_t row, size_t col);
     const float& at(size_t row, size_t col) const;
+
+    /**
+     * @brief Gets a row as a vector.
+     * @param row Row index
+     * @return Vector containing the row
+     */
     Vector row(size_t row) const;
+
+    /**
+     * @brief Sets a row from a vector.
+     * @param row Row index
+     * @param vec Vector containing new values
+     */
     void set_row(size_t row, const Vector& vec);
+
+    /**
+     * @brief Computes the matrix transpose.
+     * @return Transposed matrix
+     */
     Matrix transpose() const;
+
+    /**
+     * @brief Applies ReLU activation function element-wise.
+     */
     void apply_relu();
+
+    /**
+     * @brief Applies GELU activation function element-wise.
+     */
     void apply_gelu();
+
+    /**
+     * @brief Applies GELU derivative for backpropagation.
+     * @param x Input matrix
+     */
     void apply_gelu_derivative(const Matrix& x);
+
+    /**
+     * @brief Applies softmax function row-wise.
+     */
     void apply_softmax();
+
+    /**
+     * @brief Adds a bias vector to each row.
+     * @param bias Bias vector to add
+     */
     void add_bias(const Vector& bias);
+
+    /**
+     * @brief Matrix addition assignment operator.
+     * @param other Matrix to add
+     * @return Reference to this matrix
+     */
     Matrix& operator+=(const Matrix& other);
+
     Matrix& operator-=(const Matrix& other);
     Matrix& operator*=(float scalar);
     Matrix& operator/=(float scalar);

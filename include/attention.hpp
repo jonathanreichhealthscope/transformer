@@ -5,40 +5,123 @@
 #include <optional>
 using FloatVector = Vector;
 
+/**
+ * @brief Class representing attention masks used in transformer attention mechanisms.
+ * 
+ * Attention masks are used to control which tokens can attend to which other tokens.
+ * This class provides functionality for both causal (autoregressive) masking and
+ * padding masking for variable length sequences.
+ */
 class AttentionMask {
   public:
-    Matrix mask;
+    Matrix mask;  ///< The actual mask matrix where 0 indicates masked positions
+
+    /**
+     * @brief Creates a causal (triangular) mask for autoregressive attention.
+     * @param size The sequence length to create the mask for
+     * @return An AttentionMask object with a causal mask
+     */
     static AttentionMask create_causal_mask(size_t size);
+
+    /**
+     * @brief Creates a padding mask for variable length sequences.
+     * @param lengths Vector of actual sequence lengths
+     * @param max_len Maximum sequence length to pad to
+     * @return An AttentionMask object with a padding mask
+     */
     static AttentionMask create_padding_mask(const std::vector<int>& lengths, size_t max_len);
+    
     AttentionMask() = default;
 };
 
+/**
+ * @brief Implementation of Multi-Head Attention mechanism with various optimizations.
+ * 
+ * This class implements the core attention mechanism used in transformers, with support for:
+ * - Multi-head attention with separate Q/K/V projections
+ * - Grouped Query Attention (GQA)
+ * - Rotary Position Embeddings (RoPE)
+ * - Flash Attention optimization
+ * - Sliding window attention
+ * - Key-Value caching for efficient inference
+ */
 class MultiHeadAttention {
   public:
     virtual ~MultiHeadAttention() = default;
     MultiHeadAttention() = default;
 
+    /**
+     * @brief Constructs a multi-head attention layer with the specified parameters.
+     * @param hidden_size_ Size of the input and output tensors
+     * @param num_heads_ Number of attention heads
+     * @param head_dim_ Dimension of each attention head
+     * @param dropout_prob_ Dropout probability
+     * @param use_flash_ Whether to use Flash Attention optimization
+     * @param use_rope_ Whether to use rotary position embeddings
+     * @param use_sliding_window_ Whether to use sliding window attention
+     * @param window_size_ Size of the sliding window
+     * @param use_gqa_ Whether to use grouped query attention
+     * @param num_kv_heads_ Number of key/value heads for GQA
+     * @param max_seq_length_ Maximum sequence length supported
+     */
     MultiHeadAttention(size_t hidden_size_, size_t num_heads_, size_t head_dim_,
                        float dropout_prob_, bool use_flash_, bool use_rope_,
                        bool use_sliding_window_, size_t window_size_, bool use_gqa_,
                        size_t num_kv_heads_, size_t max_seq_length_);
 
+    /**
+     * @brief Performs the forward pass of the attention mechanism.
+     * @param x Input tensor of shape [batch_size, seq_len, hidden_size]
+     * @param mask Attention mask to prevent attending to certain positions
+     * @param kv_cache Optional cache of key and value projections for efficient inference
+     * @return Output tensor of shape [batch_size, seq_len, hidden_size]
+     */
     Matrix forward(const Matrix& x, const AttentionMask& mask,
                    const std::optional<KVCache>& kv_cache = std::nullopt);
+
+    /**
+     * @brief Performs the backward pass to compute gradients.
+     * @param grad_output Gradient of the loss with respect to the output
+     * @param input Original input tensor
+     * @param target_distribution Target attention distribution (for distillation)
+     * @return Gradient with respect to the input
+     */
     Matrix backward(const Matrix& grad_output, const Matrix& input,
                     const Matrix& target_distribution);
+
+    /**
+     * @brief CUDA-accelerated version of the backward pass.
+     * @param grad Gradient of the loss with respect to the output
+     * @param input Original input tensor
+     * @return Gradient with respect to the input
+     */
     Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
+
+    /**
+     * @brief Saves the attention layer parameters to a stream.
+     * @param os Output stream to save to
+     */
     void save(std::ostream& os) const;
+
+    /**
+     * @brief Loads attention layer parameters from a stream.
+     * @param is Input stream to load from
+     * @param config Transformer configuration
+     * @return Unique pointer to the loaded attention layer
+     */
     static std::unique_ptr<MultiHeadAttention> load(std::istream& is,
                                                     const class TransformerConfig& config);
-    friend class Transformer;
 
+    /**
+     * @brief Gets references to all trainable weight matrices.
+     * @return Vector of references to weight matrices
+     */
     std::vector<std::reference_wrapper<Matrix>> get_weights() {
         return {std::ref(query_proj), std::ref(key_proj), std::ref(value_proj),
                 std::ref(output_proj)};
     }
 
-    friend class TransformerLayer;
+    friend class Transformer;
 
     FloatVector& getQueryBias() {
         return query_bias;
@@ -64,7 +147,9 @@ class MultiHeadAttention {
           num_heads(other.num_heads), head_dim(other.head_dim), hidden_size(other.hidden_size),
           dropout_prob(other.dropout_prob), use_rope(other.use_rope), use_flash(other.use_flash),
           use_sliding_window(other.use_sliding_window), window_size(other.window_size),
-          use_gqa(other.use_gqa), num_kv_heads(other.num_kv_heads), cos_cached(other.cos_cached),
+          use_gqa(other.use_gqa), num_kv_heads(other.num_kv_heads),
+          max_seq_length(other.max_seq_length),
+          cos_cached(other.cos_cached),
           sin_cached(other.sin_cached) {}
 
     MultiHeadAttention& operator=(const MultiHeadAttention& other) {
@@ -95,6 +180,7 @@ class MultiHeadAttention {
             window_size = other.window_size;
             use_gqa = other.use_gqa;
             num_kv_heads = other.num_kv_heads;
+            max_seq_length = other.max_seq_length;
             cos_cached = other.cos_cached;
             sin_cached = other.sin_cached;
         }
@@ -158,11 +244,24 @@ class MultiHeadAttention {
         return param_gradients;
     }
 
+    /**
+     * @brief Computes attention scores between query and key matrices.
+     * 
+     * Implements the scaled dot-product attention mechanism:
+     * scores = softmax(Q * K^T / sqrt(head_dim))
+     * 
+     * @param Q Query matrix [batch_size * num_heads, seq_len, head_dim]
+     * @param K Key matrix [batch_size * num_kv_heads, seq_len, head_dim]
+     * @return Attention scores [batch_size * num_heads, seq_len, seq_len]
+     */
     Matrix compute_attention_scores(const Matrix& Q, const Matrix& K);
 
   private:
     Parameters params;                  // Trainable parameters
     mutable Parameters param_gradients; // Parameter gradients
+
+    // Add max_seq_length to member variables
+    size_t max_seq_length;     ///< Maximum sequence length supported
 
     // Gradients
     mutable Matrix query_proj_grad;
@@ -174,28 +273,33 @@ class MultiHeadAttention {
     mutable FloatVector value_bias_grad;
     mutable FloatVector output_bias_grad;
 
-    Matrix query_proj;
-    Matrix key_proj;
-    Matrix value_proj;
-    Matrix output_proj;
-    FloatVector query_bias;
-    FloatVector key_bias;
-    FloatVector value_bias;
-    FloatVector output_bias;
-    size_t num_heads;
-    size_t head_dim;
-    bool use_rope;
-    bool use_flash;
-    bool use_sliding_window;
-    size_t window_size;
-    Matrix cos_cached;
-    Matrix sin_cached;
-    Matrix attention_scores;
-    size_t hidden_size;
-    float dropout_prob;
-    bool use_gqa;
-    size_t num_kv_heads;
-    size_t max_seq_length;
+    // Projection matrices and their gradients
+    Matrix query_proj;        ///< Query projection matrix [hidden_size, num_heads * head_dim]
+    Matrix key_proj;          ///< Key projection matrix [hidden_size, num_kv_heads * head_dim]
+    Matrix value_proj;        ///< Value projection matrix [hidden_size, num_kv_heads * head_dim]
+    Matrix output_proj;       ///< Output projection matrix [num_heads * head_dim, hidden_size]
+    
+    // Bias vectors and their gradients
+    FloatVector query_bias;   ///< Query projection bias
+    FloatVector key_bias;     ///< Key projection bias
+    FloatVector value_bias;   ///< Value projection bias
+    FloatVector output_bias;  ///< Output projection bias
+    
+    // Configuration parameters
+    size_t num_heads;         ///< Number of attention heads
+    size_t head_dim;          ///< Dimension of each attention head
+    size_t hidden_size;       ///< Size of input and output tensors
+    float dropout_prob;       ///< Dropout probability
+    bool use_rope;           ///< Whether to use rotary position embeddings
+    bool use_flash;          ///< Whether to use Flash Attention
+    bool use_sliding_window; ///< Whether to use sliding window attention
+    size_t window_size;      ///< Size of attention window
+    bool use_gqa;           ///< Whether to use grouped query attention
+    size_t num_kv_heads;     ///< Number of key/value heads for GQA
+
+    // RoPE caches
+    Matrix cos_cached;       ///< Cached cosine values for RoPE
+    Matrix sin_cached;       ///< Cached sine values for RoPE
 
     // Private helper methods
     Vector apply_rope(const Vector& x, size_t position) const;
@@ -303,7 +407,23 @@ class MultiHeadAttention {
     }
 
     // RoPE helper functions
-    void initialize_rope_cache(size_t max_seq_len, size_t dim);
+    /**
+     * @brief Applies rotary position embeddings to Q/K matrices.
+     * 
+     * RoPE improves the model's ability to capture positional information
+     * by encoding positions through rotation in vector space.
+     * 
+     * @param matrix Input Q or K matrix to apply RoPE to
+     * @param offset Position offset for cached generation
+     */
+    void apply_rotary_embeddings(Matrix& matrix, size_t offset = 0);
+
+    /**
+     * @brief Initializes or updates RoPE caches.
+     * @param max_seq_len Length of sequence to cache embeddings for
+     * @param dim_idx Dimension index for cached generation
+     */
+    void initialize_rope_cache(size_t max_seq_len, size_t dim_idx);
     float get_cos_cached(size_t pos, size_t dim_idx) const;
     float get_sin_cached(size_t pos, size_t dim_idx) const;
 };

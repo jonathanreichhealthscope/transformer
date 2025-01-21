@@ -15,38 +15,77 @@
 #include <memory>
 #include <vector>
 
-// Forward declarations
-class TransformerLayer;
-
+/**
+ * @brief A single layer of the Transformer model implementing the standard Transformer architecture.
+ * 
+ * Each TransformerLayer consists of:
+ * - Multi-head self-attention mechanism
+ * - Layer normalization for attention
+ * - Feed-forward neural network
+ * - Layer normalization for feed-forward
+ * - Dropout layers for regularization
+ * - Key-Value cache for efficient inference
+ */
 class TransformerLayer {
   private:
-    std::unique_ptr<MultiHeadAttention> self_attention;
-    std::unique_ptr<LayerNorm> attention_ln;
-    std::unique_ptr<LayerNorm> ffn_ln;
-    std::unique_ptr<FeedForward> feed_forward;
-    std::unique_ptr<Dropout> attention_dropout;
-    std::unique_ptr<Dropout> ffn_dropout;
-    KVCache kv_cache;
-    const TransformerConfig& config;
-    size_t layer_idx;
-    bool training = false;
+    std::unique_ptr<MultiHeadAttention> self_attention;  ///< Multi-head self-attention mechanism
+    std::unique_ptr<LayerNorm> attention_ln;            ///< Layer normalization for attention output
+    std::unique_ptr<LayerNorm> ffn_ln;                 ///< Layer normalization for feed-forward output
+    std::unique_ptr<FeedForward> feed_forward;         ///< Feed-forward neural network
+    std::unique_ptr<Dropout> attention_dropout;        ///< Dropout for attention
+    std::unique_ptr<Dropout> ffn_dropout;             ///< Dropout for feed-forward
+    KVCache kv_cache;                                ///< Cache for key-value pairs in attention
+    const TransformerConfig& config;                 ///< Reference to model configuration
+    size_t layer_idx;                              ///< Index of this layer in the transformer
+    bool training = false;                        ///< Whether the layer is in training mode
 
   public:
     virtual ~TransformerLayer() = default;
     TransformerLayer() = default;
+
+    /**
+     * @brief Constructs a transformer layer with the given configuration and layer index.
+     * @param config_ Configuration parameters for the transformer
+     * @param idx Index of this layer in the transformer stack
+     */
     TransformerLayer(const TransformerConfig& config_, size_t idx);
+
+    /**
+     * @brief Performs the forward pass through the transformer layer.
+     * @param input Input tensor of shape [batch_size, seq_len, hidden_size]
+     * @param mask Attention mask to prevent attending to future tokens
+     * @param kv_cache Optional key-value cache for efficient inference
+     * @return Output tensor of shape [batch_size, seq_len, hidden_size]
+     */
     Matrix forward(const Matrix& input, const AttentionMask& mask,
                    const std::optional<KVCache>& kv_cache = std::nullopt);
+
+    /**
+     * @brief Clears the key-value cache of this layer.
+     */
     void clear_cache();
+
+    /**
+     * @brief Saves the layer's parameters to an output stream.
+     * @param os Output stream to save to
+     */
     void save(std::ostream& os) const {
         self_attention->save(os);
         attention_ln->save(os);
         feed_forward->save(os);
         ffn_ln->save(os);
     }
+
+    /**
+     * @brief Creates a new transformer layer with the given configuration.
+     * @param config Configuration parameters for the transformer
+     * @param idx Index of this layer in the transformer stack
+     * @return Unique pointer to the created layer
+     */
     static std::unique_ptr<TransformerLayer> create(const TransformerConfig& config, size_t idx) {
         return std::make_unique<TransformerLayer>(config, idx);
     }
+
     void load(std::istream& is) {
         self_attention = MultiHeadAttention::load(is, config);
     }
@@ -115,16 +154,33 @@ class TransformerLayer {
     }
 };
 
+/**
+ * @brief Main Transformer model implementing the standard Transformer architecture.
+ * 
+ * The Transformer consists of:
+ * - Token embedding layer
+ * - Positional encoding
+ * - Multiple transformer layers
+ * - Final layer normalization
+ * - Language model head for token prediction
+ * 
+ * Supports both training and inference modes, with features like:
+ * - Key-Value caching for efficient inference
+ * - CUDA acceleration
+ * - Half-precision (FP16) computation
+ * - Gradient checkpointing
+ * - Various optimization algorithms
+ */
 class Transformer {
   private:
-    TransformerConfig config;
-    std::unique_ptr<TokenEmbedding> token_embedding;
-    std::unique_ptr<PositionalEncoding> pos_encoding;
-    std::vector<std::unique_ptr<TransformerLayer>> layers;
-    std::unique_ptr<LayerNorm> final_ln;
-    std::unique_ptr<LanguageModelHead> lm_head;
-    std::unique_ptr<Dropout> dropout;
-    bool cuda_initialized = false;
+    TransformerConfig config;                          ///< Model configuration parameters
+    std::unique_ptr<TokenEmbedding> token_embedding;   ///< Token embedding layer
+    std::unique_ptr<PositionalEncoding> pos_encoding;  ///< Positional encoding layer
+    std::vector<std::unique_ptr<TransformerLayer>> layers;  ///< Stack of transformer layers
+    std::unique_ptr<LayerNorm> final_ln;              ///< Final layer normalization
+    std::unique_ptr<LanguageModelHead> lm_head;       ///< Output layer for token prediction
+    std::unique_ptr<Dropout> dropout;                 ///< Dropout layer
+    bool cuda_initialized = false;                    ///< Whether CUDA has been initialized
 
     // Cached states for backward pass
     Matrix hidden_states;
@@ -165,15 +221,50 @@ class Transformer {
 
   public:
     Transformer() = default;
+
+    /**
+     * @brief Constructs a transformer model with the given configuration.
+     * @param config Configuration parameters for the transformer
+     */
     explicit Transformer(const TransformerConfig& config);
+
+    /**
+     * @brief Performs the forward pass through the transformer.
+     * @param input_tokens Input token sequence
+     * @param use_cache Whether to use key-value caching for inference
+     * @return Output logits for each position
+     */
     Matrix forward(const std::vector<int>& input_tokens, bool use_cache = false);
-    Matrix forward_cuda(const std::vector<int>& input_tokens, bool use_cache = false);
+
+    /**
+     * @brief Trains the transformer on the given dataset.
+     * @param input_tokens Batch of input token sequences
+     * @param target_tokens Batch of target token sequences
+     * @param num_epochs Number of training epochs
+     * @param learning_rate Learning rate for optimization
+     */
     void train(const std::vector<std::vector<int>>& input_tokens,
                const std::vector<std::vector<int>>& target_tokens, size_t num_epochs,
                float learning_rate);
+
+    /**
+     * @brief Saves the model parameters to a file.
+     * @param path Path to save the model to
+     */
     void save_model(const std::string& path) const;
+
+    /**
+     * @brief Loads a model from a file.
+     * @param path Path to load the model from
+     * @return The loaded transformer model
+     */
     static Transformer load_model(const std::string& path);
+
+    /**
+     * @brief Clears all key-value caches in the model.
+     */
     void clear_kv_cache();
+
     Matrix backward(const Matrix& grad, const Matrix& activation, size_t layer_idx);
     Matrix backward_cuda(const Matrix& grad, const Matrix& activation, size_t layer_idx);
     std::vector<Matrix>& parameters();

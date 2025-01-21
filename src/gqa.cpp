@@ -94,7 +94,6 @@ Matrix GroupedQueryAttention::forward(const Matrix& x, const AttentionMask& mask
 
 #ifdef CUDA_AVAILABLE
     // Project input to Q, K, V first
-    printf("=== GroupedQueryAttention::forward CUDA START ===\n");
     Matrix Q = matmul(x, query_proj);
     Matrix K = matmul(x, key_proj);
     Matrix V = matmul(x, value_proj);

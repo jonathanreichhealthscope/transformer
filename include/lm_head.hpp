@@ -6,24 +6,60 @@
 #include <string>
 #include <vector>
 
+/**
+ * @brief Language model head for token prediction in transformer models.
+ * 
+ * The LanguageModelHead class transforms hidden states into logits over the vocabulary,
+ * enabling token prediction for language modeling tasks. Features include:
+ * - Linear projection to vocabulary size
+ * - Bias terms for each token
+ * - Adaptive token frequency tracking
+ * - Adam optimizer integration
+ * - Dropout regularization
+ */
 class LanguageModelHead {
   private:
-    Matrix projection;
-    Vector bias;
-    float dropout_prob;
-    size_t vocab_size_;
-    size_t hidden_size_;
-    Matrix hidden_states;
-    std::vector<float> token_frequencies;
+    Matrix projection;                    ///< Projection matrix to vocabulary space
+    Vector bias;                         ///< Bias terms for each token
+    float dropout_prob;                  ///< Dropout probability during training
+    size_t vocab_size_;                  ///< Size of the vocabulary
+    size_t hidden_size_;                 ///< Size of input hidden states
+    Matrix hidden_states;                ///< Cached hidden states for backward pass
+    std::vector<float> token_frequencies; ///< Tracked frequencies of token usage
+
+    /**
+     * @brief Computes gradients for the linear projection.
+     * @param grad_output Gradient of the loss with respect to the output
+     */
     void backward_linear(const Matrix& grad_output);
+
+    /**
+     * @brief Implementation of the forward pass computation.
+     * @param hidden_states Input hidden states
+     * @return Output logits over vocabulary
+     */
     Matrix forward_impl(const Matrix& hidden_states);
 
   public:
+    /**
+     * @brief Constructs a language model head.
+     * @param hidden_size Size of input hidden states
+     * @param vocab_size Size of the vocabulary
+     */
     LanguageModelHead(size_t hidden_size, size_t vocab_size);
 
+    /**
+     * @brief Copy constructor.
+     * @param other LanguageModelHead to copy from
+     */
     LanguageModelHead(const LanguageModelHead& other)
         : projection(other.projection), bias(other.bias), dropout_prob(other.dropout_prob) {}
 
+    /**
+     * @brief Assignment operator.
+     * @param other LanguageModelHead to assign from
+     * @return Reference to this instance
+     */
     LanguageModelHead& operator=(const LanguageModelHead& other) {
         if (this != &other) {
             projection = other.projection;
@@ -33,12 +69,23 @@ class LanguageModelHead {
         return *this;
     }
 
+    /**
+     * @brief Performs the forward pass, computing logits from hidden states.
+     * @param hidden_states Input hidden states
+     * @return Matrix of logits over vocabulary
+     */
     Matrix forward(const Matrix& hidden_states) {
         // Store hidden states for backward pass
         this->hidden_states = hidden_states;
         return project_to_vocab(hidden_states);
     }
 
+    /**
+     * @brief Performs the backward pass with Adam optimization.
+     * @param grad_output Gradient of the loss with respect to the output
+     * @param hidden_states Original input hidden states
+     * @return Gradient with respect to the input
+     */
     Matrix backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
         // Compute gradients for projection and bias
         std::cout << "Computing gradients for projection and bias" << std::endl;
@@ -115,12 +162,21 @@ class LanguageModelHead {
         return grad_input;
     }
 
+    /**
+     * @brief Saves the model head to a stream.
+     * @param os Output stream to save to
+     */
     void save(std::ostream& os) const {
         projection.save(os);
         bias.save(os);
         os.write(reinterpret_cast<const char*>(&dropout_prob), sizeof(dropout_prob));
     }
 
+    /**
+     * @brief Loads a model head from a stream.
+     * @param is Input stream to load from
+     * @return Unique pointer to loaded model head
+     */
     static std::unique_ptr<LanguageModelHead> load(std::istream& is) {
         auto lm_head = std::make_unique<LanguageModelHead>(0, 0); // Temporary sizes
         lm_head->projection = Matrix::load(is);
@@ -129,6 +185,10 @@ class LanguageModelHead {
         return lm_head;
     }
 
+    /**
+     * @brief Gets references to trainable parameters.
+     * @return Vector of parameter references
+     */
     std::vector<std::reference_wrapper<Matrix>> get_parameters() {
         std::vector<std::reference_wrapper<Matrix>> params;
         params.push_back(std::ref(projection));
@@ -136,18 +196,44 @@ class LanguageModelHead {
         return params;
     }
 
+    /**
+     * @brief Gets the bias vector.
+     * @return Reference to bias vector
+     */
     Vector& get_bias() {
         return bias;
     }
 
+    /**
+     * @brief Projects hidden states to vocabulary space.
+     * @param hidden_states Input hidden states
+     * @return Matrix of logits over vocabulary
+     */
     Matrix project_to_vocab(const Matrix& hidden_states);
 
+    /**
+     * @brief Gets the projection matrix.
+     * @return Const reference to projection matrix
+     */
     const Matrix& get_projection() const {
         return projection;
     }
 
+    /**
+     * @brief Performs backward pass with optional target distribution.
+     * @param grad_output Gradient of the loss with respect to the output
+     * @param target_distribution Optional target distribution for distillation
+     * @return Gradient with respect to the input
+     */
     Matrix backward(const Matrix& grad_output, const Matrix& target_distribution = Matrix());
 
+    /**
+     * @brief Updates token frequency tracking with decay.
+     * @param tokens Vector of token IDs to update frequencies for
+     * 
+     * This method implements a simple frequency tracking mechanism with exponential
+     * decay to give more weight to recent occurrences.
+     */
     void update_token_frequencies(const std::vector<int>& tokens) {
         // Decay old frequencies slightly
         const float decay_rate = 0.99f;

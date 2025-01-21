@@ -6,45 +6,105 @@
 
 using FloatVector = Vector;
 
+/**
+ * @brief Implementation of the Feed-Forward Network (FFN) used in transformer layers.
+ * 
+ * The Feed-Forward Network consists of two linear transformations with a ReLU activation
+ * in between, following the architecture:
+ * FFN(x) = max(0, xW₁ + b₁)W₂ + b₂
+ * 
+ * Features:
+ * - Two-layer neural network with ReLU activation
+ * - Dropout regularization
+ * - CUDA acceleration support
+ * - Gradient computation for training
+ */
 class FeedForward {
   private:
-    Matrix w1;
-    Matrix w2;
-    Vector b1;
-    Vector b2;
-    float dropout_prob;
-    Matrix intermediate_cache;
+    Matrix w1;                    ///< Weight matrix for the first linear transformation
+    Matrix w2;                    ///< Weight matrix for the second linear transformation
+    Vector b1;                    ///< Bias vector for the first linear transformation
+    Vector b2;                    ///< Bias vector for the second linear transformation
+    float dropout_prob;           ///< Dropout probability during training
+    Matrix intermediate_cache;    ///< Cache for intermediate activations during forward pass
 
     // Gradient members
-    mutable Matrix w1_grad;
-    mutable Matrix w2_grad;
-    mutable FloatVector b1_grad;
-    mutable FloatVector b2_grad;
+    mutable Matrix w1_grad;       ///< Gradient of loss with respect to w1
+    mutable Matrix w2_grad;       ///< Gradient of loss with respect to w2
+    mutable FloatVector b1_grad;  ///< Gradient of loss with respect to b1
+    mutable FloatVector b2_grad;  ///< Gradient of loss with respect to b2
 
-    // Parameter containers
+    /**
+     * @brief Container for trainable parameters.
+     * 
+     * Groups matrices and vectors for easier parameter management
+     * and optimization updates.
+     */
     struct Parameters {
-        std::vector<std::reference_wrapper<Matrix>> matrices;
-        std::vector<std::reference_wrapper<Vector>> vectors;
+        std::vector<std::reference_wrapper<Matrix>> matrices;  ///< References to weight matrices
+        std::vector<std::reference_wrapper<Vector>> vectors;   ///< References to bias vectors
     };
 
-    Parameters params;
-    mutable Parameters param_gradients;
+    Parameters params;                  ///< Container for trainable parameters
+    mutable Parameters param_gradients; ///< Container for parameter gradients
 
   public:
     virtual ~FeedForward() = default;
     FeedForward() = default;
-    FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1f);
-    Matrix forward(const Matrix& x);
-    Matrix backward(const Matrix& grad_output, const Matrix& input);
-    Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
-    void save(std::ostream& os) const;
-    static std::unique_ptr<FeedForward> load(std::istream& is);
-    friend class Transformer;
 
+    /**
+     * @brief Constructs a feed-forward network with specified dimensions.
+     * @param hidden_size Size of input and output tensors
+     * @param intermediate_size Size of the intermediate (hidden) layer
+     * @param dropout Dropout probability during training
+     */
+    FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1f);
+
+    /**
+     * @brief Performs the forward pass through the feed-forward network.
+     * @param x Input tensor of shape [batch_size, seq_len, hidden_size]
+     * @return Output tensor of shape [batch_size, seq_len, hidden_size]
+     */
+    Matrix forward(const Matrix& x);
+
+    /**
+     * @brief Performs the backward pass to compute gradients.
+     * @param grad_output Gradient of the loss with respect to the output
+     * @param input Original input tensor
+     * @return Gradient with respect to the input
+     */
+    Matrix backward(const Matrix& grad_output, const Matrix& input);
+
+    /**
+     * @brief CUDA-accelerated version of the backward pass.
+     * @param grad Gradient of the loss with respect to the output
+     * @param input Original input tensor
+     * @return Gradient with respect to the input
+     */
+    Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
+
+    /**
+     * @brief Saves the feed-forward network parameters to a stream.
+     * @param os Output stream to save to
+     */
+    void save(std::ostream& os) const;
+
+    /**
+     * @brief Loads feed-forward network parameters from a stream.
+     * @param is Input stream to load from
+     * @return Unique pointer to the loaded feed-forward network
+     */
+    static std::unique_ptr<FeedForward> load(std::istream& is);
+
+    /**
+     * @brief Gets references to all trainable weight matrices.
+     * @return Vector of references to weight matrices
+     */
     std::vector<std::reference_wrapper<Matrix>> get_weights() {
         return {std::ref(w1), std::ref(w2)};
     }
 
+    friend class Transformer;
     friend class TransformerLayer;
 
     FloatVector& getBias1() {
