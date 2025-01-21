@@ -32,6 +32,8 @@ jobs:
           graphviz \
           cmake \
           build-essential \
+          nvidia-cuda-dev \
+          nvidia-cuda-toolkit \
           ninja-build \
           nlohmann-json3-dev \
           libomp-dev \
