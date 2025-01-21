@@ -27,7 +27,17 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y doxygen graphviz
+        sudo apt-get install -y \
+          doxygen \
+          graphviz \
+          cmake \
+          build-essential \
+          ninja-build \
+          nlohmann-json3-dev \
+          libomp-dev \
+          libopenblas-dev \
+          liblapack-dev \
+          pkg-config
 
     - name: Generate documentation
       run: |

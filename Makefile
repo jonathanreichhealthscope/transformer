@@ -44,7 +44,7 @@ release:
 # Documentation targets
 .PHONY: docs
 docs:
-	@mkdir -p $(DOCS_DIR)
+	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && cmake --build . --target docs
 
 .PHONY: docs-clean
