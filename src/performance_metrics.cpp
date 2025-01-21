@@ -8,9 +8,11 @@ void PerformanceMetrics::start_timer(const std::string& name) {
 
 void PerformanceMetrics::stop_timer(const std::string& name) {
     auto stop_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-        stop_time - start_times[name]).count() / 1000.0; // Convert to milliseconds
-    
+    auto duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(stop_time - start_times[name])
+            .count() /
+        1000.0; // Convert to milliseconds
+
     accumulated_times[name] += duration;
     call_counts[name]++;
 }
@@ -32,11 +34,14 @@ size_t PerformanceMetrics::get_peak_memory() const {
 }
 
 double PerformanceMetrics::get_average_memory() const {
-    if (memory_samples.empty()) return 0.0;
-    return std::accumulate(memory_samples.begin(), memory_samples.end(), 0.0) / memory_samples.size();
+    if (memory_samples.empty())
+        return 0.0;
+    return std::accumulate(memory_samples.begin(), memory_samples.end(), 0.0) /
+           memory_samples.size();
 }
 
-void PerformanceMetrics::record_attention_flops(size_t seq_length, size_t num_heads, size_t head_dim) {
+void PerformanceMetrics::record_attention_flops(size_t seq_length, size_t num_heads,
+                                                size_t head_dim) {
     // Calculate FLOPs for attention computation
     // Q*K^T: 2*seq_length^2*head_dim operations per head
     // Softmax: 3*seq_length operations per head
@@ -47,31 +52,31 @@ void PerformanceMetrics::record_attention_flops(size_t seq_length, size_t num_he
 }
 
 double PerformanceMetrics::get_attention_gflops() const {
-    if (call_counts.find("attention_flops") == call_counts.end() || 
+    if (call_counts.find("attention_flops") == call_counts.end() ||
         call_counts.at("attention_flops") == 0) {
         return 0.0;
     }
-    return (accumulated_times.at("attention_flops") / 1e9) / 
+    return (accumulated_times.at("attention_flops") / 1e9) /
            (accumulated_times.at("attention_computation") / 1000.0); // GFLOPS
 }
 
 void PerformanceMetrics::print_metrics() const {
     std::cout << "\n=== Performance Metrics ===\n";
-    
+
     // Print timing metrics
     for (const auto& [name, total_time] : accumulated_times) {
         if (name != "attention_flops") {
             double avg_time = get_average_time(name);
-            std::cout << name << ": " << avg_time << "ms (avg), "
-                     << call_counts.at(name) << " calls\n";
+            std::cout << name << ": " << avg_time << "ms (avg), " << call_counts.at(name)
+                      << " calls\n";
         }
     }
-    
+
     // Print memory metrics
     std::cout << "\nMemory Usage:\n"
               << "Peak: " << (get_peak_memory() / 1024.0 / 1024.0) << " MB\n"
               << "Average: " << (get_average_memory() / 1024.0 / 1024.0) << " MB\n";
-    
+
     // Print attention metrics
     if (call_counts.find("attention_flops") != call_counts.end()) {
         std::cout << "\nAttention Performance:\n"
@@ -85,4 +90,4 @@ void PerformanceMetrics::reset() {
     call_counts.clear();
     peak_memory_usage = 0;
     memory_samples.clear();
-} 
+}

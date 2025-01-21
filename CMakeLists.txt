@@ -4,6 +4,16 @@ project(transformer_cpp CUDA CXX)
 # Set CUDA architecture policy
 cmake_policy(SET CMP0104 NEW)
 
+# Add Doxygen support
+find_package(Doxygen)
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
@@ -51,7 +61,6 @@ set(CORE_SOURCES
     src/vector_ops.cpp
     src/logger.cpp
     src/model_saver.cpp
-    src/memory_pool.cpp
     src/half_precision.cpp
     src/gradient_checkpoint.cpp
     src/utils.cpp
@@ -74,10 +83,7 @@ set(NN_SOURCES
 set(UTIL_SOURCES
     src/tokenizer.cpp
     src/cache.cpp
-    src/trainer.cpp
-    src/memory_pool.cpp
     src/quantization.cpp
-    src/serialization.cpp
     src/optimizer.cpp
 )
 
@@ -197,6 +203,7 @@ if(CUDAToolkit_FOUND)
         src/cuda/cuda_init.cu
         src/cuda/token_embedding_cuda.cu
         src/cuda/layernorm_cuda.cu
+        src/cuda/gqa_kernels.cu
     )
 
     # Set CUDA properties for the kernels library

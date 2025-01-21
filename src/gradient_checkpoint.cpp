@@ -4,15 +4,15 @@
 std::unordered_map<size_t, Matrix> GradientCheckpoint::checkpoints;
 std::unordered_map<std::string, Matrix> GradientCheckpoint::activation_cache;
 
-void GradientCheckpoint::save_activation(const Matrix &activation, size_t layer) {
+void GradientCheckpoint::save_activation(const Matrix& activation, size_t layer) {
     try {
         // Use memory pool for efficient allocation
-        Matrix &checkpoint = checkpoints[layer];
+        Matrix& checkpoint = checkpoints[layer];
         checkpoint = Matrix(activation.rows(), activation.cols());
 
         if (checkpoint.size() == 0) {
-            throw std::runtime_error("Failed to allocate checkpoint matrix for layer " + 
-                                   std::to_string(layer));
+            throw std::runtime_error("Failed to allocate checkpoint matrix for layer " +
+                                     std::to_string(layer));
         }
 
 #pragma omp parallel for collapse(2)
@@ -22,16 +22,14 @@ void GradientCheckpoint::save_activation(const Matrix &activation, size_t layer)
             }
         }
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error saving activation checkpoint: " + 
-                               std::string(e.what()));
+        throw std::runtime_error("Error saving activation checkpoint: " + std::string(e.what()));
     }
 }
 
 Matrix GradientCheckpoint::get_activation(size_t layer) {
     auto it = checkpoints.find(layer);
     if (it == checkpoints.end()) {
-        throw std::runtime_error("No checkpoint found for layer " + 
-                               std::to_string(layer));
+        throw std::runtime_error("No checkpoint found for layer " + std::to_string(layer));
     }
     return it->second;
 }
@@ -42,9 +40,9 @@ void GradientCheckpoint::cache_activation(const std::string& key, const Matrix& 
         if (activation_cache.size() > 1000) { // Arbitrary limit, adjust as needed
             clear_cache();
         }
-        
+
         activation_cache[key] = Matrix(activation); // Deep copy
-        
+
         if (activation_cache[key].size() == 0) {
             throw std::runtime_error("Failed to allocate activation cache for key: " + key);
         }

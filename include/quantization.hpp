@@ -8,101 +8,151 @@
 #include "cuda/cuda_utils.cuh"
 #endif
 
+/**
+ * @brief Post-training quantization for model compression.
+ * 
+ * The Quantizer class provides functionality for quantizing model weights
+ * and activations to reduced precision (e.g., 8-bit integers) after training.
+ * Features include:
+ * - Configurable bit width
+ * - Scale and zero-point calibration
+ * - CUDA acceleration support
+ * - Symmetric and asymmetric quantization
+ */
 class Quantizer {
-private:
-  size_t bits;
-  float scale;
-  float zero_point;
+  private:
+    size_t bits;         ///< Number of bits for quantization
+    float scale;         ///< Scaling factor for quantization
+    float zero_point;    ///< Zero point offset for asymmetric quantization
 
-public:
-  explicit Quantizer(size_t num_bits = 8);
-  Matrix quantize(const Matrix &input);
-  Matrix quantize_cuda(const Matrix &input);
-  Matrix dequantize(const Matrix &quantized);
-  Matrix dequantize_cuda(const Matrix &quantized);
-  void save(std::ostream &os) const;
-  static std::unique_ptr<Quantizer> load(std::istream &is);
+  public:
+    /**
+     * @brief Constructs a quantizer with specified precision.
+     * @param num_bits Number of bits for quantization (default: 8)
+     */
+    explicit Quantizer(size_t num_bits = 8);
+
+    /**
+     * @brief Quantizes a floating-point matrix to reduced precision.
+     * @param input Input matrix to quantize
+     * @return Quantized matrix
+     */
+    Matrix quantize(const Matrix& input);
+
+    /**
+     * @brief CUDA-accelerated matrix quantization.
+     * @param input Input matrix to quantize
+     * @return Quantized matrix
+     */
+    Matrix quantize_cuda(const Matrix& input);
+
+    /**
+     * @brief Dequantizes a matrix back to floating-point.
+     * @param quantized Quantized matrix to convert back
+     * @return Dequantized floating-point matrix
+     */
+    Matrix dequantize(const Matrix& quantized);
+
+    /**
+     * @brief CUDA-accelerated matrix dequantization.
+     * @param quantized Quantized matrix to convert back
+     * @return Dequantized floating-point matrix
+     */
+    Matrix dequantize_cuda(const Matrix& quantized);
+
+    /**
+     * @brief Saves quantization parameters to a stream.
+     * @param os Output stream to save to
+     */
+    void save(std::ostream& os) const;
+
+    /**
+     * @brief Loads quantization parameters from a stream.
+     * @param is Input stream to load from
+     * @return Unique pointer to loaded quantizer
+     */
+    static std::unique_ptr<Quantizer> load(std::istream& is);
 };
 
+/**
+ * @brief Implements Quantization-Aware Training (QAT) for transformer models.
+ * 
+ * QAT simulates quantization effects during training, allowing the model to
+ * adapt to reduced precision. Features include:
+ * - Per-layer quantization parameters
+ * - Calibration using representative data
+ * - Symmetric and asymmetric quantization options
+ * - Statistics collection for optimal scaling
+ */
 class QuantizationAwareTraining {
-private:
-  struct QuantizationParams {
-    float scale;
-    float zero_point;
-    int bits;
-  };
-
-  std::unordered_map<std::string, QuantizationParams> layer_params;
-  bool use_symmetric_quantization;
-  const int default_bits = 8;
-
-  void
-  collect_statistics(const std::vector<std::reference_wrapper<Matrix>> &weights,
-                     const std::vector<Matrix> &calibration_data,
-                     const std::string &layer_name) {
-    float min_val = std::numeric_limits<float>::max();
-    float max_val = std::numeric_limits<float>::lowest();
-
-    // Collect min/max from weights
-    for (const auto &weight_ref : weights) {
-      const Matrix &weight = weight_ref.get();
-      for (size_t i = 0; i < weight.rows(); ++i) {
-        for (size_t j = 0; j < weight.cols(); ++j) {
-          min_val = std::min(min_val, weight(i, j));
-          max_val = std::max(max_val, weight(i, j));
-        }
-      }
-    }
-
-    // Collect min/max from calibration data
-    for (const auto &data : calibration_data) {
-      for (size_t i = 0; i < data.rows(); ++i) {
-        for (size_t j = 0; j < data.cols(); ++j) {
-          min_val = std::min(min_val, data(i, j));
-          max_val = std::max(max_val, data(i, j));
-        }
-      }
-    }
-
-    // Store the statistics in layer_params
-    float range = max_val - min_val;
-    layer_params[layer_name] = {
-        range / ((1 << default_bits) - 1), // scale
-        -min_val,                          // zero_point
-        default_bits                       // bits
+  private:
+    /**
+     * @brief Parameters for quantizing a single layer.
+     */
+    struct QuantizationParams {
+        float scale;      ///< Scaling factor for the layer
+        float zero_point; ///< Zero point for asymmetric quantization
+        int bits;        ///< Number of bits for quantization
     };
-  }
 
-  Matrix symmetric_quantize(const Matrix &weights, float scale, int bits) {
-    Matrix quantized(weights.rows(), weights.cols());
-    float max_val = float((1 << (bits - 1)) - 1);
+    std::unordered_map<std::string, QuantizationParams> layer_params; ///< Per-layer quantization parameters
+    bool use_symmetric_quantization;  ///< Whether to use symmetric quantization
+    const int default_bits = 8;      ///< Default quantization bit width
 
-    for (size_t i = 0; i < weights.rows(); ++i) {
-      for (size_t j = 0; j < weights.cols(); ++j) {
-        float val = weights(i, j);
-        quantized(i, j) = std::round(val / scale) * scale;
-        quantized(i, j) = std::clamp(quantized(i, j), -max_val, max_val);
-      }
-    }
-    return quantized;
-  }
+    /**
+     * @brief Collects statistics for calibrating quantization parameters.
+     * 
+     * Analyzes weights and calibration data to determine optimal
+     * scaling factors and zero points for each layer.
+     * 
+     * @param weights Layer weights to analyze
+     * @param calibration_data Representative input data
+     * @param layer_name Name of the layer being analyzed
+     */
+    void collect_statistics(const std::vector<std::reference_wrapper<Matrix>>& weights,
+                            const std::vector<Matrix>& calibration_data,
+                            const std::string& layer_name);
 
-public:
-  QuantizationAwareTraining(bool symmetric = true)
-      : use_symmetric_quantization(symmetric) {}
+    /**
+     * @brief Performs symmetric quantization of weights.
+     * 
+     * Quantizes weights using symmetric scaling around zero,
+     * which is often preferred for weight quantization.
+     * 
+     * @param weights Weights to quantize
+     * @param scale Scaling factor
+     * @param bits Number of quantization bits
+     * @return Quantized weights
+     */
+    Matrix symmetric_quantize(const Matrix& weights, float scale, int bits);
 
-  void calibrate(const Transformer &model,
-                 const std::vector<Matrix> &calibration_data) {
-    auto all_weights = model.get_layer_weights();
-    for (size_t i = 0; i < all_weights.size(); ++i) {
-      std::string layer_name = "layer_" + std::to_string(i);
-      collect_statistics(all_weights[i], calibration_data, layer_name);
-    }
-  }
+  public:
+    /**
+     * @brief Constructs a QAT trainer.
+     * @param symmetric Whether to use symmetric quantization (default: true)
+     */
+    QuantizationAwareTraining(bool symmetric = true) : use_symmetric_quantization(symmetric) {}
 
-  Matrix quantize_weights(const Matrix &weights,
-                          const std::string &layer_name) {
-    const auto &params = layer_params[layer_name];
-    return symmetric_quantize(weights, params.scale, params.bits);
-  }
+    /**
+     * @brief Calibrates quantization parameters using representative data.
+     * 
+     * Analyzes the model and calibration data to determine optimal
+     * quantization parameters for each layer.
+     * 
+     * @param model Transformer model to analyze
+     * @param calibration_data Representative input data for calibration
+     */
+    void calibrate(const Transformer& model, const std::vector<Matrix>& calibration_data);
+
+    /**
+     * @brief Quantizes weights of a specific layer.
+     * 
+     * Applies quantization using the calibrated parameters
+     * for the specified layer.
+     * 
+     * @param weights Weights to quantize
+     * @param layer_name Name of the layer
+     * @return Quantized weights
+     */
+    Matrix quantize_weights(const Matrix& weights, const std::string& layer_name);
 };

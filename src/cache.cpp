@@ -19,7 +19,7 @@ void KVCache::update(const Matrix& new_keys, const Matrix& new_values) {
         // Concatenate with existing cache
         Matrix new_key_cache(key_cache.rows() + new_keys.rows(), new_keys.cols());
         Matrix new_value_cache(value_cache.rows() + new_values.rows(), new_values.cols());
-        
+
         // Copy existing cache
         for (size_t i = 0; i < key_cache.rows(); i++) {
             for (size_t j = 0; j < key_cache.cols(); j++) {
@@ -27,7 +27,7 @@ void KVCache::update(const Matrix& new_keys, const Matrix& new_values) {
                 new_value_cache(i, j) = value_cache(i, j);
             }
         }
-        
+
         // Copy new values
         for (size_t i = 0; i < new_keys.rows(); i++) {
             for (size_t j = 0; j < new_keys.cols(); j++) {
@@ -35,7 +35,7 @@ void KVCache::update(const Matrix& new_keys, const Matrix& new_values) {
                 new_value_cache(i + value_cache.rows(), j) = new_values(i, j);
             }
         }
-        
+
         key_cache = std::move(new_key_cache);
         value_cache = std::move(new_value_cache);
     }
