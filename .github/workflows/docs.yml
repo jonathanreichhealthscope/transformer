@@ -42,6 +42,9 @@ jobs:
         sed -i 's/EXTRACT_STATIC.*=.*/EXTRACT_STATIC = YES/' Doxyfile
         sed -i 's/RECURSIVE.*=.*/RECURSIVE = YES/' Doxyfile
         sed -i 's/EXCLUDE_PATTERNS.*=.*/EXCLUDE_PATTERNS = */build/* */test/*/' Doxyfile
+        sed -i 's/USE_MDFILE_AS_MAINPAGE.*=.*/USE_MDFILE_AS_MAINPAGE = README.md/' Doxyfile
+        sed -i 's/MARKDOWN_SUPPORT.*=.*/MARKDOWN_SUPPORT = YES/' Doxyfile
+        sed -i 's/GENERATE_TREEVIEW.*=.*/GENERATE_TREEVIEW = YES/' Doxyfile
 
     - name: Generate documentation
       run: |
