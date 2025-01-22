@@ -24,7 +24,6 @@ class Vocabulary {
     int bos_token_id;                                  ///< ID for beginning-of-sequence token
     int eos_token_id;                                  ///< ID for end-of-sequence token
     int mask_token_id;                                 ///< ID for mask token
-    std::vector<std::string> tokens;
 
     /**
      * @brief Adds a word to the vocabulary.
@@ -145,5 +144,5 @@ class Vocabulary {
      */
     void load_nouns(const std::string& noun_file_path);
 
-    const std::vector<std::string>& get_vocabulary() const { return tokens; }
+    const std::vector<std::string>& get_vocabulary() const { return id_to_token; }
 };
