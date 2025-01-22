@@ -525,31 +525,59 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
 
     // Compute gradients for attention mechanism
     Matrix d_query = compute_query_gradients(grad, input_matrix);
+    std::cout << "d_query dimensions: " << d_query.rows() << "x" << d_query.cols() << std::endl;
     Matrix d_key = compute_key_gradients(grad, input_matrix);
+    std::cout << "d_key dimensions: " << d_key.rows() << "x" << d_key.cols() << std::endl;
     Matrix d_value = compute_value_gradients(grad, input_matrix);
+    std::cout << "d_value dimensions: " << d_value.rows() << "x" << d_value.cols() << std::endl;
 
     // Combine gradients
     Matrix d_input = combine_gradients(d_query, d_key, d_value);
-
+    std::cout << "d_input dimensions: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+    
     // Update projection gradients
-    query_proj_grad += matmul(input_matrix.transpose(), d_query);
-    key_proj_grad += matmul(input_matrix.transpose(), d_key);
-    value_proj_grad += matmul(input_matrix.transpose(), d_value);
-    output_proj_grad += matmul(grad.transpose(), input_matrix);
+    std::cout << "Updating projection gradients..." << std::endl;
+    
+    // Project attention scores back to hidden dimensions for query
+    Matrix d_query_hidden(d_query.rows(), input_matrix.cols());  // [seq_len x hidden_dim]
+    cuda::matmul(d_query, query_proj, d_query_hidden);
+    query_proj_grad += matmul(input_matrix.transpose(), d_query_hidden);
+    std::cout << "query_proj_grad dimensions: " << query_proj_grad.rows() << "x" << query_proj_grad.cols() << std::endl;
+
+    // Project attention scores back to hidden dimensions for key
+    Matrix d_key_hidden(d_key.rows(), input_matrix.cols());
+    cuda::matmul(d_key, key_proj, d_key_hidden);
+    key_proj_grad += matmul(input_matrix.transpose(), d_key_hidden);
+    std::cout << "key_proj_grad dimensions: " << key_proj_grad.rows() << "x" << key_proj_grad.cols() << std::endl;
+
+    // Project attention scores back to hidden dimensions for value
+    Matrix d_value_hidden(d_value.rows(), input_matrix.cols());
+    cuda::matmul(d_value, value_proj, d_value_hidden);
+    value_proj_grad += matmul(input_matrix.transpose(), d_value_hidden);
+    std::cout << "value_proj_grad dimensions: " << value_proj_grad.rows() << "x" << value_proj_grad.cols() << std::endl;
+
+    // For output projection, we already have grad in hidden dimensions
+    output_proj_grad += matmul(grad.transpose(), input_matrix);  // This one is already correct
+    std::cout << "output_proj_grad dimensions: " << output_proj_grad.rows() << "x" << output_proj_grad.cols() << std::endl;
 
     // Update bias gradients
     Vector d_query_bias = d_query.row_sum();
+    std::cout << "d_query_bias dimensions: " << d_query_bias.size() << std::endl;   
     Vector d_key_bias = d_key.row_sum();
+    std::cout << "d_key_bias dimensions: " << d_key_bias.size() << std::endl;
     Vector d_value_bias = d_value.row_sum();
+    std::cout << "d_value_bias dimensions: " << d_value_bias.size() << std::endl;
     Vector d_output_bias = grad.row_sum();
+    std::cout << "d_output_bias dimensions: " << d_output_bias.size() << std::endl;
 
     // Update bias gradients element by element
+    std::cout << "Updating bias gradients..." << std::endl;
     for (size_t i = 0; i < query_bias_grad.size(); ++i) {
         query_bias_grad[i] += d_query_bias[i];
         key_bias_grad[i] += d_key_bias[i];
         value_bias_grad[i] += d_value_bias[i];
     }
-
+    std::cout << "Updated query bias gradients" << std::endl;
     for (size_t i = 0; i < output_bias_grad.size(); ++i) {
         output_bias_grad[i] += d_output_bias[i];
     }
@@ -953,4 +981,61 @@ void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
             }
         }
     }
+}
+
+Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
+    // Should produce (seq_len x seq_len) for attention scores
+    int seq_len = input.rows();
+    Matrix d_query(seq_len, seq_len);  // Attention scores dimensions
+    
+    // First compute attention score gradients
+    cuda::compute_attention_scores(grad, input, d_query, 1.0f / std::sqrt(float(input.cols())), num_heads);
+    
+    std::cout << "compute_query_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+
+    return d_query;
+}
+
+Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
+    int seq_len = input.rows();
+    Matrix d_key(seq_len, seq_len);
+    cuda::matmul(grad, key_proj.transpose(), d_key);
+    
+    std::cout << "compute_key_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "key_proj: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
+    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
+    
+    return d_key;
+}
+
+Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
+    int seq_len = input.rows();
+    Matrix d_value(seq_len, seq_len);
+    cuda::matmul(grad, value_proj.transpose(), d_value);
+    
+    std::cout << "compute_value_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "value_proj: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
+    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    
+    return d_value;
+}
+
+Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value) {
+    // Combine the gradients from Q, K, V projections
+    Matrix combined = d_query;
+    combined += d_key;
+    combined += d_value;
+    
+    std::cout << "combine_gradients dimensions:" << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
+    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
+    
+    return combined;
 }

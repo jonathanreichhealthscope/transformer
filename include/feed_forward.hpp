@@ -78,37 +78,7 @@ class FeedForward {
      * @param input Original input tensor
      * @return Gradient with respect to the input
      */
-    Matrix backward(const Matrix& grad_output, const Matrix& input) {
-        input_cache_ = input;  // Cache input for backward pass
-        if (training_) {
-            // Compute gradients
-            dW2_ = matmul(grad_output.transpose(), intermediate_cache);
-            db2_ = grad_output.row_sum();
-            
-            // Backpropagate through second layer
-            Matrix dx = matmul(grad_output, w2.transpose());
-            
-            // Apply dropout mask if in training mode
-            dx = dx.hadamard(dropout_mask_);
-            
-            // Compute gradients for first layer
-            dW1_ = matmul(input.transpose(), dx);
-            db1_ = dx.row_sum();
-            
-            update_parameters(dx);
-            return dx;
-        } else {
-            // Simpler backward pass for inference
-            return matmul(grad_output, w2.transpose());
-        }
-    }
-
-    /**
-     * @brief CUDA-accelerated version of the backward pass.
-     * @param grad Gradient of the loss with respect to the output
-     * @return Gradient with respect to the input
-     */
-    Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
+    Matrix backward(const Matrix& grad_output, const Matrix& input);
 
     /**
      * @brief Saves the feed-forward network parameters to a stream.

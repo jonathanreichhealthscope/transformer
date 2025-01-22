@@ -56,14 +56,17 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
     // Cache the normalized input for feed forward backward pass
     std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
     GradientCheckpoint::cache_activation(ffn_key, norm1);
-
+    std::cout << "Cached normalized input for feed forward: " << norm1.rows() << "x"
+                  << norm1.cols() << std::endl;
     // Feed forward
     Matrix ff_output = feed_forward->forward(norm1);
+    std::cout << "FF output dimensions: " << ff_output.rows() << "x" << ff_output.cols() << std::endl;
     if (training) {
         ff_output = ffn_dropout->forward(ff_output, true);
     }
+    std::cout << "FF dropout dimensions: " << ff_output.rows() << "x" << ff_output.cols() << std::endl;
     residual = ff_output + norm1;
-
+    std::cout << "Residual dimensions: " << residual.rows() << "x" << residual.cols() << std::endl;
     return ffn_ln->forward(residual);
 }
 
@@ -76,11 +79,16 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
 
     try {
         // Get the cached normalized input for feed forward
+        std::cout << "Getting cached normalized input for feed forward" << std::endl;
         std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
         Matrix ffn_normalized = GradientCheckpoint::get_activation(ffn_key);
+        std::cout << "Cached normalized input for feed forward: " << ffn_normalized.rows() << "x"
+                  << ffn_normalized.cols() << std::endl;
 
         // Backward through feed forward network
         Matrix ff_dropout_grad = training ? ffn_dropout->backward(grad_output) : grad_output;
+        std::cout << "FF dropout grad dimensions: " << ff_dropout_grad.rows() << "x"
+                  << ff_dropout_grad.cols() << std::endl;
         Matrix ffn_grad = feed_forward->backward(ff_dropout_grad, ffn_normalized);
         std::cout << "FFN grad dimensions: " << ffn_grad.rows() << "x" << ffn_grad.cols()
                   << std::endl;
@@ -111,10 +119,13 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
         // Get the cached normalized input for attention
         std::string attn_key = "attn_norm_" + std::to_string(layer_idx);
         Matrix attn_normalized = GradientCheckpoint::get_activation(attn_key);
-
+        std::cout << "Cached normalized input for attention: " << attn_normalized.rows() << "x"
+                  << attn_normalized.cols() << std::endl;
         // Backward through self attention
         Matrix attn_dropout_grad =
             training ? attention_dropout->backward(residual_grad) : residual_grad;
+        std::cout << "Attention dropout grad dimensions: " << attn_dropout_grad.rows() << "x"
+                  << attn_dropout_grad.cols() << std::endl;
         Matrix attention_grad =
             self_attention->backward(attn_dropout_grad, attn_normalized, target_distribution);
         std::cout << "Attention grad dimensions: " << attention_grad.rows() << "x"
