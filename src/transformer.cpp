@@ -196,27 +196,28 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
 
     // Get embeddings
     Matrix embeddings = token_embedding->forward(input_tokens);
-    
+    std::cout << "embedding dimensions: " << embeddings.shape() << std::endl;
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(embeddings);
     }
 
     // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
+    std::cout << "position_ids dimensions: " << position_ids.shape() << std::endl;
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
     Matrix pos_encodings = pos_encoding->forward(position_ids);
-    
+    std::cout << "pos_encodings dimensions: " << pos_encodings.shape() << std::endl;
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(pos_encodings);
     }
 
     embeddings += pos_encodings;
-
+    std::cout << "embeddings + pos_encodings dimensions: " << embeddings.shape() << std::endl;
     // Create causal mask for next-token prediction
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
-
+    
     // Forward through layers with stability checks
     hidden_states = embeddings;
     m_layer_activations.clear();                // Clear previous activations
@@ -225,6 +226,7 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
     // Add dropout after embeddings
     if (training && dropout) {
         hidden_states = dropout->forward(hidden_states, true);
+        std::cout << "hidden_states dimensions after dropout: " << hidden_states.shape() << std::endl;
     }
 
     for (size_t i = 0; i < layers.size(); ++i) {
@@ -233,7 +235,7 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
             hidden_states = layers[i]->forward(hidden_states, mask,
                                                use_cache ? std::optional<KVCache>(m_kv_caches[i])
                                                          : std::nullopt);
-            
+            std::cout << "hidden_states dimensions after layer " << i << ": " << hidden_states.shape() << std::endl;
             // Convert back to FP32 at the end
             if (use_fp16 && i == layers.size() - 1) {
                 HalfPrecisionTraining::convert_to_fp32(hidden_states);

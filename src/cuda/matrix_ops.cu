@@ -23,6 +23,18 @@ namespace cuda {
     }
 
     void matmul(const Matrix& A, const Matrix& B, Matrix& C) {
+        // Verify dimensions
+        if (A.cols() != B.rows()) {
+            throw std::runtime_error("Matrix multiplication dimension mismatch: " +
+                std::to_string(A.rows()) + "x" + std::to_string(A.cols()) + " * " +
+                std::to_string(B.rows()) + "x" + std::to_string(B.cols()));
+        }
+        // Ensure output matrix has correct dimensions
+        if (C.rows() != A.rows() || C.cols() != B.cols()) {
+            throw std::runtime_error("Output matrix has wrong dimensions: expected " +
+                std::to_string(A.rows()) + "x" + std::to_string(B.cols()) + " got " +
+                std::to_string(C.rows()) + "x" + std::to_string(C.cols()));
+        }
         dim3 block(32, 32);
         dim3 grid((B.cols() + 31) / 32, (A.rows() + 31) / 32);
         

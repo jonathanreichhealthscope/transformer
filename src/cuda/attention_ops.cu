@@ -13,10 +13,24 @@ namespace cuda {
     CUDA_KERNEL void attention_kernel(const float* Q, const float* K, const float* V,
                                    float* output, int batch_size, int seq_len, int head_dim);
 
-    void compute_attention_scores(const Matrix& Q, const Matrix& K, Matrix& scores, float scale) {
-        dim3 block(16, 16);
-        dim3 grid((scores.cols() + 15) / 16, (scores.rows() + 15) / 16);
+    void compute_attention_scores(const Matrix& Q, const Matrix& K, Matrix& scores, float scale, int num_heads) {
+        // Q and K are [batch_size x hidden_dim]
+        int batch_size = Q.rows();
+        int hidden_dim = Q.cols();
+        int head_dim = hidden_dim / num_heads;
+        int seq_len = batch_size;  // In this case, seq_len is same as batch_size
+        
+        // Verify scores dimensions
+        if (scores.rows() != batch_size || scores.cols() != seq_len) {
+            throw std::runtime_error("Scores matrix has wrong dimensions: expected " +
+                std::to_string(batch_size) + "x" + std::to_string(seq_len) + " got " +
+                std::to_string(scores.rows()) + "x" + std::to_string(scores.cols()));
+        }
 
+        // Launch kernel with correct dimensions
+        dim3 block(32, 32);
+        dim3 grid((seq_len + 31) / 32, (seq_len + 31) / 32);
+        
         float* d_Q, *d_K, *d_scores;
         size_t Q_size = Q.size() * sizeof(float);
         size_t K_size = K.size() * sizeof(float);
@@ -28,9 +42,9 @@ namespace cuda {
 
         CUDA_CHECK(cudaMemcpy(d_Q, Q.data(), Q_size, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_K, K.data(), K_size, cudaMemcpyHostToDevice));
-
-        attention_scores_kernel<<<grid, block>>>(d_Q, d_K, d_scores, scale, 
-                                               scores.rows(), Q.cols());
+        
+        attention_scores_kernel<<<grid, block>>>(d_Q, d_K, d_scores,
+            scale, seq_len, head_dim);
 
         CUDA_CHECK(cudaMemcpy(scores.data(), d_scores, scores_size, cudaMemcpyDeviceToHost));
 

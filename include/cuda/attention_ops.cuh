@@ -5,7 +5,7 @@
 
 namespace cuda {
     // Attention operation wrappers
-    void compute_attention_scores(const Matrix& Q, const Matrix& K, Matrix& scores, float scale);
+    void compute_attention_scores(const Matrix& Q, const Matrix& K, Matrix& scores, float scale, int num_heads = 1);
     void apply_softmax(Matrix& matrix);
     void attention_forward(const Matrix& Q, const Matrix& K, const Matrix& V, 
                          Matrix& output, int batch_size, int num_heads, int seq_len);

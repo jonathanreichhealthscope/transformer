@@ -145,27 +145,39 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
         Matrix Q = query_proj.forward(input);
         Matrix K = key_proj.forward(input);
         Matrix V = value_proj.forward(input);
-
+        std::cout << "Q dimensions: " << Q.shape() << std::endl;
+        std::cout << "K dimensions: " << K.shape() << std::endl;
+        std::cout << "V dimensions: " << V.shape() << std::endl;
         // Reshape for multi-head attention
         int batch_size = input.rows();
         int seq_len = input.cols();
+        std::cout << "input dimensions: " << input.shape() << std::endl;
         
 #ifdef USE_CUDA
         try {
             // Use CUDA for attention computation
-            Matrix scores(seq_len, seq_len);
-            cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim));
-
-            // Apply mask if provided
+            Matrix scores(batch_size, seq_len);  // [batch_size x seq_len]
+            std::cout << "scores dimensions: " << scores.shape() << std::endl;
+            cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
+            std::cout << "computed attention scores" << std::endl;
             if (mask) {
+                std::cout << "mask dimensions: " << mask.value().shape() << std::endl;
                 scores += mask.value();
             }
-
+            std::cout << "scores dimensions after mask: " << scores.shape() << std::endl;
             cuda::apply_softmax(scores);
+            std::cout << "applied softmax" << std::endl;
+            std::cout << "scores dimensions after softmax: " << scores.shape() << std::endl;
 
-            Matrix output(seq_len, V.cols());
+            Matrix output(batch_size * num_heads, V.cols());  // Preserve batch dimension
+            std::cout << "output dimensions: " << output.shape() << std::endl;
             cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
-            return output_proj.forward(output);
+            std::cout << "output dimensions after attention forward: " << output.shape() << std::endl;
+            
+            // Reshape output before projection
+            Matrix reshaped_output(batch_size, num_heads * head_dim);
+            // TODO: Add reshape operation here
+            return output_proj.forward(reshaped_output);  // Project back to hidden_size
         } catch (const std::runtime_error& e) {
             std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
 #endif
@@ -179,6 +191,7 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
 
             scores.apply_softmax();
             Matrix output = matmul(scores, V);
+            std::cout << "output dimensions after matmul: " << output.shape() << std::endl;
             return output_proj.forward(output);
 #ifdef USE_CUDA
         }
@@ -276,22 +289,22 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
       num_kv_heads(num_kv_heads_), max_seq_length(max_seq_length_),
       use_fp16_(use_fp16),
       // Initialize matrices with correct dimensions
-      query_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      key_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      value_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      output_proj(Matrix(num_heads_ * head_dim_, hidden_size_)),
+      query_proj(Matrix(hidden_size_, hidden_size_)),
+      key_proj(Matrix(hidden_size_, hidden_size_)),
+      value_proj(Matrix(hidden_size_, hidden_size_)),
+      output_proj(Matrix(hidden_size_, hidden_size_)),
       // Initialize bias vectors
-      query_bias(FloatVector(num_heads_ * head_dim_)),
-      key_bias(FloatVector(num_heads_ * head_dim_)),
-      value_bias(FloatVector(num_heads_ * head_dim_)), output_bias(FloatVector(hidden_size_)),
+      query_bias(FloatVector(hidden_size_ * num_heads_)),
+      key_bias(FloatVector(hidden_size_ * num_heads_)),
+      value_bias(FloatVector(hidden_size_ * num_heads_)), output_bias(FloatVector(hidden_size_)),
       // Initialize gradients with same dimensions as their parameters
-      query_proj_grad(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      key_proj_grad(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      value_proj_grad(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      output_proj_grad(Matrix(num_heads_ * head_dim_, hidden_size_)),
-      query_bias_grad(FloatVector(num_heads_ * head_dim_)),
-      key_bias_grad(FloatVector(num_heads_ * head_dim_)),
-      value_bias_grad(FloatVector(num_heads_ * head_dim_)),
+      query_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      key_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      value_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      output_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      query_bias_grad(FloatVector(hidden_size_ * num_heads_)),
+      key_bias_grad(FloatVector(hidden_size_ * num_heads_)),
+      value_bias_grad(FloatVector(hidden_size_ * num_heads_)),
       output_bias_grad(FloatVector(hidden_size_)) {
 
     std::cout << "\n=== MultiHeadAttention::constructor START ===" << std::endl;

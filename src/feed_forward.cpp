@@ -23,9 +23,13 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
       dW1_(hidden_size, intermediate_size), dW2_(intermediate_size, hidden_size),
       db1_(intermediate_size), db2_(hidden_size) {
 
-    std::cout << "FeedForward dimensions:" << std::endl;
+    std::cout << "\n=== FeedForward Constructor Dimensions ===" << std::endl;
+    std::cout << "Hidden size: " << hidden_size << std::endl;
+    std::cout << "Intermediate size: " << intermediate_size << std::endl;
     std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
     std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
+    std::cout << "b1 size: " << b1.size() << std::endl;
+    std::cout << "b2 size: " << b2.size() << std::endl;
 
     // Initialize weights with Xavier/Glorot initialization
     std::random_device rd;
@@ -77,6 +81,13 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
 
 Matrix FeedForward::forward(const Matrix& input) {
     try {
+        std::cout << "\n=== FeedForward Dimensions Debug ===" << std::endl;
+        std::cout << "Input: " << input.rows() << "x" << input.cols() << std::endl;
+        std::cout << "W1: " << w1.rows() << "x" << w1.cols() << std::endl;
+        std::cout << "W2: " << w2.rows() << "x" << w2.cols() << std::endl;
+        std::cout << "B1: " << b1.size() << std::endl;
+        std::cout << "B2: " << b2.size() << std::endl;
+
 #ifdef USE_CUDA
         try {
             // Use CUDA memory manager for efficient memory allocation
@@ -85,18 +96,31 @@ Matrix FeedForward::forward(const Matrix& input) {
             // Allocate intermediate results
             Matrix intermediate(input.rows(), w1.cols());
             cuda::matmul(input, w1, intermediate);
+            std::cout << "After first matmul - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             
             // Apply bias and activation
             intermediate.add_bias(b1);
-            cuda::gelu_forward(intermediate);  // New CUDA GELU implementation
+            cuda::gelu_forward(intermediate);
             
             // Store for backward pass
             intermediate_cache = intermediate;
             
-            // Compute final output
-            Matrix output(intermediate.rows(), w2.cols());
+            // Explicitly preserve input batch size
+            Matrix output(input.rows(), w2.cols());  // Force output to be 1019 x hidden_size
             cuda::matmul(intermediate, w2, output);
+            std::cout << "After second matmul - Output: " << output.rows() << "x" << output.cols() << std::endl;
             output.add_bias(b2);
+            
+            // Check dimensions before residual connection
+            if (output.rows() != input.rows() || output.cols() != input.cols()) {
+                throw std::runtime_error("FeedForward output dimensions " + 
+                    std::to_string(output.rows()) + "x" + std::to_string(output.cols()) +
+                    " don't match input dimensions " + 
+                    std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
+            }
+            
+            // Add residual connection
+            output += input;  // This is where the dimension mismatch occurs
             
             return output;
         } catch (const std::runtime_error& e) {
@@ -110,6 +134,18 @@ Matrix FeedForward::forward(const Matrix& input) {
             
             Matrix output = matmul(intermediate, w2);
             output.add_bias(b2);
+            
+            // Check dimensions before residual connection
+            if (output.rows() != input.rows() || output.cols() != input.cols()) {
+                throw std::runtime_error("FeedForward output dimensions " + 
+                    std::to_string(output.rows()) + "x" + std::to_string(output.cols()) +
+                    " don't match input dimensions " + 
+                    std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
+            }
+            
+            // Add residual connection
+            output += input;  // This is where the dimension mismatch occurs
+            
             return output;
 #ifdef USE_CUDA
         }
