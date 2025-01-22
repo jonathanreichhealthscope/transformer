@@ -101,6 +101,26 @@ void layer_norm_backward(const Matrix& grad_output, const Matrix& input,
     CUDA_CHECK(cudaFree(d_grad_beta));
 }
 
+void layer_norm_forward(const Matrix& input, const Matrix& gamma, const Matrix& beta,
+                          Matrix& output, float eps) {
+    const int batch_size = input.rows();
+    const int hidden_size = input.cols();
+    
+    float* d_input, *d_gamma, *d_beta, *d_output;
+    
+    CUDA_CHECK(cudaMalloc(&d_input, input.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_gamma, gamma.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_beta, beta.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_output, output.size() * sizeof(float)));
+    
+    // ... implementation details ...
+    
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_gamma));
+    CUDA_CHECK(cudaFree(d_beta));
+    CUDA_CHECK(cudaFree(d_output));
+}
+
 } // namespace cuda
 
 #endif // USE_CUDA

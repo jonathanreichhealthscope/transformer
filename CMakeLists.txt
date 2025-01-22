@@ -207,12 +207,13 @@ if(CUDAToolkit_FOUND)
         src/cuda/token_embedding_cuda.cu
         src/cuda/layernorm_cuda.cu
         src/cuda/gqa_kernels.cu
+        src/cuda/beam_search_ops.cu
+        src/cuda/tokenizer_kernels.cu
     )
 
-    # Set CUDA properties for the kernels library
     set_target_properties(cuda_kernels PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
-        POSITION_INDEPENDENT_CODE ON
+        LANGUAGE CUDA
     )
 
     # Link CUDA libraries to cuda_kernels

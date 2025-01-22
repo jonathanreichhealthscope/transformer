@@ -3,13 +3,14 @@
 #include "../../include/cuda/attention_ops.cuh"
 #include "../../include/cuda/cuda_check.cuh"
 #include "../../include/cuda/cuda_utils.cuh"
+#include "../../include/cuda/kernel_declarations.cuh"
 
 namespace cuda {
     // Forward declare kernels
-    __global__ void attention_scores_kernel(const float* Q, const float* K, float* scores,
-                                          float scale, int seq_len, int head_dim);
-    __global__ void softmax_kernel(float* matrix, int rows, int cols);
-    __global__ void attention_kernel(const float* Q, const float* K, const float* V,
+    CUDA_KERNEL void attention_scores_kernel(const float* Q, const float* K, float* scores,
+                                                      float scale, int seq_len, int head_dim);
+    CUDA_KERNEL void softmax_kernel(float* matrix, int rows, int cols);
+    CUDA_KERNEL void attention_kernel(const float* Q, const float* K, const float* V,
                                    float* output, int batch_size, int seq_len, int head_dim);
 
     void compute_attention_scores(const Matrix& Q, const Matrix& K, Matrix& scores, float scale) {
@@ -92,8 +93,8 @@ namespace cuda {
 }
 
 // Kernel implementations
-__global__ void attention_scores_kernel(const float* Q, const float* K, float* scores,
-                                      float scale, int seq_len, int head_dim) {
+CUDA_KERNEL void attention_scores_kernel(const float* Q, const float* K, float* scores,
+                                                    float scale, int seq_len, int head_dim) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     int col = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -106,7 +107,7 @@ __global__ void attention_scores_kernel(const float* Q, const float* K, float* s
     }
 }
 
-__global__ void softmax_kernel(float* matrix, int rows, int cols) {
+CUDA_KERNEL void softmax_kernel(float* matrix, int rows, int cols) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (row < rows) {
@@ -130,7 +131,7 @@ __global__ void softmax_kernel(float* matrix, int rows, int cols) {
     }
 }
 
-__global__ void attention_kernel(const float* Q, const float* K, const float* V,
+CUDA_KERNEL void attention_kernel(const float* Q, const float* K, const float* V,
                                float* output, int batch_size, int seq_len, int head_dim) {
     int b = blockIdx.x;  // batch index
     int h = blockIdx.y;  // head index
