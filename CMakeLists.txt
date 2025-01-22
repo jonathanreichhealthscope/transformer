@@ -197,6 +197,9 @@ endif()
 # Add CUDA kernels library only if CUDA is found
 if(CUDAToolkit_FOUND)
     add_library(cuda_kernels STATIC
+        src/cuda/matrix_ops.cu
+        src/cuda/attention_ops.cu
+        src/cuda/backward_ops.cu
         src/cuda/feed_forward_kernels.cu
         src/cuda/half_precision_kernels.cu
         src/cuda/cuda_utils.cu
@@ -217,18 +220,20 @@ if(CUDAToolkit_FOUND)
         PUBLIC
         CUDA::cudart
         CUDA::cublas
+        CUDA::curand
+    )
+
+    # Add CUDA include directories
+    target_include_directories(cuda_kernels
+        PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
+        ${PROJECT_SOURCE_DIR}/include/cuda
     )
 
     # Link cuda_kernels to transformer_lib
     target_link_libraries(transformer_lib
         PUBLIC
         cuda_kernels
-    )
-
-    # Link CUDA libraries to transformer_lib
-    target_link_libraries(transformer_lib
-        PUBLIC ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
-        PRIVATE ${CUDA_LIBRARIES} ${CUBLAS_LIBRARIES}
     )
 endif()
 
@@ -239,3 +244,41 @@ target_sources(transformer_lib PRIVATE
 
 find_package(nlohmann_json 3.2.0 REQUIRED)
 target_link_libraries(transformer_lib PRIVATE nlohmann_json::nlohmann_json)
+
+# Add CUDA include directories
+target_include_directories(transformer_lib
+    PRIVATE
+    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
+    ${PROJECT_SOURCE_DIR}/include/cuda
+)
+
+if(USE_CUDA)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    
+    # Set CUDA architectures
+    set(CMAKE_CUDA_ARCHITECTURES 86)
+    
+    # Add CUDA compilation flags
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
+    
+    # Add CUDA sources to library
+    target_sources(transformer_lib 
+        PRIVATE 
+        ${CUDA_SOURCES}
+    )
+    
+    # Link CUDA libraries
+    target_link_libraries(transformer_lib
+        PRIVATE
+        CUDA::cudart
+        CUDA::cublas
+        CUDA::curand
+    )
+    
+    # Define CUDA macro
+    target_compile_definitions(transformer_lib
+        PRIVATE
+        USE_CUDA
+    )
+endif()

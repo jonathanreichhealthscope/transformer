@@ -10,6 +10,8 @@
 #include <iostream>
 #include <string>
 #include "../include/half_precision.hpp"
+#include "../include/cuda/attention_ops.cuh"
+#include "../include/cuda/matrix_ops.cuh"
 
 extern PerformanceMetrics metrics;
 
@@ -136,228 +138,53 @@ Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, con
     return O;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
-                                   const std::optional<KVCache>& kv_cache) {
-    metrics.start_timer("attention_computation");
-
-    // Get use_fp16 from member variable instead of global config
-    static const bool use_fp16 = use_fp16_;
-    
-    // Convert input to FP16 if needed
-    Matrix input_matrix = x;
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(input_matrix);
-    }
-
-    std::cout << "Checking GQA configuration:" << std::endl;
-    std::cout << "- use_gqa: " << (use_gqa ? "true" : "false") << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
-    std::cout << "- num_kv_heads: " << num_kv_heads << std::endl;
-
-    // Use GQA if enabled
-    if (use_gqa && num_kv_heads != num_heads) {
-        std::cout << "About to call GroupedQueryAttention::forward" << std::endl;
-        GroupedQueryAttention gqa(hidden_size, num_heads, num_kv_heads, head_dim, dropout_prob);
-        
-        // Convert back to FP32 before GQA if using FP16
-        if (use_fp16) {
-            HalfPrecisionTraining::convert_to_fp32(input_matrix);
-        }
-        
-        Matrix gqa_output = gqa.forward(input_matrix, mask, kv_cache);
-        
-        // Convert GQA output to FP16 if needed
-        if (use_fp16) {
-            HalfPrecisionTraining::convert_to_fp16(gqa_output);
-        }
-        
-        return gqa_output;
-    }
-
-    // Regular attention implementation continues...
-    std::cout << "=== MultiHeadAttention::forward START ===" << std::endl;
-    std::cout << "Input shape: " << x.rows() << "x" << x.cols() << std::endl;
-
-    // Calculate true batch size and sequence length
-    const size_t seq_len = mask.mask.rows();      // Get sequence length from mask
-    const size_t batch_size = x.rows() / seq_len; // Correct: batch_size = total_rows / seq_len
-
-    std::cout << "Calculated dimensions:" << std::endl;
-    std::cout << "- batch_size: " << batch_size << std::endl;
-    std::cout << "- seq_len: " << seq_len << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
-    std::cout << "- head_dim: " << head_dim << std::endl;
-
-// Project input to Q, K, V
-#ifdef CUDA_AVAILABLE
-    std::cout << "\n=== CUDA EXECUTION PATH ===" << std::endl;
-    std::cout << "CUDA is available and will be used for matrix operations" << std::endl;
-    // Move matrices to GPU
-    std::cout << "Moving matrices to GPU..." << std::endl;
-    Matrix Q, K, V;
+Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask, 
+                                 const std::optional<KVCache>& kv_cache) {
     try {
-        Matrix x_gpu = input_matrix.to_gpu();
-        std::cout << "x moved to GPU successfully" << std::endl;
-        Matrix query_proj_gpu = query_proj.to_gpu();
-        std::cout << "query_proj moved to GPU successfully" << std::endl;
-        Matrix key_proj_gpu = key_proj.to_gpu();
-        std::cout << "key_proj moved to GPU successfully" << std::endl;
-        Matrix value_proj_gpu = value_proj.to_gpu();
-        std::cout << "value_proj moved to GPU successfully" << std::endl;
+        // Project input to Q, K, V
+        Matrix Q = query_proj.forward(input);
+        Matrix K = key_proj.forward(input);
+        Matrix V = value_proj.forward(input);
 
-        // Project input using CUDA
-        std::cout << "Performing CUDA matrix multiplications..." << std::endl;
-        Q = cuda_matmul(x_gpu, query_proj_gpu);
-        std::cout << "Q computation successful" << std::endl;
-        K = cuda_matmul(x_gpu, key_proj_gpu);
-        std::cout << "K computation successful" << std::endl;
-        V = cuda_matmul(x_gpu, value_proj_gpu);
-        std::cout << "V computation successful" << std::endl;
-        std::cout << "=== CUDA operations completed successfully ===" << std::endl;
-    } catch (const std::runtime_error& e) {
-        std::cout << "\n=== CUDA EXECUTION FAILED - Falling back to CPU ===" << std::endl;
-        std::cerr << "CUDA error: " << e.what() << std::endl;
-        std::cerr << "Falling back to CPU implementation" << std::endl;
-        // Fall back to CPU implementation
-        Q = matmul(input_matrix, query_proj);
-        K = matmul(input_matrix, key_proj);
-        V = matmul(input_matrix, value_proj);
-    }
-#else
-    // CPU fallback
-    Q = matmul(input_matrix, query_proj);
-    K = matmul(input_matrix, key_proj);
-    V = matmul(input_matrix, value_proj);
+        // Reshape for multi-head attention
+        int batch_size = input.rows();
+        int seq_len = input.cols();
+        
+#ifdef USE_CUDA
+        try {
+            // Use CUDA for attention computation
+            Matrix scores(seq_len, seq_len);
+            cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim));
+
+            // Apply mask if provided
+            if (mask) {
+                scores += mask.value();
+            }
+
+            cuda::apply_softmax(scores);
+
+            Matrix output(seq_len, V.cols());
+            cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
+            return output_proj.forward(output);
+        } catch (const std::runtime_error& e) {
+            std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
 #endif
+            // CPU fallback implementation
+            Matrix scores = matmul(Q, K.transpose());
+            scores *= (1.0f / std::sqrt(head_dim));
 
-    // Convert Q,K,V to FP16 if needed
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(Q);
-        HalfPrecisionTraining::convert_to_fp16(K);
-        HalfPrecisionTraining::convert_to_fp16(V);
-    }
-
-    // Handle KV cache if present
-    if (kv_cache) {
-        // Concatenate current K/V with cached K/V
-        Matrix new_K(K.rows() + kv_cache->key_cache.rows(), K.cols());
-        Matrix new_V(V.rows() + kv_cache->value_cache.rows(), V.cols());
-
-        // Copy cached values first
-        for (size_t i = 0; i < kv_cache->key_cache.rows(); i++) {
-            for (size_t j = 0; j < K.cols(); j++) {
-                new_K(i, j) = kv_cache->key_cache.at(i, j);
-                new_V(i, j) = kv_cache->value_cache.at(i, j);
+            if (mask) {
+                scores += mask.value();
             }
+
+            scores.apply_softmax();
+            Matrix output = matmul(scores, V);
+            return output_proj.forward(output);
+#ifdef USE_CUDA
         }
-
-        // Copy new values
-        for (size_t i = 0; i < K.rows(); i++) {
-            for (size_t j = 0; j < K.cols(); j++) {
-                new_K(i + kv_cache->key_cache.rows(), j) = K(i, j);
-                new_V(i + kv_cache->value_cache.rows(), j) = V(i, j);
-            }
-        }
-
-        // Log cache usage
-        std::cout << "Using KV cache:" << std::endl;
-        std::cout << "- Cached K shape: " << kv_cache->key_cache.rows() << "x"
-                  << kv_cache->key_cache.cols() << std::endl;
-        std::cout << "- Cached V shape: " << kv_cache->value_cache.rows() << "x"
-                  << kv_cache->value_cache.cols() << std::endl;
-        std::cout << "- New K shape: " << new_K.rows() << "x" << new_K.cols() << std::endl;
-        std::cout << "- New V shape: " << new_V.rows() << "x" << new_V.cols() << std::endl;
-
-        K = std::move(new_K);
-        V = std::move(new_V);
-    }
-
-    // Apply RoPE to Q and K if enabled
-    if (use_rope) {
-        // Check dimensions before applying RoPE
-        if (Q.cols() % 2 != 0) {
-            throw std::runtime_error("RoPE requires even dimension size, got: " +
-                                     std::to_string(Q.cols()));
-        }
-
-        // Apply RoPE to each position in the sequence
-        for (size_t pos = 0; pos < seq_len; pos++) {
-            for (size_t b = 0; b < batch_size; b++) {
-                size_t idx = b * seq_len + pos;
-                // Bounds check
-                if (idx >= Q.rows()) {
-                    throw std::runtime_error("RoPE index out of bounds: " + std::to_string(idx) +
-                                             " >= " + std::to_string(Q.rows()));
-                }
-
-                // Get row vectors for Q and K
-                Vector q_row(Q.cols());
-                Vector k_row(K.cols());
-                for (size_t j = 0; j < Q.cols(); j++) {
-                    q_row[j] = Q(idx, j);
-                    k_row[j] = K(idx, j);
-                }
-
-                // Apply RoPE
-                Vector q_rotated = apply_rope(q_row, pos);
-                Vector k_rotated = apply_rope(k_row, pos);
-
-                // Update matrices with rotated vectors
-                for (size_t j = 0; j < Q.cols(); j++) {
-                    Q(idx, j) = q_rotated[j];
-                    K(idx, j) = k_rotated[j];
-                }
-            }
-        }
-    }
-
-    std::cout << "Q shape: " << Q.rows() << "x" << Q.cols() << std::endl;
-    std::cout << "K shape: " << K.rows() << "x" << K.cols() << std::endl;
-    std::cout << "V shape: " << V.rows() << "x" << V.cols() << std::endl;
-
-    // Add debug output to verify flag
-    std::cout << "Using flash attention: " << (this->use_flash ? "true" : "false") << std::endl;
-
-    Matrix attention_output;
-    if (this->use_flash && !kv_cache) {
-        attention_output = flash_attention(Q, K, V, mask);
-    } else {
-        attention_output = standard_attention(Q, K, V, mask);
-    }
-
-    // Convert back to FP32 for output projection
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(attention_output);
-    }
-
-    std::cout << "Attention output before projection shape: " << attention_output.rows() << "x"
-              << attention_output.cols() << std::endl;
-
-    // Project output
-    Matrix output = matmul(attention_output, output_proj);
-    std::cout << "Final output shape: " << output.rows() << "x" << output.cols() << std::endl;
-    std::cout << "=== MultiHeadAttention::forward END ===" << std::endl;
-
-    try {
-        std::cout << "Recording attention metrics:" << std::endl;
-        std::cout << "- seq_len: " << seq_len << std::endl;
-        std::cout << "- num_heads: " << num_heads << std::endl;
-        std::cout << "- head_dim: " << head_dim << std::endl;
-        std::cout << "Recording FLOPS..." << std::endl;
-        metrics.record_attention_flops(seq_len, num_heads, head_dim);
-        std::cout << "Stopping timer..." << std::endl;
-        metrics.stop_timer("attention_computation");
-        std::cout << "Successfully recorded metrics" << std::endl;
-
-        std::cout << "Moving output matrix..." << std::endl;
-        return std::move(output); // Explicit move
+#endif
     } catch (const std::exception& e) {
-        std::cout << "Error after forward pass:" << std::endl;
-        std::cout << "- Error message: " << e.what() << std::endl;
-        std::cout << "- seq_len: " << seq_len << std::endl;
-        std::cout << "- num_heads: " << num_heads << std::endl;
-        std::cout << "- head_dim: " << head_dim << std::endl;
-        throw;
+        throw std::runtime_error("MultiHeadAttention forward failed: " + std::string(e.what()));
     }
 }
 

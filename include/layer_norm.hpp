@@ -1,11 +1,5 @@
 #pragma once
-#include "components.hpp"
-#include <memory>
-#include <vector>
-
-#ifdef USE_CUDA
-#include <cuda_runtime.h>
-#endif
+#include "matrix.hpp"
 
 /**
  * @brief Layer Normalization implementation for neural networks.
@@ -21,38 +15,13 @@
  * - Gradient computation for training
  */
 class LayerNorm {
-  private:
-    size_t hidden_size;              ///< Size of the input features
-    float eps;                       ///< Small constant for numerical stability
-    Vector gamma;                    ///< Scale parameter (learnable)
-    Vector beta;                     ///< Shift parameter (learnable)
-    Vector mean_cache;               ///< Cached mean values for backward pass
-    Vector var_cache;                ///< Cached variance values for backward pass
-    Vector norm_cache;               ///< Cached normalized values
-    Matrix normalized;               ///< Cached normalized matrix for backward pass
-
-    // Gradient storage
-    Vector gamma_grad;               ///< Gradient for gamma parameter
-    Vector beta_grad;                ///< Gradient for beta parameter
-
-    // Parameter management
-    std::vector<std::reference_wrapper<Vector>> params;      ///< References to learnable parameters
-    std::vector<std::reference_wrapper<Vector>> grad_params; ///< References to parameter gradients
-
-  public:
+public:
     /**
      * @brief Constructs a layer normalization module.
      * @param hidden_size_ Size of the input features
      * @param eps_ Small constant for numerical stability (default: 1e-5)
      */
-    LayerNorm(size_t hidden_size_, float eps_ = 1e-5)
-        : hidden_size(hidden_size_), eps(eps_), gamma(hidden_size, 1.0f), beta(hidden_size, 0.0f),
-          mean_cache(hidden_size), var_cache(hidden_size), norm_cache(hidden_size),
-          gamma_grad(hidden_size), beta_grad(hidden_size), normalized(1, hidden_size) {
-        // Initialize parameter references
-        params = {std::ref(gamma), std::ref(beta)};
-        grad_params = {std::ref(gamma_grad), std::ref(beta_grad)};
-    }
+    LayerNorm(size_t hidden_size_, float eps_ = 1e-5);
 
     /**
      * @brief Performs the forward pass of layer normalization.
@@ -67,23 +36,19 @@ class LayerNorm {
      * @param input Original input tensor
      * @return Gradient with respect to the input
      */
-    Matrix backward(const Matrix& grad_output, const Matrix& input);
-
-#ifdef USE_CUDA
-    /**
-     * @brief CUDA-accelerated version of the backward pass.
-     * @param grad_output Gradient of the loss with respect to the output
-     * @param input Original input tensor
-     * @return Gradient with respect to the input
-     */
-    Matrix backward_cuda(const Matrix& grad_output, const Matrix& input) const;
-#endif
+    Matrix backward(const Matrix& grad_output, const Matrix& input) {
+        input_cache_ = input;  // Cache input for backward pass
+        return compute_gradients(grad_output);
+    }
 
     /**
      * @brief Gets references to all learnable parameters.
      * @return Vector of references to parameter vectors
      */
-    std::vector<std::reference_wrapper<Vector>>& parameters() {
+    const std::vector<std::reference_wrapper<Matrix>> parameters() {
+        std::vector<std::reference_wrapper<Matrix>> params;
+        params.push_back(std::ref(gamma_));
+        params.push_back(std::ref(beta_));
         return params;
     }
 
@@ -91,8 +56,11 @@ class LayerNorm {
      * @brief Gets references to all parameter gradients.
      * @return Vector of references to gradient vectors
      */
-    const std::vector<std::reference_wrapper<Vector>>& parameter_gradients() const {
-        return grad_params;
+    const std::vector<std::reference_wrapper<const Matrix>> parameter_gradients() const {
+        std::vector<std::reference_wrapper<const Matrix>> grads;
+        grads.push_back(std::cref(grad_gamma_));
+        grads.push_back(std::cref(grad_beta_));
+        return grads;
     }
 
     /**
@@ -108,21 +76,12 @@ class LayerNorm {
      */
     static std::unique_ptr<LayerNorm> load(std::istream& is);
 
-#ifdef USE_CUDA
     /**
-     * @brief Gets the scale parameter vector.
-     * @return Const reference to gamma vector
+     * @brief Gets the size of the input features.
+     * @return Hidden size
      */
-    const Vector& get_gamma() const {
-        return gamma;
-    }
-
-    /**
-     * @brief Gets the shift parameter vector.
-     * @return Const reference to beta vector
-     */
-    const Vector& get_beta() const {
-        return beta;
+    size_t get_hidden_size() const {
+        return hidden_size_;
     }
 
     /**
@@ -130,30 +89,17 @@ class LayerNorm {
      * @return Epsilon constant
      */
     float get_eps() const {
-        return eps;
+        return eps_;
     }
-
-    /**
-     * @brief Gets the size of the input features.
-     * @return Hidden size
-     */
-    size_t get_hidden_size() const {
-        return hidden_size;
-    }
-#endif
 
     /**
      * @brief Copy constructor.
      * @param other LayerNorm instance to copy from
      */
     LayerNorm(const LayerNorm& other)
-        : hidden_size(other.hidden_size), eps(other.eps), gamma(other.gamma), beta(other.beta),
-          mean_cache(other.mean_cache), var_cache(other.var_cache), norm_cache(other.norm_cache),
-          normalized(other.normalized), gamma_grad(other.gamma_grad), beta_grad(other.beta_grad) {
-        // Initialize parameter references
-        params = {std::ref(gamma), std::ref(beta)};
-        grad_params = {std::ref(gamma_grad), std::ref(beta_grad)};
-    }
+        : hidden_size_(other.hidden_size_), eps_(other.eps_), gamma_(other.gamma_), beta_(other.beta_),
+          input_cache_(other.input_cache_), output_cache_(other.output_cache_),
+          grad_gamma_(other.grad_gamma_), grad_beta_(other.grad_beta_) {}
 
     /**
      * @brief Assignment operator.
@@ -162,20 +108,36 @@ class LayerNorm {
      */
     LayerNorm& operator=(const LayerNorm& other) {
         if (this != &other) {
-            hidden_size = other.hidden_size;
-            eps = other.eps;
-            gamma = other.gamma;
-            beta = other.beta;
-            mean_cache = other.mean_cache;
-            var_cache = other.var_cache;
-            norm_cache = other.norm_cache;
-            normalized = other.normalized;
-            gamma_grad = other.gamma_grad;
-            beta_grad = other.beta_grad;
-            // Update parameter references
-            params = {std::ref(gamma), std::ref(beta)};
-            grad_params = {std::ref(gamma_grad), std::ref(beta_grad)};
+            hidden_size_ = other.hidden_size_;
+            eps_ = other.eps_;
+            gamma_ = other.gamma_;
+            beta_ = other.beta_;
+            input_cache_ = other.input_cache_;
+            output_cache_ = other.output_cache_;
+            grad_gamma_ = other.grad_gamma_;
+            grad_beta_ = other.grad_beta_;
         }
         return *this;
     }
+
+    Matrix get_gradients() const {
+        // Create a matrix that combines both gradients
+        Matrix combined(1, hidden_size_ * 2);
+        std::copy(grad_gamma_.data(), grad_gamma_.data() + hidden_size_, combined.data());
+        std::copy(grad_beta_.data(), grad_beta_.data() + hidden_size_, combined.data() + hidden_size_);
+        return combined;
+    }
+
+private:
+    size_t hidden_size_;
+    float eps_;
+    Matrix gamma_;  // Scale parameter
+    Matrix beta_;   // Shift parameter
+    Matrix input_cache_;  // Stored for backward pass
+    Matrix output_cache_; // Stored for backward pass
+    Matrix grad_gamma_;   // Gradients for gamma
+    Matrix grad_beta_;    // Gradients for beta
+
+    // Helper method to compute gradients
+    Matrix compute_gradients(const Matrix& grad_output);
 };

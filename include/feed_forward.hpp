@@ -27,12 +27,14 @@ class FeedForward {
     Vector b2;                    ///< Bias vector for the second linear transformation
     float dropout_prob;           ///< Dropout probability during training
     Matrix intermediate_cache;    ///< Cache for intermediate activations during forward pass
-
+    Matrix input_cache_;         ///< Cache for input during backward pass
+    Matrix dropout_mask_;        ///< Dropout mask for training
+    
     // Gradient members
-    mutable Matrix w1_grad;       ///< Gradient of loss with respect to w1
-    mutable Matrix w2_grad;       ///< Gradient of loss with respect to w2
-    mutable FloatVector b1_grad;  ///< Gradient of loss with respect to b1
-    mutable FloatVector b2_grad;  ///< Gradient of loss with respect to b2
+    Matrix dW1_;                 ///< Gradient of loss with respect to w1
+    Matrix dW2_;                 ///< Gradient of loss with respect to w2
+    Vector db1_;                 ///< Gradient of loss with respect to b1
+    Vector db2_;                 ///< Gradient of loss with respect to b2
 
     /**
      * @brief Container for trainable parameters.
@@ -48,24 +50,27 @@ class FeedForward {
     Parameters params;                  ///< Container for trainable parameters
     mutable Parameters param_gradients; ///< Container for parameter gradients
 
+    // Training mode control
+    bool training_ = true;
+
   public:
     virtual ~FeedForward() = default;
     FeedForward() = default;
 
     /**
      * @brief Constructs a feed-forward network with specified dimensions.
-     * @param hidden_size Size of input and output tensors
-     * @param intermediate_size Size of the intermediate (hidden) layer
+     * @param input_size Size of input tensors
+     * @param hidden_size Size of the intermediate (hidden) layer
      * @param dropout Dropout probability during training
      */
-    FeedForward(size_t hidden_size, size_t intermediate_size, float dropout = 0.1f);
+    FeedForward(size_t input_size, size_t hidden_size, float dropout = 0.1f);
 
     /**
      * @brief Performs the forward pass through the feed-forward network.
-     * @param x Input tensor of shape [batch_size, seq_len, hidden_size]
+     * @param input Input tensor of shape [batch_size, seq_len, input_size]
      * @return Output tensor of shape [batch_size, seq_len, hidden_size]
      */
-    Matrix forward(const Matrix& x);
+    Matrix forward(const Matrix& input);
 
     /**
      * @brief Performs the backward pass to compute gradients.
@@ -73,12 +78,34 @@ class FeedForward {
      * @param input Original input tensor
      * @return Gradient with respect to the input
      */
-    Matrix backward(const Matrix& grad_output, const Matrix& input);
+    Matrix backward(const Matrix& grad_output, const Matrix& input) {
+        input_cache_ = input;  // Cache input for backward pass
+        if (training_) {
+            // Compute gradients
+            dW2_ = matmul(grad_output.transpose(), intermediate_cache);
+            db2_ = grad_output.row_sum();
+            
+            // Backpropagate through second layer
+            Matrix dx = matmul(grad_output, w2.transpose());
+            
+            // Apply dropout mask if in training mode
+            dx = dx.hadamard(dropout_mask_);
+            
+            // Compute gradients for first layer
+            dW1_ = matmul(input.transpose(), dx);
+            db1_ = dx.row_sum();
+            
+            update_parameters(dx);
+            return dx;
+        } else {
+            // Simpler backward pass for inference
+            return matmul(grad_output, w2.transpose());
+        }
+    }
 
     /**
      * @brief CUDA-accelerated version of the backward pass.
      * @param grad Gradient of the loss with respect to the output
-     * @param input Original input tensor
      * @return Gradient with respect to the input
      */
     Matrix backward_cuda(const Matrix& grad, const Matrix& input) const;
@@ -116,8 +143,9 @@ class FeedForward {
 
     FeedForward(const FeedForward& other)
         : w1(other.w1), w2(other.w2), b1(other.b1), b2(other.b2), dropout_prob(other.dropout_prob),
-          intermediate_cache(other.intermediate_cache), w1_grad(other.w1_grad),
-          w2_grad(other.w2_grad), b1_grad(other.b1_grad), b2_grad(other.b2_grad) {}
+          intermediate_cache(other.intermediate_cache), input_cache_(other.input_cache_),
+          dropout_mask_(other.dropout_mask_), dW1_(other.dW1_), dW2_(other.dW2_),
+          db1_(other.db1_), db2_(other.db2_) {}
 
     FeedForward& operator=(const FeedForward& other) {
         if (this != &other) {
@@ -127,10 +155,12 @@ class FeedForward {
             b2 = other.b2;
             dropout_prob = other.dropout_prob;
             intermediate_cache = other.intermediate_cache;
-            w1_grad = other.w1_grad;
-            w2_grad = other.w2_grad;
-            b1_grad = other.b1_grad;
-            b2_grad = other.b2_grad;
+            input_cache_ = other.input_cache_;
+            dropout_mask_ = other.dropout_mask_;
+            dW1_ = other.dW1_;
+            dW2_ = other.dW2_;
+            db1_ = other.db1_;
+            db2_ = other.db2_;
         }
         return *this;
     }
@@ -155,13 +185,20 @@ class FeedForward {
         param_gradients.vectors.clear();
 
         // Matrix gradients
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(w1_grad)));
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(w2_grad)));
+        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(dW1_)));
+        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(dW2_)));
 
         // Vector gradients
-        param_gradients.vectors.emplace_back(std::ref(const_cast<FloatVector&>(b1_grad)));
-        param_gradients.vectors.emplace_back(std::ref(const_cast<FloatVector&>(b2_grad)));
+        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(db1_)));
+        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(db2_)));
 
         return param_gradients;
     }
+
+    // Training mode control
+    void set_training(bool training_mode) { training_ = training_mode; }
+    bool is_training() const { return training_; }
+
+    // Parameter updates
+    void update_parameters(const Matrix& grad);
 };

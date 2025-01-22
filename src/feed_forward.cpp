@@ -3,6 +3,9 @@
 #include "../include/cuda/cuda_check.cuh"
 #include "../include/cuda/cuda_launch.cuh"
 #include "../include/cuda/feed_forward_kernels.cuh"
+#include "../include/cuda/backward_ops.cuh"
+#include "../include/cuda/matrix_ops.cuh"
+#include "../include/cuda/memory_manager.cuh"
 #endif
 #include <cmath>
 #include <iostream>
@@ -17,8 +20,8 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
     : w1(hidden_size, intermediate_size), w2(intermediate_size, hidden_size), b1(intermediate_size),
       b2(hidden_size), dropout_prob(dropout), intermediate_cache(1, intermediate_size),
       // Initialize gradients with same dimensions as their parameters
-      w1_grad(hidden_size, intermediate_size), w2_grad(intermediate_size, hidden_size),
-      b1_grad(intermediate_size), b2_grad(hidden_size) {
+      dW1_(hidden_size, intermediate_size), dW2_(intermediate_size, hidden_size),
+      db1_(intermediate_size), db2_(hidden_size) {
 
     std::cout << "FeedForward dimensions:" << std::endl;
     std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
@@ -54,36 +57,66 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
         b2[i] = 0.0f;
 
     // Initialize gradients to zero
-    for (size_t i = 0; i < w1_grad.rows(); ++i) {
-        for (size_t j = 0; j < w1_grad.cols(); ++j) {
-            w1_grad(i, j) = 0.0f;
+    for (size_t i = 0; i < dW1_.rows(); ++i) {
+        for (size_t j = 0; j < dW1_.cols(); ++j) {
+            dW1_(i, j) = 0.0f;
         }
     }
 
-    for (size_t i = 0; i < w2_grad.rows(); ++i) {
-        for (size_t j = 0; j < w2_grad.cols(); ++j) {
-            w2_grad(i, j) = 0.0f;
+    for (size_t i = 0; i < dW2_.rows(); ++i) {
+        for (size_t j = 0; j < dW2_.cols(); ++j) {
+            dW2_(i, j) = 0.0f;
         }
     }
 
-    for (size_t i = 0; i < b1_grad.size(); ++i)
-        b1_grad[i] = 0.0f;
-    for (size_t i = 0; i < b2_grad.size(); ++i)
-        b2_grad[i] = 0.0f;
+    for (size_t i = 0; i < db1_.size(); ++i)
+        db1_[i] = 0.0f;
+    for (size_t i = 0; i < db2_.size(); ++i)
+        db2_[i] = 0.0f;
 }
 
-Matrix FeedForward::forward(const Matrix& x) {
-
-    Matrix intermediate = matmul(x, w1);
-    intermediate.add_bias(b1);
-    intermediate.apply_gelu();
-
-    // Store intermediate values for backward pass
-    intermediate_cache = intermediate; // Direct assignment instead of deep copy
-
-    Matrix output = matmul(intermediate, w2);
-    output.add_bias(b2);
-    return output;
+Matrix FeedForward::forward(const Matrix& input) {
+    try {
+#ifdef USE_CUDA
+        try {
+            // Use CUDA memory manager for efficient memory allocation
+            auto& memory_mgr = cuda::MemoryManager::instance();
+            
+            // Allocate intermediate results
+            Matrix intermediate(input.rows(), w1.cols());
+            cuda::matmul(input, w1, intermediate);
+            
+            // Apply bias and activation
+            intermediate.add_bias(b1);
+            cuda::gelu_forward(intermediate);  // New CUDA GELU implementation
+            
+            // Store for backward pass
+            intermediate_cache = intermediate;
+            
+            // Compute final output
+            Matrix output(intermediate.rows(), w2.cols());
+            cuda::matmul(intermediate, w2, output);
+            output.add_bias(b2);
+            
+            return output;
+        } catch (const std::runtime_error& e) {
+            std::cerr << "CUDA feed forward failed, falling back to CPU: " << e.what() << std::endl;
+#endif
+            // CPU fallback implementation
+            Matrix intermediate = matmul(input, w1);
+            intermediate.add_bias(b1);
+            intermediate.apply_gelu();
+            intermediate_cache = intermediate;
+            
+            Matrix output = matmul(intermediate, w2);
+            output.add_bias(b2);
+            return output;
+#ifdef USE_CUDA
+        }
+#endif
+    } catch (const std::exception& e) {
+        throw std::runtime_error("FeedForward forward failed: " + std::string(e.what()));
+    }
 }
 
 void FeedForward::save(std::ostream& os) const {
@@ -120,73 +153,26 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream& is) {
     return ffn;
 }
 
-Matrix FeedForward::backward(const Matrix& grad_output, const Matrix& input) {
-    if (intermediate_cache.empty()) {
-        throw std::runtime_error("No cached intermediate values found for backward pass");
-    }
-
-    std::cout << "FeedForward::backward dimensions:" << std::endl;
-    std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-    std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
-    std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
-    std::cout << "intermediate_cache: " << intermediate_cache.rows() << "x"
-              << intermediate_cache.cols() << std::endl;
-
-    // Validate dimensions
-    if (grad_output.cols() != w2.cols()) {
-        throw std::runtime_error("Dimension mismatch: grad_output.cols (" +
-                                 std::to_string(grad_output.cols()) + ") != w2.cols (" +
-                                 std::to_string(w2.cols()) + ")");
-    }
-    if (input.cols() != w1.rows()) {
-        throw std::runtime_error("Dimension mismatch: input.cols (" + std::to_string(input.cols()) +
-                                 ") != w1.rows (" + std::to_string(w1.rows()) + ")");
-    }
-
-    // Create local copy of cache to prevent it being moved/destroyed
-    Matrix cache_copy = intermediate_cache;
-
-    std::cout << "Computing d_intermediate..." << std::endl;
-    Matrix d_intermediate = matmul(grad_output, w2.transpose());
-    std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x" << d_intermediate.cols()
-              << std::endl;
-
-    // Ensure d_intermediate matches cache dimensions before GELU derivative
-    if (d_intermediate.rows() != cache_copy.rows() || d_intermediate.cols() != cache_copy.cols()) {
-        std::cout << "Reshaping d_intermediate to match cache dimensions..." << std::endl;
-        Matrix reshaped_d_intermediate(cache_copy.rows(), cache_copy.cols());
-        for (size_t i = 0; i < cache_copy.rows(); ++i) {
-            for (size_t j = 0; j < cache_copy.cols(); ++j) {
-                reshaped_d_intermediate(i, j) =
-                    d_intermediate(i % d_intermediate.rows(), j % d_intermediate.cols());
-            }
-        }
-        d_intermediate = std::move(reshaped_d_intermediate);
-    }
-
-    std::cout << "Applying GELU derivative..." << std::endl;
-    d_intermediate.apply_gelu_derivative(cache_copy);
-
-    // Compute gradients for w2 and b2
-    w2_grad = matmul(intermediate_cache.transpose(), grad_output);
-    b2_grad = grad_output.row_sum();
-
-    // Compute gradients for w1 and b1
-    w1_grad = matmul(input.transpose(), d_intermediate);
-    b1_grad = d_intermediate.row_sum();
-
-    std::cout << "Computing grad_input..." << std::endl;
-    Matrix grad_input = matmul(d_intermediate, w1.transpose());
-    std::cout << "grad_input dims: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
-
-    return grad_input;
-}
-
-Matrix FeedForward::backward_cuda(const Matrix& grad, const Matrix& input) const {
+Matrix FeedForward::backward_cuda(const Matrix& grad_output, const Matrix& input) const {
 #ifdef USE_CUDA
-    return backward_cuda(grad, input);
+    return backward_cuda(grad_output, input);
 #else
     throw std::runtime_error("CUDA support not enabled");
 #endif
+}
+
+void FeedForward::update_parameters(const Matrix& grad) {
+    float learning_rate = 0.01f;  // Could be made configurable
+    
+    w1 -= dW1_ * learning_rate;
+    // Scale vector elements individually
+    for (size_t i = 0; i < b1.size(); ++i) {
+        b1[i] -= db1_[i] * learning_rate;
+    }
+    
+    w2 -= dW2_ * learning_rate;
+    // Scale vector elements individually
+    for (size_t i = 0; i < b2.size(); ++i) {
+        b2[i] -= db2_[i] * learning_rate;
+    }
 }

@@ -1,21 +1,7 @@
 #include "../../include/cuda/cuda_utils.cuh"
+#include "../../include/cuda/cuda_check.cuh"
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
-
-// Declare the CUDA kernels
-__global__ void attention_scores_kernel(const float* Q, const float* K, float* scores,
-                                        const float scale, int seq_len, int head_dim) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    int col = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (row < seq_len && col < seq_len) {
-        float sum = 0.0f;
-        for (int i = 0; i < head_dim; i++) {
-            sum += Q[row * head_dim + i] * K[col * head_dim + i];
-        }
-        scores[row * seq_len + col] = sum * scale;
-    }
-}
 
 __global__ void softmax_kernel(float* scores, int seq_len) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
@@ -36,17 +22,6 @@ __global__ void softmax_kernel(float* scores, int seq_len) {
             scores[row * seq_len + i] /= sum;
         }
     }
-}
-
-// CUDA kernel launcher without template
-void launch_attention_scores_kernel(const float* Q, const float* K, float* scores, float scale,
-                                    int seq_len, int head_dim, cudaStream_t stream) {
-    dim3 block_dim(16, 16);
-    dim3 grid_dim((seq_len + block_dim.x - 1) / block_dim.x,
-                  (seq_len + block_dim.y - 1) / block_dim.y);
-
-    attention_scores_kernel<<<grid_dim, block_dim, 0, stream>>>(Q, K, scores, scale, seq_len,
-                                                                head_dim);
 }
 
 void launch_softmax_kernel(float* scores, int seq_len, cudaStream_t stream) {

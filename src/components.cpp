@@ -3,6 +3,8 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include "../include/components.hpp"
+#include "../include/cuda/matrix_ops.cuh"
 // Constructor implementations
 Matrix::Matrix() : rows_(0), cols_(0), shape_(std::make_tuple(0, 0)) {}
 
@@ -381,27 +383,39 @@ Matrix operator*(const Matrix& a, const Matrix& b) {
     return result;
 }
 
-Matrix matmul(const Matrix& a, const Matrix& b) {
-    /*std::cout << "Matrix multiplication dimensions:" << std::endl;
-    std::cout << "A: " << a.rows() << "x" << a.cols() << std::endl;
-    std::cout << "B: " << b.rows() << "x" << b.cols() << std::endl;*/
-
-    if (a.cols() != b.rows()) {
-        throw std::runtime_error("Invalid matrix dimensions for multiplication: " +
-                                 std::to_string(a.cols()) + " != " + std::to_string(b.rows()));
-    }
-
-    Matrix result(a.rows(), b.cols());
-
-    for (size_t i = 0; i < a.rows(); i++) {
-        for (size_t j = 0; j < b.cols(); j++) {
+Matrix matmul(const Matrix& A, const Matrix& B) {
+    #ifdef USE_CUDA
+    Matrix C(A.rows(), B.cols());
+    cuda::matmul(A, B, C);
+    return C;
+    #else
+    // Original CPU implementation
+    Matrix C(A.rows(), B.cols());
+    for (size_t i = 0; i < A.rows(); i++) {
+        for (size_t j = 0; j < B.cols(); j++) {
             float sum = 0.0f;
-            for (size_t k = 0; k < a.cols(); k++) {
-                sum += a(i, k) * b(k, j);
+            for (size_t k = 0; k < A.cols(); k++) {
+                sum += A(i, k) * B(k, j);
             }
-            result(i, j) = sum;
+            C(i, j) = sum;
         }
     }
+    return C;
+    #endif
+}
 
-    return result;
+void gelu(Matrix& x) {
+    #ifdef USE_CUDA
+    Matrix grad(x.rows(), x.cols());
+    cuda::gelu_backward(grad, x);
+    x = grad;
+    #else
+    // Original CPU implementation
+    constexpr float sqrt_2_over_pi = 0.7978845608028654f;
+    for (size_t i = 0; i < x.size(); i++) {
+        float val = x.data_[i];
+        float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * (val + 0.044715f * val * val * val)));
+        x.data_[i] = val * cdf;
+    }
+    #endif
 }

@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -58,6 +58,16 @@ jobs:
 
     - name: Setup Pages
       uses: actions/configure-pages@v3
+      
+    - name: Create gh-pages branch if not exists
+      run: |
+        if ! git show-ref --quiet refs/heads/gh-pages; then
+          git checkout --orphan gh-pages
+          git reset --hard
+          git commit --allow-empty -m "Create gh-pages branch"
+          git push origin gh-pages
+        fi
+        git checkout ${GITHUB_REF##*/}
           
     - name: Upload documentation artifact
       uses: actions/upload-pages-artifact@v2
