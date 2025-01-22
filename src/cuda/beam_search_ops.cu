@@ -111,8 +111,25 @@ namespace cuda {
         
         size_t current_size = current_scores.size() * sizeof(float);
         size_t next_size = next_scores.size() * sizeof(float);
-        size_t output_size = output_scores.size() * sizeof(float);
+        size_t batch_size = current_scores.rows() / beam_width;
+        size_t output_size = batch_size * beam_width * sizeof(float);
         
+        if (output_scores.size() == 0) {
+            output_scores = Matrix(batch_size * beam_width, 1);
+        }
+        
+        if (next_scores.cols() < 2) {
+            throw std::runtime_error("next_scores must have at least 2 columns for vocabulary");
+        }
+        if (current_scores.rows() % beam_width != 0) {
+            throw std::runtime_error("current_scores rows must be divisible by beam_width");
+        }
+
+        printf("d_current size: %zu\n", current_size);
+        printf("d_next size: %zu\n", next_size);
+        printf("d_output size: %zu\n", output_size);
+        printf("d_indices size: %zu\n", beam_width * sizeof(int));
+
         CUDA_CHECK(cudaMalloc(&d_current, current_size));
         CUDA_CHECK(cudaMalloc(&d_next, next_size));
         CUDA_CHECK(cudaMalloc(&d_output, output_size));
@@ -122,22 +139,24 @@ namespace cuda {
         CUDA_CHECK(cudaMemcpy(d_current, current_scores.data(), current_size, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_next, next_scores.data(), next_size, cudaMemcpyHostToDevice));
         
-        // Launch beam search kernel
-        int batch_size = current_scores.rows();
         int vocab_size = next_scores.cols();
-        
+        printf("batch_size: %d\n", batch_size);
+        printf("vocab_size: %d\n", vocab_size);
+        printf("beam_width: %d\n", beam_width);
         dim3 block(256);
         dim3 grid((batch_size * beam_width + block.x - 1) / block.x);
         beam_search_step_kernel<<<grid, block>>>(d_current, d_next, d_output, d_indices,
                                                batch_size, vocab_size, beam_width);
         
         // Copy results back
+        printf("output_scores size: %zu\n", output_size);
+        printf("output_indices size: %zu\n", beam_width * sizeof(int));
         CUDA_CHECK(cudaMemcpy(output_scores.data(), d_output, output_size, cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(output_indices.data(), d_indices, beam_width * sizeof(int), cudaMemcpyDeviceToHost));
-        
+        printf("output_indices size: %zu\n", beam_width * sizeof(int));
         CUDA_CHECK(cudaFree(d_current));
         CUDA_CHECK(cudaFree(d_next));
         CUDA_CHECK(cudaFree(d_output));
         CUDA_CHECK(cudaFree(d_indices));
     }
-} 
+}
