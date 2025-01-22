@@ -15,9 +15,6 @@ namespace cuda {
         int hidden_dim = Q.cols();
         int head_dim = hidden_dim / num_heads;
         int seq_len = batch_size;
-        
-        printf("Debug - compute_attention_scores: batch_size=%d, hidden_dim=%d, head_dim=%d, seq_len=%d\n",
-               batch_size, hidden_dim, head_dim, seq_len);
 
         // Verify all dimensions are valid
         if (batch_size <= 0 || hidden_dim <= 0 || head_dim <= 0 || seq_len <= 0) {
@@ -46,9 +43,6 @@ namespace cuda {
             dim3 block(16, 16);
             dim3 grid((seq_len + block.x - 1) / block.x, (seq_len + block.y - 1) / block.y);
             
-            printf("Launching kernel with grid=(%d,%d), block=(%d,%d)\n", 
-                   grid.x, grid.y, block.x, block.y);
-
             attention_scores_kernel<<<grid, block>>>(d_Q, d_K, d_scores,
                 scale, seq_len, head_dim);
                 
@@ -104,14 +98,10 @@ namespace cuda {
         
         int head_dim = Q.cols() / num_heads;
         int hidden_dim = Q.cols();  // Store the full hidden dimension
-        printf("Attention kernel launch: grid=(%d,%d), block=(%d,%d), head_dim=%d\n",
-               grid.x, grid.y, block.x, block.y, head_dim);
 
         float *d_Q, *d_K, *d_V, *d_output;
         size_t QKV_size = Q.size() * sizeof(float);
         size_t output_size = output.size() * sizeof(float);
-        printf("Debug - attention_forward: QKV_size=%zu, output_size=%zu, d_Q=%p, d_K=%p, d_V=%p, d_output=%p, batch_size=%d, num_heads=%d, seq_len=%d\n", 
-               QKV_size, output_size, d_Q, d_K, d_V, d_output, batch_size, num_heads, seq_len);
         CUDA_CHECK(cudaMalloc(&d_Q, QKV_size));
         CUDA_CHECK(cudaMalloc(&d_K, QKV_size));
         CUDA_CHECK(cudaMalloc(&d_V, QKV_size));
@@ -152,10 +142,6 @@ extern "C" {
         int row = blockIdx.x * blockDim.x + threadIdx.x;
         int col = blockIdx.y * blockDim.y + threadIdx.y;
 
-        // Debug first thread
-        if (row == 0 && col == 0) {
-            printf("Kernel - Processing seq_len=%d, head_dim=%d\n", seq_len, head_dim);
-        }
 
         if (row < seq_len && col < seq_len) {
             float sum = 0.0f;

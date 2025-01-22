@@ -13,11 +13,6 @@ __global__ void layernorm_backward_kernel(const float* grad_output, const float*
                                           const float* gamma, float* grad_gamma,
                                           float* grad_beta, int batch_size, int hidden_size,
                                           float eps) {
-    // Device code must use printf
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        printf("CUDA Kernel: Starting layernorm_backward_kernel\n");
-        printf("CUDA Kernel: batch_size=%d, hidden_size=%d\n", batch_size, hidden_size);
-    }
 
     extern __shared__ float shared_mem[];
     // Each block handles a subset of features
@@ -105,14 +100,6 @@ void layer_norm_backward(const Matrix& grad_output, const Matrix& input,
     int num_blocks = (hidden_size + block.x - 1) / block.x;
     dim3 grid(num_blocks, 1);
 
-    printf("CUDA Launch Config: grid=(%d,%d,%d), block=(%d,%d,%d)\n", 
-           grid.x, grid.y, grid.z, block.x, block.y, block.z);
-    printf("CUDA Memory Pointers: grad_output=%p, input=%p, gamma=%p, grad_gamma=%p, grad_beta=%p\n",
-           (void*)d_grad_output, (void*)d_input, (void*)d_gamma, (void*)d_grad_gamma, (void*)d_grad_beta);
-    printf("CUDA Dimensions: batch_size=%d, hidden_size=%d\n", batch_size, hidden_size);
-    printf("Number of features per block: %d\n", block.x);
-    printf("Total blocks needed: %d\n", num_blocks);
-
     // Calculate shared memory size needed for mean and variance
     // Each block needs space for its own mean and variance arrays
     size_t shared_mem_size = 2 * block.x * sizeof(float);  // 2 arrays of 32 floats each
@@ -129,12 +116,10 @@ void layer_norm_backward(const Matrix& grad_output, const Matrix& input,
     CUDA_CHECK(cudaMemset(d_grad_gamma, 0, hidden_size * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_grad_beta, 0, hidden_size * sizeof(float)));
 
-    printf("Shared memory size: %zu bytes\n", shared_mem_size);
 
     layernorm_backward_kernel<<<grid, block, shared_mem_size>>>(
         d_grad_output, d_input, d_gamma, d_grad_gamma, d_grad_beta,
         batch_size, hidden_size, eps);
-    printf("Kernel launch complete\n");
     
     // Ensure kernel completion before proceeding
     CUDA_CHECK(cudaDeviceSynchronize());

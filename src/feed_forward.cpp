@@ -91,9 +91,7 @@ Matrix FeedForward::forward(const Matrix& input) {
 #ifdef USE_CUDA
         try {
             // Use CUDA memory manager for efficient memory allocation
-            printf("Using CUDA memory manager\n");
             auto& memory_mgr = cuda::MemoryManager::instance();
-            printf("Memory manager instance created\n");
             // Allocate intermediate results
             Matrix intermediate(input.rows(), w1.cols());
             std::cout << "Intermediate dimensions: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
