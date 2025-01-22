@@ -110,7 +110,8 @@ namespace cuda {
         float *d_Q, *d_K, *d_V, *d_output;
         size_t QKV_size = Q.size() * sizeof(float);
         size_t output_size = output.size() * sizeof(float);
-
+        printf("Debug - attention_forward: QKV_size=%zu, output_size=%zu, d_Q=%p, d_K=%p, d_V=%p, d_output=%p, batch_size=%d, num_heads=%d, seq_len=%d\n", 
+               QKV_size, output_size, d_Q, d_K, d_V, d_output, batch_size, num_heads, seq_len);
         CUDA_CHECK(cudaMalloc(&d_Q, QKV_size));
         CUDA_CHECK(cudaMalloc(&d_K, QKV_size));
         CUDA_CHECK(cudaMalloc(&d_V, QKV_size));
@@ -120,8 +121,10 @@ namespace cuda {
         CUDA_CHECK(cudaMemcpy(d_K, K.data(), QKV_size, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_V, V.data(), QKV_size, cudaMemcpyHostToDevice));
 
-        attention_kernel<<<grid, block>>>(d_Q, d_K, d_V, d_output,
-                                        batch_size, batch_size, head_dim, hidden_dim);
+        // Allocate shared memory for scores
+        size_t shared_mem_size = seq_len * sizeof(float);
+        attention_kernel<<<grid, block, shared_mem_size>>>(d_Q, d_K, d_V, d_output,
+                                                         batch_size, seq_len, head_dim, hidden_dim);
 
         CUDA_CHECK(cudaMemcpy(output.data(), d_output, output_size, cudaMemcpyDeviceToHost));
 
@@ -207,15 +210,21 @@ extern "C" {
         if (b < batch_size) {
             // Process this batch element for the current head
             int head_offset = h * head_dim;
-            int batch_offset = b * hidden_dim;  // Use passed-in hidden_dim
-
-            // Compute attention scores
-            float scores[1024];  // Assuming max sequence length
+            int batch_offset = b * hidden_dim;
+            
+            // Allocate scores in shared memory
+            extern __shared__ float scores[];
+            
             for (int j = 0; j < seq_len; j++) {
                 float score = 0.0f;
                 for (int d = 0; d < head_dim; d++) {
-                    score += Q[batch_offset + head_offset + d] *
-                            K[batch_offset + j * head_dim + d];
+                    // Correct indexing for multi-head attention
+                    int q_idx = batch_offset + head_offset + d;
+                    int k_idx = batch_offset + head_offset + j * head_dim + d;
+                    
+                    if (q_idx < batch_size * hidden_dim && k_idx < batch_size * hidden_dim) {
+                        score += Q[q_idx] * K[k_idx];
+                    }
                 }
                 scores[j] = score / sqrtf(float(head_dim));
             }
