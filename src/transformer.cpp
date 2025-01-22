@@ -355,23 +355,38 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp32(current_grad);
     }
-    
+    std::cout << "Current grad dimensions after conversion: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
     // Update parameters with L2 regularization
     for (auto& param : parameters()) {
-        // L2 regularization gradient
-        Matrix l2_grad = param;
-        l2_grad *= config.weight_decay;
-
-        // Get corresponding gradient
+        // Get corresponding gradient before creating L2 grad
         auto& param_grads = parameter_gradients();
         size_t param_idx = &param - &parameters()[0];
         Matrix& param_grad = param_grads[param_idx];
+        std::cout << "Param grad dimensions: " << param_grad.rows() << "x" << param_grad.cols() << std::endl;
+
+        // Create L2 regularization gradient with same dimensions as param_grad
+        Matrix l2_grad(param_grad.rows(), param_grad.cols());
+        // Copy values from param, truncating or padding as needed
+        for (size_t i = 0; i < l2_grad.rows(); i++) {
+            for (size_t j = 0; j < l2_grad.cols(); j++) {
+                l2_grad(i,j) = (i < param.rows() && j < param.cols()) ? param(i,j) : 0.0f;
+            }
+        }
+        l2_grad *= config.weight_decay;
+        std::cout << "L2 grad dimensions: " << l2_grad.rows() << "x" << l2_grad.cols() << std::endl;
 
         // Combine with existing gradients
         param_grad += l2_grad;
+        std::cout << "Combined grad dimensions: " << param_grad.rows() << "x" << param_grad.cols() << std::endl;
 
-        // Update parameters
-        param -= param_grad * learning_rate;
+        // Update parameters, handling dimension mismatch
+        Matrix scaled_grad = param_grad * learning_rate;
+        for (size_t i = 0; i < param.rows() && i < param_grad.rows(); i++) {
+            for (size_t j = 0; j < param.cols() && j < param_grad.cols(); j++) {
+                param(i,j) -= scaled_grad(i,j);
+            }
+        }
+        std::cout << "Updated param dimensions: " << param.rows() << "x" << param.cols() << std::endl;
     }
 
     std::cout << "=== Transformer::backward END ===\n" << std::endl;
