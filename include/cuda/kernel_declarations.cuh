@@ -17,7 +17,8 @@ namespace cuda {
     CUDA_KERNEL void softmax_kernel(float* matrix, int rows, int cols);
     
     CUDA_KERNEL void attention_kernel(const float* Q, const float* K, const float* V,
-                                    float* output, int batch_size, int seq_len, int head_dim);
+                                    float* output, int batch_size, int seq_len, 
+                                    int head_dim, int hidden_dim);
 
     // Beam search kernels
     CUDA_KERNEL void topk_kernel(const float* scores, float* output_scores, 

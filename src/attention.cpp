@@ -156,7 +156,7 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
 #ifdef USE_CUDA
         try {
             // Use CUDA for attention computation
-            Matrix scores(batch_size, seq_len);  // [batch_size x seq_len]
+            Matrix scores(batch_size, batch_size);  // Full sequence length for attention
             std::cout << "scores dimensions: " << scores.shape() << std::endl;
             cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
             std::cout << "computed attention scores" << std::endl;
@@ -169,7 +169,7 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
             std::cout << "applied softmax" << std::endl;
             std::cout << "scores dimensions after softmax: " << scores.shape() << std::endl;
 
-            Matrix output(batch_size * num_heads, V.cols());  // Preserve batch dimension
+            Matrix output(batch_size, V.cols());  // Should match input dimensions
             std::cout << "output dimensions: " << output.shape() << std::endl;
             cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
             std::cout << "output dimensions after attention forward: " << output.shape() << std::endl;
