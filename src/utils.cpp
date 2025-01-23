@@ -556,3 +556,40 @@ std::vector<std::string>& Utils::get_vocabulary(const Tokenizer& tokenizer) {
     }
     return vocabulary;
 }
+
+std::vector<size_t> topKSampling(const std::vector<float>& probabilities, size_t k) {
+    std::vector<std::pair<float, size_t>> prob_idx;
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        prob_idx.push_back({probabilities[i], i});
+    }
+    
+    // Sort by probability in descending order
+    std::partial_sort(prob_idx.begin(), prob_idx.begin() + k, prob_idx.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Return top k indices
+    std::vector<size_t> result;
+    for (size_t i = 0; i < k; i++) {
+        result.push_back(prob_idx[i].second);
+    }
+    return result;
+}
+
+std::vector<size_t> nucleusSampling(const std::vector<float>& probabilities, float p) {
+    std::vector<std::pair<float, size_t>> sorted_probs;
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        sorted_probs.push_back({probabilities[i], i});
+    }
+    
+    std::sort(sorted_probs.begin(), sorted_probs.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    float cumsum = 0.0f;
+    std::vector<size_t> result;
+    for (const auto& pair : sorted_probs) {
+        cumsum += pair.first;
+        result.push_back(pair.second);
+        if (cumsum >= p) break;
+    }
+    return result;
+}
