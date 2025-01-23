@@ -381,6 +381,27 @@ float Utils::evaluate_validation(
             Matrix logits = lm_head->forward(output);
             std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
 
+            // Debug logits distribution
+            float logits_mean = 0.0f, logits_std = 0.0f;
+            float min_logit = std::numeric_limits<float>::max();
+            float max_logit = -std::numeric_limits<float>::max();
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                float val = logits(logits.rows() - 1, i);
+                logits_mean += val;
+                min_logit = std::min(min_logit, val);
+                max_logit = std::max(max_logit, val);
+            }
+            logits_mean /= logits.cols();
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                float val = logits(logits.rows() - 1, i);
+                logits_std += (val - logits_mean) * (val - logits_mean);
+            }
+            logits_std = std::sqrt(logits_std / logits.cols());
+            std::cout << "Logits stats - mean: " << logits_mean 
+                      << ", std: " << logits_std
+                      << ", min: " << min_logit
+                      << ", max: " << max_logit << std::endl;
+
             // Ensure we have valid output dimensions
             if (logits.rows() == 0 || logits.cols() != tokenizer.vocab_size()) {
                 continue;
@@ -419,7 +440,7 @@ float Utils::evaluate_validation(
             }
 
             int predicted_token = -1;
-            float max_logit = -std::numeric_limits<float>::infinity();
+            max_logit = -std::numeric_limits<float>::infinity();
             std::cout << "iterating through logits" << std::endl;
             for (size_t i = 0; i < logits.cols(); ++i) {
                 float val = logits(logits.rows() - 1, i);
