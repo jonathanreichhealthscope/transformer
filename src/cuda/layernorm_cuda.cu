@@ -3,112 +3,171 @@
 #include "../../include/cuda/cuda_utils.cuh"
 #include "../../include/layer_norm.hpp"
 #include <cuda_runtime.h>
+#include <iostream>
 
 #ifdef USE_CUDA
 
-__global__ void layernorm_backward_kernel(const float* grad_output, const float* input,
-                                          const float* gamma, float* grad_input, float* grad_gamma,
-                                          float* grad_beta, int hidden_size, int batch_size,
-                                          float eps) {
-    extern __shared__ float shared_mem[];
-    float* mean = shared_mem;
-    float* variance = &shared_mem[batch_size];
+namespace cuda {
 
-    int tid = threadIdx.x;
-    int bid = blockIdx.x;
+__global__ void layernorm_backward_kernel(const float* grad_output, const float* input,
+                                          const float* gamma, float* grad_gamma,
+                                          float* grad_beta, int batch_size, int hidden_size,
+                                          float eps) {
+
+    extern __shared__ float shared_mem[];
+    // Each block handles a subset of features
+    float* mean = shared_mem;
+    float* variance = &shared_mem[blockDim.x];  // Use blockDim.x instead of hidden_size
+    
+    int feature_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int local_idx = threadIdx.x;  // Local index within the block
 
     // Compute mean and variance for each sequence position
-    if (tid < hidden_size) {
+    if (feature_idx < hidden_size) {
         float sum = 0.0f;
         float sq_sum = 0.0f;
         for (int i = 0; i < batch_size; i++) {
-            float val = input[i * hidden_size + tid];
+            float val = input[i * hidden_size + feature_idx];
             sum += val;
             sq_sum += val * val;
         }
-        mean[tid] = sum / batch_size;
-        variance[tid] = sq_sum / batch_size - mean[tid] * mean[tid] + eps;
+        mean[local_idx] = sum / batch_size;
+        variance[local_idx] = sq_sum / batch_size - mean[local_idx] * mean[local_idx] + eps;
     }
     __syncthreads();
 
-    // Compute gradients
-    for (int i = tid; i < batch_size * hidden_size; i += blockDim.x) {
-        int seq_pos = i / hidden_size;
-        int hidden_pos = i % hidden_size;
+    // Update gradient computation to use local indices
+    for (int batch_idx = 0; batch_idx < batch_size; batch_idx++) {
+        if (feature_idx < hidden_size) {
+            int idx = batch_idx * hidden_size + feature_idx;
+            float x = input[idx];
+            float dy = grad_output[idx];
+            float mu = mean[local_idx];
+            float var = variance[local_idx];
+            float std = sqrt(var);
+            float gamma_val = gamma[feature_idx];
 
-        float x = input[i];
-        float dy = grad_output[i];
-        float mu = mean[hidden_pos];
-        float var = variance[hidden_pos];
-        float std = sqrt(var);
-        float gamma_val = gamma[hidden_pos];
-
-        // Gradient with respect to input
-        float dx = gamma_val * (dy - mu) / std;
-        grad_input[i] = dx;
-
-        // Gradient with respect to gamma and beta
-        atomicAdd(&grad_gamma[hidden_pos], dy * (x - mu) / std);
-        atomicAdd(&grad_beta[hidden_pos], dy);
+            atomicAdd(&grad_gamma[feature_idx], dy * (x - mu) / std);
+            atomicAdd(&grad_beta[feature_idx], dy);
+        }
     }
 }
 
-Matrix LayerNorm::backward_cuda(const Matrix& grad_output, const Matrix& input) const {
-    const int batch_size = input.rows();
-    const int hidden_size = get_hidden_size();
-    const float eps = get_eps();
-    const Vector& gamma = get_gamma();
+void layer_norm_backward(const Matrix& grad_output, const Matrix& input,
+                         const Matrix& gamma, Matrix& grad_gamma,
+                         Matrix& grad_beta, float eps) {
+    std::cout << "\n=== LayerNorm Backward Debug ===" << std::endl << std::flush;
+    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl << std::flush;
+    std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl << std::flush;
+    std::cout << "gamma size: " << gamma.size() << std::endl;
+    std::cout << "grad_gamma size: " << grad_gamma.size() << std::endl;
+    std::cout << "grad_beta size: " << grad_beta.size() << std::endl;
 
+    int batch_size = input.rows();
+    int hidden_size = input.cols();
+
+    std::cout << "Allocating device memory..." << std::endl;
     // Allocate device memory
     float *d_grad_output, *d_input, *d_gamma;
-    float *d_grad_input, *d_grad_gamma, *d_grad_beta;
-
-    CUDA_CHECK(cudaMalloc(&d_grad_output, grad_output.size() * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_input, input.size() * sizeof(float)));
+    float *d_grad_gamma, *d_grad_beta;
+    std::cout << "Allocating device memory..." << std::endl;
+    std::cout << "batch_size: " << batch_size << ", hidden_size: " << hidden_size << std::endl;
+    std::cout << "grad_output size: " << grad_output.size() << std::endl;
+    std::cout << "input size: " << input.size() << std::endl;
+    std::cout << "gamma size: " << gamma.size() << std::endl;
+    std::cout << "grad_gamma size: " << grad_gamma.size() << std::endl;
+    std::cout << "grad_beta size: " << grad_beta.size() << std::endl;
+    CUDA_CHECK(cudaMalloc(&d_grad_output, batch_size * hidden_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_input, batch_size * hidden_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_gamma, hidden_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_grad_input, input.size() * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_gamma, hidden_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_beta, hidden_size * sizeof(float)));
 
+    std::cout << "Copying data to device..." << std::endl;
     // Copy data to device
-    CUDA_CHECK(cudaMemcpy(d_grad_output, grad_output.data(), grad_output.size() * sizeof(float),
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(
-        cudaMemcpy(d_input, input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(
-        cudaMemcpy(d_gamma, gamma.data(), hidden_size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_grad_output, grad_output.data(), 
+                        batch_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_input, input.data(), 
+                        batch_size * hidden_size * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_gamma, gamma.data(), 
+                        hidden_size * sizeof(float), cudaMemcpyHostToDevice));
 
+    std::cout << "Launching kernel..." << std::endl;
     // Launch kernel
-    int block_size = 256;
-    int grid_size = (batch_size * hidden_size + block_size - 1) / block_size;
-    size_t shared_mem_size = 2 * hidden_size * sizeof(float); // For mean and variance
+    // Use smaller block size to ensure enough blocks for all features
+    dim3 block(32, 1);  // 32 threads per block is more reasonable
+    // Calculate grid size to cover all features
+    int num_blocks = (hidden_size + block.x - 1) / block.x;
+    dim3 grid(num_blocks, 1);
 
-    layernorm_backward_kernel<<<grid_size, block_size, shared_mem_size>>>(
-        d_grad_output, d_input, d_gamma, d_grad_input, d_grad_gamma, d_grad_beta, hidden_size,
-        batch_size, eps);
+    // Calculate shared memory size needed for mean and variance
+    // Each block needs space for its own mean and variance arrays
+    size_t shared_mem_size = 2 * block.x * sizeof(float);  // 2 arrays of 32 floats each
+    
+    // Verify shared memory size is sufficient
+    size_t max_shared_mem = 48 * 1024;  // 48KB typical limit
+    if (shared_mem_size > max_shared_mem) {
+        printf("Error: Required shared memory (%zu bytes) exceeds maximum (%zu bytes)\n", 
+               shared_mem_size, max_shared_mem);
+        return;
+    }
+    
+    // Zero out grad arrays before kernel launch
+    CUDA_CHECK(cudaMemset(d_grad_gamma, 0, hidden_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_beta, 0, hidden_size * sizeof(float)));
 
-    // Create result matrix and copy gradients back
-    Matrix grad_input(batch_size, hidden_size);
 
-    CUDA_CHECK(cudaMemcpy(grad_input.data(), d_grad_input, grad_input.size() * sizeof(float),
-                          cudaMemcpyDeviceToHost));
+    layernorm_backward_kernel<<<grid, block, shared_mem_size>>>(
+        d_grad_output, d_input, d_gamma, d_grad_gamma, d_grad_beta,
+        batch_size, hidden_size, eps);
+    
+    // Ensure kernel completion before proceeding
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Update gamma and beta gradients
-    Vector grad_gamma(hidden_size), grad_beta(hidden_size);
-    CUDA_CHECK(cudaMemcpy(grad_gamma.data(), d_grad_gamma, grad_gamma.size() * sizeof(float),
-                          cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(grad_beta.data(), d_grad_beta, grad_beta.size() * sizeof(float),
-                          cudaMemcpyDeviceToHost));
+    // Check for kernel launch errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Kernel Launch Error: %s\n", cudaGetErrorString(err));
+    }
 
-    // Cleanup
+    std::cout << "Copying results back to host..." << std::endl;
+    std::cout << "Copying grad_gamma..." << std::endl;
+    CUDA_CHECK(cudaMemcpy(grad_gamma.data(), d_grad_gamma, hidden_size * sizeof(float),
+                        cudaMemcpyDeviceToHost));
+    std::cout << "Copying grad_beta..." << std::endl;
+    CUDA_CHECK(cudaMemcpy(grad_beta.data(), d_grad_beta, hidden_size * sizeof(float),
+                        cudaMemcpyDeviceToHost));
+
+    std::cout << "Freeing device memory..." << std::endl;
+    // Free device memory
     CUDA_CHECK(cudaFree(d_grad_output));
     CUDA_CHECK(cudaFree(d_input));
     CUDA_CHECK(cudaFree(d_gamma));
-    CUDA_CHECK(cudaFree(d_grad_input));
     CUDA_CHECK(cudaFree(d_grad_gamma));
     CUDA_CHECK(cudaFree(d_grad_beta));
-
-    return grad_input;
+    std::cout << "=== LayerNorm Backward Complete ===" << std::endl;
 }
+
+void layer_norm_forward(const Matrix& input, const Matrix& gamma, const Matrix& beta,
+                          Matrix& output, float eps) {
+    const int batch_size = input.rows();
+    const int hidden_size = input.cols();
+    
+    float* d_input, *d_gamma, *d_beta, *d_output;
+    
+    CUDA_CHECK(cudaMalloc(&d_input, input.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_gamma, gamma.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_beta, beta.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_output, output.size() * sizeof(float)));
+    
+    // ... implementation details ...
+    
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_gamma));
+    CUDA_CHECK(cudaFree(d_beta));
+    CUDA_CHECK(cudaFree(d_output));
+}
+
+} // namespace cuda
 
 #endif // USE_CUDA

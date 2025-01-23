@@ -1,5 +1,12 @@
 #pragma once
 #include "../matrix.hpp"
+#include <cuda_runtime.h>
+
+namespace cuda {
+    void initialize_cuda();
+    void cleanup_cuda();
+    void launch_softmax_kernel(float* scores, int seq_len, cudaStream_t stream);
+}
 
 #ifdef CUDA_AVAILABLE
 Matrix cuda_matmul(const Matrix& A, const Matrix& B);

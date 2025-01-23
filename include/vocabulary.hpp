@@ -143,4 +143,6 @@ class Vocabulary {
      * @param noun_file_path Path to the file containing nouns
      */
     void load_nouns(const std::string& noun_file_path);
+
+    const std::vector<std::string>& get_vocabulary() const { return id_to_token; }
 };

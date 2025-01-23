@@ -372,6 +372,18 @@ class Matrix {
         }
 #endif
     }
+
+    static Matrix from_vector(const std::vector<float>& vec) {
+        Matrix mat(1, vec.size());
+        std::copy(vec.begin(), vec.end(), mat.data());
+        return mat;
+    }
+
+    // Forward method for compatibility with neural network layers
+    Matrix& forward(const Matrix& input) {
+        *this = input;  // Copy input to this matrix
+        return *this;
+    }
 };
 
 // Make to_vector inline to allow multiple definitions

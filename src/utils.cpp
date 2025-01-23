@@ -6,6 +6,8 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <random>
+#include <sstream>
+#include <set>
 
 float Utils::adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
     const size_t WARMUP_STEPS = 50;
@@ -211,7 +213,7 @@ void Utils::analyze_token_mappings(
         for (int token : tokens) {
             if (!tokenizer.is_special_token(token)) {
                 total_words++;
-                if (tokenizer.decode({token}) == "<unk>") {
+                if (tokenizer.decode({token}) == " ") {
                     unknown_tokens++;
                     unknown_words[tokenizer.decode({token})]++;
                 }
@@ -379,6 +381,27 @@ float Utils::evaluate_validation(
             Matrix logits = lm_head->forward(output);
             std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
 
+            // Debug logits distribution
+            float logits_mean = 0.0f, logits_std = 0.0f;
+            float min_logit = std::numeric_limits<float>::max();
+            float max_logit = -std::numeric_limits<float>::max();
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                float val = logits(logits.rows() - 1, i);
+                logits_mean += val;
+                min_logit = std::min(min_logit, val);
+                max_logit = std::max(max_logit, val);
+            }
+            logits_mean /= logits.cols();
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                float val = logits(logits.rows() - 1, i);
+                logits_std += (val - logits_mean) * (val - logits_mean);
+            }
+            logits_std = std::sqrt(logits_std / logits.cols());
+            std::cout << "Logits stats - mean: " << logits_mean 
+                      << ", std: " << logits_std
+                      << ", min: " << min_logit
+                      << ", max: " << max_logit << std::endl;
+
             // Ensure we have valid output dimensions
             if (logits.rows() == 0 || logits.cols() != tokenizer.vocab_size()) {
                 continue;
@@ -408,8 +431,16 @@ float Utils::evaluate_validation(
             total_loss += loss;
 
             // Check if prediction matches target
+            std::vector<std::string>& vocabulary = get_vocabulary(tokenizer);
+            
+            if (vocabulary.size() != tokenizer.vocab_size()) {
+                throw std::runtime_error("Vocabulary size mismatch: " + 
+                    std::to_string(vocabulary.size()) + " vs tokenizer vocab " +
+                    std::to_string(tokenizer.vocab_size()));
+            }
+
             int predicted_token = -1;
-            float max_logit = -std::numeric_limits<float>::infinity();
+            max_logit = -std::numeric_limits<float>::infinity();
             std::cout << "iterating through logits" << std::endl;
             for (size_t i = 0; i < logits.cols(); ++i) {
                 float val = logits(logits.rows() - 1, i);
@@ -418,7 +449,28 @@ float Utils::evaluate_validation(
                     predicted_token = i;
                 }
             }
-            std::cout << "predicted token: " << predicted_token << std::endl;
+            // Add debug output for logits
+            std::cout << "Top 5 logits:" << std::endl;
+            std::vector<std::pair<float, int>> logit_pairs;
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                logit_pairs.push_back({logits(logits.rows() - 1, i), i});
+            }
+            std::partial_sort(logit_pairs.begin(), logit_pairs.begin() + 5, logit_pairs.end(),
+                [](const auto& a, const auto& b) { return a.first > b.first; });
+            for (int i = 0; i < 5; ++i) {
+                std::cout << vocabulary[logit_pairs[i].second] << ": " 
+                         << logit_pairs[i].first << std::endl;
+            }
+
+            if (predicted_token >= 0 && predicted_token < vocabulary.size()) {
+                std::cout << "predicted token " << predicted_token << ": '" 
+                           << vocabulary[predicted_token] << "'" << std::endl;
+            } else {
+                throw std::runtime_error("Predicted token index " + 
+                    std::to_string(predicted_token) + 
+                    " is outside vocabulary range [0, " + 
+                    std::to_string(vocabulary.size()) + ")");
+            }
 
             if (!target_tokens.empty() && predicted_token == target_tokens.back()) {
                 correct_predictions++;
@@ -489,4 +541,18 @@ void Utils::apply_sampling_parameters(std::vector<float>& logits, float temperat
             }
         }
     }
+}
+
+std::vector<std::string>& Utils::get_vocabulary(const Tokenizer& tokenizer) {
+    static std::vector<std::string> vocabulary;
+    if (vocabulary.empty()) {
+        vocabulary.reserve(tokenizer.vocab_size());
+        
+        // Fill vocabulary with all possible token strings
+        for (size_t i = 0; i < tokenizer.vocab_size(); i++) {
+            vocabulary.push_back(tokenizer.decode({static_cast<int>(i)}));
+        }
+        std::cout << "Loaded vocabulary with " << vocabulary.size() << " tokens" << std::endl;
+    }
+    return vocabulary;
 }

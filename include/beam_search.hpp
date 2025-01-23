@@ -4,6 +4,7 @@
 #include <queue>
 #include <utility>
 #include <vector>
+#include "matrix.hpp"
 
 /**
  * @brief Implements beam search decoding for sequence generation.
@@ -33,8 +34,27 @@ class BeamSearch {
      * Hypotheses can be compared based on their scores for beam selection.
      */
     struct Hypothesis {
-        std::vector<int> tokens;  ///< Sequence of generated tokens
-        float score;              ///< Cumulative log probability score
+        float score;                  ///< Log probability score of the hypothesis
+        std::vector<int> tokens;     ///< Sequence of token IDs
+        size_t last_token;           ///< Last token ID in the sequence
+        size_t length;               ///< Length of the sequence
+        bool finished;               ///< Whether the hypothesis has finished generating
+
+        // Constructor for initializing with a sequence and score
+        Hypothesis(const std::vector<int>& sequence, float score)
+            : tokens(sequence), 
+              score(score),
+              last_token(sequence.empty() ? 0 : sequence.back()),
+              length(sequence.size()),
+              finished(false) {}
+
+        // Constructor for initializing with individual components
+        Hypothesis(float score = 0.0f, size_t last_token = 0,
+                  size_t length = 0, bool finished = false)
+            : score(score),
+              last_token(last_token),
+              length(length),
+              finished(finished) {}
 
         /**
          * @brief Compares hypotheses based on their scores.
@@ -79,4 +99,20 @@ class BeamSearch {
      * @return Penalized score
      */
     float apply_length_penalty(float score, size_t length) const;
+
+    // Helper methods for beam search
+    void update_beams(std::vector<std::vector<int>>& sequences,
+                     Matrix& beam_scores,
+                     const Matrix& next_scores,
+                     const std::vector<int>& next_tokens);
+
+    bool is_search_complete(const std::vector<std::vector<int>>& sequences);
+
+    std::vector<int> get_best_sequence(
+        const std::vector<std::vector<int>>& sequences,
+        const Matrix& beam_scores);
+
+    std::vector<int> cpu_beam_search(
+        const std::vector<float>& initial_logits,
+        size_t max_length);
 };

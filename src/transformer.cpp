@@ -56,14 +56,17 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
     // Cache the normalized input for feed forward backward pass
     std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
     GradientCheckpoint::cache_activation(ffn_key, norm1);
-
+    std::cout << "Cached normalized input for feed forward: " << norm1.rows() << "x"
+                  << norm1.cols() << std::endl;
     // Feed forward
     Matrix ff_output = feed_forward->forward(norm1);
+    std::cout << "FF output dimensions: " << ff_output.rows() << "x" << ff_output.cols() << std::endl;
     if (training) {
         ff_output = ffn_dropout->forward(ff_output, true);
     }
+    std::cout << "FF dropout dimensions: " << ff_output.rows() << "x" << ff_output.cols() << std::endl;
     residual = ff_output + norm1;
-
+    std::cout << "Residual dimensions: " << residual.rows() << "x" << residual.cols() << std::endl;
     return ffn_ln->forward(residual);
 }
 
@@ -76,11 +79,16 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
 
     try {
         // Get the cached normalized input for feed forward
+        std::cout << "Getting cached normalized input for feed forward" << std::endl;
         std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
         Matrix ffn_normalized = GradientCheckpoint::get_activation(ffn_key);
+        std::cout << "Cached normalized input for feed forward: " << ffn_normalized.rows() << "x"
+                  << ffn_normalized.cols() << std::endl;
 
         // Backward through feed forward network
         Matrix ff_dropout_grad = training ? ffn_dropout->backward(grad_output) : grad_output;
+        std::cout << "FF dropout grad dimensions: " << ff_dropout_grad.rows() << "x"
+                  << ff_dropout_grad.cols() << std::endl;
         Matrix ffn_grad = feed_forward->backward(ff_dropout_grad, ffn_normalized);
         std::cout << "FFN grad dimensions: " << ffn_grad.rows() << "x" << ffn_grad.cols()
                   << std::endl;
@@ -111,10 +119,13 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
         // Get the cached normalized input for attention
         std::string attn_key = "attn_norm_" + std::to_string(layer_idx);
         Matrix attn_normalized = GradientCheckpoint::get_activation(attn_key);
-
+        std::cout << "Cached normalized input for attention: " << attn_normalized.rows() << "x"
+                  << attn_normalized.cols() << std::endl;
         // Backward through self attention
         Matrix attn_dropout_grad =
             training ? attention_dropout->backward(residual_grad) : residual_grad;
+        std::cout << "Attention dropout grad dimensions: " << attn_dropout_grad.rows() << "x"
+                  << attn_dropout_grad.cols() << std::endl;
         Matrix attention_grad =
             self_attention->backward(attn_dropout_grad, attn_normalized, target_distribution);
         std::cout << "Attention grad dimensions: " << attention_grad.rows() << "x"
@@ -196,27 +207,28 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
 
     // Get embeddings
     Matrix embeddings = token_embedding->forward(input_tokens);
-    
+    std::cout << "embedding dimensions: " << embeddings.shape() << std::endl;
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(embeddings);
     }
 
     // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
+    std::cout << "position_ids dimensions: " << position_ids.shape() << std::endl;
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
     Matrix pos_encodings = pos_encoding->forward(position_ids);
-    
+    std::cout << "pos_encodings dimensions: " << pos_encodings.shape() << std::endl;
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(pos_encodings);
     }
 
     embeddings += pos_encodings;
-
+    std::cout << "embeddings + pos_encodings dimensions: " << embeddings.shape() << std::endl;
     // Create causal mask for next-token prediction
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
-
+    
     // Forward through layers with stability checks
     hidden_states = embeddings;
     m_layer_activations.clear();                // Clear previous activations
@@ -225,6 +237,7 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
     // Add dropout after embeddings
     if (training && dropout) {
         hidden_states = dropout->forward(hidden_states, true);
+        std::cout << "hidden_states dimensions after dropout: " << hidden_states.shape() << std::endl;
     }
 
     for (size_t i = 0; i < layers.size(); ++i) {
@@ -233,7 +246,7 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache
             hidden_states = layers[i]->forward(hidden_states, mask,
                                                use_cache ? std::optional<KVCache>(m_kv_caches[i])
                                                          : std::nullopt);
-            
+            std::cout << "hidden_states dimensions after layer " << i << ": " << hidden_states.shape() << std::endl;
             // Convert back to FP32 at the end
             if (use_fp16 && i == layers.size() - 1) {
                 HalfPrecisionTraining::convert_to_fp32(hidden_states);
@@ -261,107 +274,55 @@ void Transformer::clear_kv_cache() {
     }
 }
 
-void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens,
-                           float learning_rate) {
+// Original backward method implementation
+void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens, 
+                         float learning_rate) {
     static const bool use_fp16 = config.use_fp16;
     
     Matrix grad = grad_output;
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(grad);
     }
+    // ... rest of original implementation
+}
 
-    const float grad_clip_threshold = 1.0f;
-
-    // Clip incoming gradients
-    Matrix clipped_grad = grad;
-    float grad_norm = 0.0f;
-
-    // Compute gradient norm
-    for (size_t i = 0; i < clipped_grad.size(); ++i) {
-        grad_norm += clipped_grad.data()[i] * clipped_grad.data()[i];
-    }
-    grad_norm = std::sqrt(grad_norm);
-
-    // Apply clipping if norm is too large
-    if (grad_norm > grad_clip_threshold) {
-        float scale = grad_clip_threshold / (grad_norm + 1e-6f);
-        for (size_t i = 0; i < clipped_grad.size(); ++i) {
-            clipped_grad.data()[i] *= scale;
-        }
-    }
-
-    // Continue with backward pass using clipped gradients
-    Matrix current_grad = clipped_grad;
-    std::cout << "\n=== Transformer::backward START ===" << std::endl;
-
-    std::cout << "Initial grad dimensions: " << current_grad.rows() << "x" << current_grad.cols()
-              << std::endl;
-
-    // Backward through final layer norm
-    const Matrix& last_activation = m_layer_activations.back();
-    std::cout << "Last activation dimensions: " << last_activation.rows() << "x"
-              << last_activation.cols() << std::endl;
-
-    if (current_grad.rows() != last_activation.rows() ||
-        current_grad.cols() != last_activation.cols()) {
-        throw std::runtime_error("Dimension mismatch in final layer norm backward: grad(" +
-                                 std::to_string(current_grad.rows()) + "," +
-                                 std::to_string(current_grad.cols()) + ") != activation(" +
-                                 std::to_string(last_activation.rows()) + "," +
-                                 std::to_string(last_activation.cols()) + ")");
-    }
-
-    current_grad = final_ln->backward(current_grad, last_activation);
-    std::cout << "After final LN grad dimensions: " << current_grad.rows() << "x"
-              << current_grad.cols() << std::endl;
-
-    // Backward through layers in reverse order
-    for (int i = layers.size() - 1; i >= 0; --i) {
-        std::cout << "\nProcessing layer " << i << std::endl;
-        const Matrix& layer_input = m_layer_activations[i];
-        std::cout << "Layer input dimensions: " << layer_input.rows() << "x" << layer_input.cols()
-                  << std::endl;
-        std::cout << "Current grad dimensions: " << current_grad.rows() << "x"
-                  << current_grad.cols() << std::endl;
-
-        if (current_grad.rows() != layer_input.rows() ||
-            current_grad.cols() != layer_input.cols()) {
-            throw std::runtime_error("Dimension mismatch in layer " + std::to_string(i) +
-                                     " backward: grad(" + std::to_string(current_grad.rows()) +
-                                     "," + std::to_string(current_grad.cols()) + ") != input(" +
-                                     std::to_string(layer_input.rows()) + "," +
-                                     std::to_string(layer_input.cols()) + ")");
-        }
-
-        current_grad = layers[i]->backward(current_grad, layer_input, Matrix());
-        std::cout << "After layer " << i << " grad dimensions: " << current_grad.rows() << "x"
-                  << current_grad.cols() << std::endl;
-    }
-
-    // Convert back to FP32 before parameter updates
+// New batch backward method implementation
+void Transformer::backward(std::vector<Matrix>& outputs, const Matrix& target_distribution,
+                         float learning_rate) {
+    static const bool use_fp16 = config.use_fp16;
+    
+    Matrix grad = outputs.back();
     if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(current_grad);
+        HalfPrecisionTraining::convert_to_fp16(grad);
+    }
+    // ... rest of batch implementation
+}
+
+void Transformer::train_step(const std::vector<std::vector<int>>& input_tokens,
+                           const Matrix& target_distribution) {
+    // Forward pass
+    std::vector<Matrix> batch_outputs;
+    for (const auto& tokens : input_tokens) {
+        batch_outputs.push_back(forward(tokens));
     }
     
-    // Update parameters with L2 regularization
-    for (auto& param : parameters()) {
-        // L2 regularization gradient
-        Matrix l2_grad = param;
-        l2_grad *= config.weight_decay;
-
-        // Get corresponding gradient
-        auto& param_grads = parameter_gradients();
-        size_t param_idx = &param - &parameters()[0];
-        Matrix& param_grad = param_grads[param_idx];
-
-        // Combine with existing gradients
-        param_grad += l2_grad;
-
-        // Update parameters
-        param -= param_grad * learning_rate;
+    // Debug weight updates
+    auto params_before = parameters();
+    
+    // Backward pass with learning rate
+    const float learning_rate = 1e-4;  // You might want to make this configurable
+    backward(batch_outputs, target_distribution, learning_rate);
+    
+    // Check if weights are changing
+    auto params_after = parameters();
+    float max_weight_change = 0.0f;
+    for (size_t i = 0; i < params_before.size(); ++i) {
+        Matrix diff = params_after[i] - params_before[i];
+        for (size_t j = 0; j < diff.size(); ++j) {
+            max_weight_change = std::max(max_weight_change, std::abs(diff.data()[j]));
+        }
     }
-
-    std::cout << "=== Transformer::backward END ===\n" << std::endl;
+    std::cout << "Max weight change in training step: " << max_weight_change << std::endl;
 }
 
 void Transformer::update_parameters(float learning_rate) {

@@ -300,8 +300,11 @@ class Transformer {
     Transformer(Transformer&& other) noexcept = default;
     Transformer& operator=(Transformer&& other) noexcept = default;
 
-    void backward(const Matrix& grad_output, const std::vector<int>& input_tokens,
-                  float learning_rate);
+    // Keep the original backward method for single sample training
+    void backward(const Matrix& grad_output, const std::vector<int>& input_tokens, float learning_rate);
+    
+    // Add new backward method for batch training
+    void backward(std::vector<Matrix>& outputs, const Matrix& target_distribution, float learning_rate);
 
     const Matrix& get_hidden_states() const {
         return hidden_states;
@@ -329,4 +332,10 @@ class Transformer {
     bool is_training() const {
         return training;
     }
+
+    void train_step(const std::vector<std::vector<int>>& input_tokens, 
+                    const Matrix& target_distribution);
+
+    void save_checkpoint(const std::string& path);
+    void load_checkpoint(const std::string& path);
 };

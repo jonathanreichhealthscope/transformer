@@ -6,6 +6,49 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include "../matrix.hpp"
+#include "cuda_check.cuh"
+
+namespace cuda {
+    class MemoryManager {
+    public:
+        static MemoryManager& instance() {
+            static MemoryManager instance;
+            return instance;
+        }
+
+        // Get or allocate device memory
+        float* get_device_memory(size_t size) {
+            try {
+                if (auto it = memory_pool_.find(size); it != memory_pool_.end()) {
+                    return it->second;
+                }
+                
+                float* device_ptr;
+                CUDA_CHECK(cudaMalloc(&device_ptr, size * sizeof(float)));
+                memory_pool_[size] = device_ptr;
+                return device_ptr;
+            } catch (const std::exception& e) {
+                throw std::runtime_error("CUDA memory allocation failed: " + std::string(e.what()));
+            }
+        }
+
+        void clear_pool() {
+            for (auto& [size, ptr] : memory_pool_) {
+                cudaFree(ptr);
+            }
+            memory_pool_.clear();
+        }
+
+        ~MemoryManager() {
+            clear_pool();
+        }
+
+    private:
+        MemoryManager() = default;
+        std::unordered_map<size_t, float*> memory_pool_;
+    };
+}
 
 class CudaMemoryPool {
   private:
