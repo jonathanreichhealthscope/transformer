@@ -33,6 +33,15 @@ class AttentionMask {
     static AttentionMask create_padding_mask(const std::vector<int>& lengths, size_t max_len);
     
     AttentionMask() = default;
+    explicit operator bool() const { return has_mask_; }
+    const Matrix& value() const { return mask_; }
+
+    // Constructor taking a mask matrix
+    explicit AttentionMask(const Matrix& mask) : mask_(mask), has_mask_(true) {}
+
+  private:
+    Matrix mask_;
+    bool has_mask_ = false;
 };
 
 /**
@@ -85,11 +94,11 @@ class MultiHeadAttention {
      * @brief Performs the backward pass to compute gradients.
      * @param grad_output Gradient of the loss with respect to the output
      * @param input Original input tensor
-     * @param target_distribution Target attention distribution (for distillation)
+     * @param target_distribution Optional target attention distribution
      * @return Gradient with respect to the input
      */
     Matrix backward(const Matrix& grad_output, const Matrix& input,
-                    const Matrix& target_distribution);
+                    const Matrix& target_distribution = Matrix());
 
     /**
      * @brief CUDA-accelerated version of the backward pass.
@@ -427,6 +436,17 @@ class MultiHeadAttention {
 
     // Add use_fp16 as a member variable
     bool use_fp16_;
+
+    /**
+     * @brief Compute gradients for query projection
+     * @param grad Gradient from upstream
+     * @param input Original input matrix
+     * @return Gradient for query computation
+     */
+    Matrix compute_query_gradients(const Matrix& grad, const Matrix& input);
+    Matrix compute_key_gradients(const Matrix& grad, const Matrix& input);
+    Matrix compute_value_gradients(const Matrix& grad, const Matrix& input);
+    Matrix combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value);
 };
 
 // Add sliding window attention

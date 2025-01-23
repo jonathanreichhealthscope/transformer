@@ -3,6 +3,8 @@
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include "../include/cuda/matrix_ops.cuh"
+#include "../include/cuda/tokenizer_kernels.cuh"
 
 // Define the special character map
 const std::unordered_map<char, std::string> Tokenizer::SPECIAL_CHAR_MAP = {
@@ -50,33 +52,46 @@ std::vector<int> Tokenizer::encode(const std::string& text) const {
         return cache_it->second;
     }
 
-    std::vector<int> tokens;
-    tokens.push_back(vocab->get_id("<bos>"));
+    try {
+#ifdef USE_CUDA
+        try {
+            // Use CUDA for parallel token matching
+            std::vector<int> tokens;
+            cuda::parallel_tokenize(text, *vocab, tokens);
+            encoding_cache[text] = tokens;
+            return tokens;
+        } catch (const std::runtime_error& e) {
+            std::cerr << "CUDA tokenization failed, falling back to CPU: " << e.what() << std::endl;
+#endif
+            // CPU fallback implementation
+            std::vector<int> tokens;
+            size_t pos = 0;
+            while (pos < text.length()) {
+                // Find longest matching token at current position
+                int longest_token = vocab->get_unk_token_id();
+                size_t longest_len = 0;
+                
+                for (size_t i = 0; i < vocab->size(); i++) {
+                    std::string token = vocab->get_token(i);
+                    if (text.compare(pos, token.length(), token) == 0) {
+                        if (token.length() > longest_len) {
+                            longest_token = i;
+                            longest_len = token.length();
+                        }
+                    }
+                }
 
-    // Use subword tokenization instead of word-level
-    std::string current_subword;
-    for (size_t i = 0; i < text.length(); i++) {
-        current_subword += text[i];
-        if (vocab->has_token(current_subword)) {
-            tokens.push_back(vocab->get_id(current_subword));
-            current_subword.clear();
-        } else if (current_subword.length() > MAX_SUBWORD_LENGTH) {
-            // Fallback to character-level if subword not found
-            tokens.push_back(vocab->get_id(std::string(1, text[i - 1])));
-            current_subword = text[i];
+                tokens.push_back(longest_token);
+                pos += longest_len > 0 ? longest_len : 1;
+            }
+            encoding_cache[text] = tokens;
+            return tokens;
+#ifdef USE_CUDA
         }
+#endif
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Tokenization failed: " + std::string(e.what()));
     }
-
-    // Handle any remaining subword
-    if (!current_subword.empty()) {
-        tokens.push_back(vocab->get_id("<unk>"));
-    }
-
-    tokens.push_back(vocab->get_id("<eos>"));
-
-    // Cache result before returning
-    encoding_cache[text] = tokens;
-    return tokens;
 }
 
 std::string Tokenizer::decode(const std::vector<int>& tokens) const {

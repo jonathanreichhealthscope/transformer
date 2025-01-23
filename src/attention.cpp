@@ -10,6 +10,8 @@
 #include <iostream>
 #include <string>
 #include "../include/half_precision.hpp"
+#include "../include/cuda/attention_ops.cuh"
+#include "../include/cuda/matrix_ops.cuh"
 
 extern PerformanceMetrics metrics;
 
@@ -136,228 +138,66 @@ Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, con
     return O;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& x, const AttentionMask& mask,
-                                   const std::optional<KVCache>& kv_cache) {
-    metrics.start_timer("attention_computation");
-
-    // Get use_fp16 from member variable instead of global config
-    static const bool use_fp16 = use_fp16_;
-    
-    // Convert input to FP16 if needed
-    Matrix input_matrix = x;
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(input_matrix);
-    }
-
-    std::cout << "Checking GQA configuration:" << std::endl;
-    std::cout << "- use_gqa: " << (use_gqa ? "true" : "false") << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
-    std::cout << "- num_kv_heads: " << num_kv_heads << std::endl;
-
-    // Use GQA if enabled
-    if (use_gqa && num_kv_heads != num_heads) {
-        std::cout << "About to call GroupedQueryAttention::forward" << std::endl;
-        GroupedQueryAttention gqa(hidden_size, num_heads, num_kv_heads, head_dim, dropout_prob);
-        
-        // Convert back to FP32 before GQA if using FP16
-        if (use_fp16) {
-            HalfPrecisionTraining::convert_to_fp32(input_matrix);
-        }
-        
-        Matrix gqa_output = gqa.forward(input_matrix, mask, kv_cache);
-        
-        // Convert GQA output to FP16 if needed
-        if (use_fp16) {
-            HalfPrecisionTraining::convert_to_fp16(gqa_output);
-        }
-        
-        return gqa_output;
-    }
-
-    // Regular attention implementation continues...
-    std::cout << "=== MultiHeadAttention::forward START ===" << std::endl;
-    std::cout << "Input shape: " << x.rows() << "x" << x.cols() << std::endl;
-
-    // Calculate true batch size and sequence length
-    const size_t seq_len = mask.mask.rows();      // Get sequence length from mask
-    const size_t batch_size = x.rows() / seq_len; // Correct: batch_size = total_rows / seq_len
-
-    std::cout << "Calculated dimensions:" << std::endl;
-    std::cout << "- batch_size: " << batch_size << std::endl;
-    std::cout << "- seq_len: " << seq_len << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
-    std::cout << "- head_dim: " << head_dim << std::endl;
-
-// Project input to Q, K, V
-#ifdef CUDA_AVAILABLE
-    std::cout << "\n=== CUDA EXECUTION PATH ===" << std::endl;
-    std::cout << "CUDA is available and will be used for matrix operations" << std::endl;
-    // Move matrices to GPU
-    std::cout << "Moving matrices to GPU..." << std::endl;
-    Matrix Q, K, V;
+Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask, 
+                                 const std::optional<KVCache>& kv_cache) {
     try {
-        Matrix x_gpu = input_matrix.to_gpu();
-        std::cout << "x moved to GPU successfully" << std::endl;
-        Matrix query_proj_gpu = query_proj.to_gpu();
-        std::cout << "query_proj moved to GPU successfully" << std::endl;
-        Matrix key_proj_gpu = key_proj.to_gpu();
-        std::cout << "key_proj moved to GPU successfully" << std::endl;
-        Matrix value_proj_gpu = value_proj.to_gpu();
-        std::cout << "value_proj moved to GPU successfully" << std::endl;
+        // Project input to Q, K, V
+        Matrix Q = query_proj.forward(input);
+        Matrix K = key_proj.forward(input);
+        Matrix V = value_proj.forward(input);
+        std::cout << "Q dimensions: " << Q.shape() << std::endl;
+        std::cout << "K dimensions: " << K.shape() << std::endl;
+        std::cout << "V dimensions: " << V.shape() << std::endl;
+        // Reshape for multi-head attention
+        int batch_size = input.rows();
+        int seq_len = input.cols();
+        std::cout << "input dimensions: " << input.shape() << std::endl;
+        
+#ifdef USE_CUDA
+        try {
+            // Use CUDA for attention computation
+            Matrix scores(batch_size, batch_size);  // Full sequence length for attention
+            std::cout << "scores dimensions: " << scores.shape() << std::endl;
+            cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
+            std::cout << "computed attention scores" << std::endl;
+            if (mask) {
+                std::cout << "mask dimensions: " << mask.value().shape() << std::endl;
+                scores += mask.value();
+            }
+            std::cout << "scores dimensions after mask: " << scores.shape() << std::endl;
+            cuda::apply_softmax(scores);
+            std::cout << "applied softmax" << std::endl;
+            std::cout << "scores dimensions after softmax: " << scores.shape() << std::endl;
 
-        // Project input using CUDA
-        std::cout << "Performing CUDA matrix multiplications..." << std::endl;
-        Q = cuda_matmul(x_gpu, query_proj_gpu);
-        std::cout << "Q computation successful" << std::endl;
-        K = cuda_matmul(x_gpu, key_proj_gpu);
-        std::cout << "K computation successful" << std::endl;
-        V = cuda_matmul(x_gpu, value_proj_gpu);
-        std::cout << "V computation successful" << std::endl;
-        std::cout << "=== CUDA operations completed successfully ===" << std::endl;
-    } catch (const std::runtime_error& e) {
-        std::cout << "\n=== CUDA EXECUTION FAILED - Falling back to CPU ===" << std::endl;
-        std::cerr << "CUDA error: " << e.what() << std::endl;
-        std::cerr << "Falling back to CPU implementation" << std::endl;
-        // Fall back to CPU implementation
-        Q = matmul(input_matrix, query_proj);
-        K = matmul(input_matrix, key_proj);
-        V = matmul(input_matrix, value_proj);
-    }
-#else
-    // CPU fallback
-    Q = matmul(input_matrix, query_proj);
-    K = matmul(input_matrix, key_proj);
-    V = matmul(input_matrix, value_proj);
+            Matrix output(batch_size, V.cols());  // Should match input dimensions
+            std::cout << "output dimensions: " << output.shape() << std::endl;
+            cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
+            std::cout << "output dimensions after attention forward: " << output.shape() << std::endl;
+            
+            // Reshape output before projection
+            Matrix reshaped_output(batch_size, num_heads * head_dim);
+            // TODO: Add reshape operation here
+            return output_proj.forward(reshaped_output);  // Project back to hidden_size
+        } catch (const std::runtime_error& e) {
+            std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
 #endif
+            // CPU fallback implementation
+            Matrix scores = matmul(Q, K.transpose());
+            scores *= (1.0f / std::sqrt(head_dim));
 
-    // Convert Q,K,V to FP16 if needed
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(Q);
-        HalfPrecisionTraining::convert_to_fp16(K);
-        HalfPrecisionTraining::convert_to_fp16(V);
-    }
-
-    // Handle KV cache if present
-    if (kv_cache) {
-        // Concatenate current K/V with cached K/V
-        Matrix new_K(K.rows() + kv_cache->key_cache.rows(), K.cols());
-        Matrix new_V(V.rows() + kv_cache->value_cache.rows(), V.cols());
-
-        // Copy cached values first
-        for (size_t i = 0; i < kv_cache->key_cache.rows(); i++) {
-            for (size_t j = 0; j < K.cols(); j++) {
-                new_K(i, j) = kv_cache->key_cache.at(i, j);
-                new_V(i, j) = kv_cache->value_cache.at(i, j);
+            if (mask) {
+                scores += mask.value();
             }
+
+            scores.apply_softmax();
+            Matrix output = matmul(scores, V);
+            std::cout << "output dimensions after matmul: " << output.shape() << std::endl;
+            return output_proj.forward(output);
+#ifdef USE_CUDA
         }
-
-        // Copy new values
-        for (size_t i = 0; i < K.rows(); i++) {
-            for (size_t j = 0; j < K.cols(); j++) {
-                new_K(i + kv_cache->key_cache.rows(), j) = K(i, j);
-                new_V(i + kv_cache->value_cache.rows(), j) = V(i, j);
-            }
-        }
-
-        // Log cache usage
-        std::cout << "Using KV cache:" << std::endl;
-        std::cout << "- Cached K shape: " << kv_cache->key_cache.rows() << "x"
-                  << kv_cache->key_cache.cols() << std::endl;
-        std::cout << "- Cached V shape: " << kv_cache->value_cache.rows() << "x"
-                  << kv_cache->value_cache.cols() << std::endl;
-        std::cout << "- New K shape: " << new_K.rows() << "x" << new_K.cols() << std::endl;
-        std::cout << "- New V shape: " << new_V.rows() << "x" << new_V.cols() << std::endl;
-
-        K = std::move(new_K);
-        V = std::move(new_V);
-    }
-
-    // Apply RoPE to Q and K if enabled
-    if (use_rope) {
-        // Check dimensions before applying RoPE
-        if (Q.cols() % 2 != 0) {
-            throw std::runtime_error("RoPE requires even dimension size, got: " +
-                                     std::to_string(Q.cols()));
-        }
-
-        // Apply RoPE to each position in the sequence
-        for (size_t pos = 0; pos < seq_len; pos++) {
-            for (size_t b = 0; b < batch_size; b++) {
-                size_t idx = b * seq_len + pos;
-                // Bounds check
-                if (idx >= Q.rows()) {
-                    throw std::runtime_error("RoPE index out of bounds: " + std::to_string(idx) +
-                                             " >= " + std::to_string(Q.rows()));
-                }
-
-                // Get row vectors for Q and K
-                Vector q_row(Q.cols());
-                Vector k_row(K.cols());
-                for (size_t j = 0; j < Q.cols(); j++) {
-                    q_row[j] = Q(idx, j);
-                    k_row[j] = K(idx, j);
-                }
-
-                // Apply RoPE
-                Vector q_rotated = apply_rope(q_row, pos);
-                Vector k_rotated = apply_rope(k_row, pos);
-
-                // Update matrices with rotated vectors
-                for (size_t j = 0; j < Q.cols(); j++) {
-                    Q(idx, j) = q_rotated[j];
-                    K(idx, j) = k_rotated[j];
-                }
-            }
-        }
-    }
-
-    std::cout << "Q shape: " << Q.rows() << "x" << Q.cols() << std::endl;
-    std::cout << "K shape: " << K.rows() << "x" << K.cols() << std::endl;
-    std::cout << "V shape: " << V.rows() << "x" << V.cols() << std::endl;
-
-    // Add debug output to verify flag
-    std::cout << "Using flash attention: " << (this->use_flash ? "true" : "false") << std::endl;
-
-    Matrix attention_output;
-    if (this->use_flash && !kv_cache) {
-        attention_output = flash_attention(Q, K, V, mask);
-    } else {
-        attention_output = standard_attention(Q, K, V, mask);
-    }
-
-    // Convert back to FP32 for output projection
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(attention_output);
-    }
-
-    std::cout << "Attention output before projection shape: " << attention_output.rows() << "x"
-              << attention_output.cols() << std::endl;
-
-    // Project output
-    Matrix output = matmul(attention_output, output_proj);
-    std::cout << "Final output shape: " << output.rows() << "x" << output.cols() << std::endl;
-    std::cout << "=== MultiHeadAttention::forward END ===" << std::endl;
-
-    try {
-        std::cout << "Recording attention metrics:" << std::endl;
-        std::cout << "- seq_len: " << seq_len << std::endl;
-        std::cout << "- num_heads: " << num_heads << std::endl;
-        std::cout << "- head_dim: " << head_dim << std::endl;
-        std::cout << "Recording FLOPS..." << std::endl;
-        metrics.record_attention_flops(seq_len, num_heads, head_dim);
-        std::cout << "Stopping timer..." << std::endl;
-        metrics.stop_timer("attention_computation");
-        std::cout << "Successfully recorded metrics" << std::endl;
-
-        std::cout << "Moving output matrix..." << std::endl;
-        return std::move(output); // Explicit move
+#endif
     } catch (const std::exception& e) {
-        std::cout << "Error after forward pass:" << std::endl;
-        std::cout << "- Error message: " << e.what() << std::endl;
-        std::cout << "- seq_len: " << seq_len << std::endl;
-        std::cout << "- num_heads: " << num_heads << std::endl;
-        std::cout << "- head_dim: " << head_dim << std::endl;
-        throw;
+        throw std::runtime_error("MultiHeadAttention forward failed: " + std::string(e.what()));
     }
 }
 
@@ -449,22 +289,22 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
       num_kv_heads(num_kv_heads_), max_seq_length(max_seq_length_),
       use_fp16_(use_fp16),
       // Initialize matrices with correct dimensions
-      query_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      key_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      value_proj(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      output_proj(Matrix(num_heads_ * head_dim_, hidden_size_)),
+      query_proj(Matrix(hidden_size_, hidden_size_)),
+      key_proj(Matrix(hidden_size_, hidden_size_)),
+      value_proj(Matrix(hidden_size_, hidden_size_)),
+      output_proj(Matrix(hidden_size_, hidden_size_)),
       // Initialize bias vectors
-      query_bias(FloatVector(num_heads_ * head_dim_)),
-      key_bias(FloatVector(num_heads_ * head_dim_)),
-      value_bias(FloatVector(num_heads_ * head_dim_)), output_bias(FloatVector(hidden_size_)),
+      query_bias(FloatVector(hidden_size_ * num_heads_)),
+      key_bias(FloatVector(hidden_size_ * num_heads_)),
+      value_bias(FloatVector(hidden_size_ * num_heads_)), output_bias(FloatVector(hidden_size_)),
       // Initialize gradients with same dimensions as their parameters
-      query_proj_grad(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      key_proj_grad(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      value_proj_grad(Matrix(hidden_size_, num_heads_ * head_dim_)),
-      output_proj_grad(Matrix(num_heads_ * head_dim_, hidden_size_)),
-      query_bias_grad(FloatVector(num_heads_ * head_dim_)),
-      key_bias_grad(FloatVector(num_heads_ * head_dim_)),
-      value_bias_grad(FloatVector(num_heads_ * head_dim_)),
+      query_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      key_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      value_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      output_proj_grad(Matrix(hidden_size_, hidden_size_)),
+      query_bias_grad(FloatVector(hidden_size_ * num_heads_)),
+      key_bias_grad(FloatVector(hidden_size_ * num_heads_)),
+      value_bias_grad(FloatVector(hidden_size_ * num_heads_)),
       output_bias_grad(FloatVector(hidden_size_)) {
 
     std::cout << "\n=== MultiHeadAttention::constructor START ===" << std::endl;
@@ -685,31 +525,59 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
 
     // Compute gradients for attention mechanism
     Matrix d_query = compute_query_gradients(grad, input_matrix);
+    std::cout << "d_query dimensions: " << d_query.rows() << "x" << d_query.cols() << std::endl;
     Matrix d_key = compute_key_gradients(grad, input_matrix);
+    std::cout << "d_key dimensions: " << d_key.rows() << "x" << d_key.cols() << std::endl;
     Matrix d_value = compute_value_gradients(grad, input_matrix);
+    std::cout << "d_value dimensions: " << d_value.rows() << "x" << d_value.cols() << std::endl;
 
     // Combine gradients
     Matrix d_input = combine_gradients(d_query, d_key, d_value);
-
+    std::cout << "d_input dimensions: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+    
     // Update projection gradients
-    query_proj_grad += matmul(input_matrix.transpose(), d_query);
-    key_proj_grad += matmul(input_matrix.transpose(), d_key);
-    value_proj_grad += matmul(input_matrix.transpose(), d_value);
-    output_proj_grad += matmul(grad.transpose(), input_matrix);
+    std::cout << "Updating projection gradients..." << std::endl;
+    
+    // Project attention scores back to hidden dimensions for query
+    Matrix d_query_hidden(d_query.rows(), input_matrix.cols());  // [seq_len x hidden_dim]
+    cuda::matmul(d_query, query_proj, d_query_hidden);
+    query_proj_grad += matmul(input_matrix.transpose(), d_query_hidden);
+    std::cout << "query_proj_grad dimensions: " << query_proj_grad.rows() << "x" << query_proj_grad.cols() << std::endl;
+
+    // Project attention scores back to hidden dimensions for key
+    Matrix d_key_hidden(d_key.rows(), input_matrix.cols());
+    cuda::matmul(d_key, key_proj, d_key_hidden);
+    key_proj_grad += matmul(input_matrix.transpose(), d_key_hidden);
+    std::cout << "key_proj_grad dimensions: " << key_proj_grad.rows() << "x" << key_proj_grad.cols() << std::endl;
+
+    // Project attention scores back to hidden dimensions for value
+    Matrix d_value_hidden(d_value.rows(), input_matrix.cols());
+    cuda::matmul(d_value, value_proj, d_value_hidden);
+    value_proj_grad += matmul(input_matrix.transpose(), d_value_hidden);
+    std::cout << "value_proj_grad dimensions: " << value_proj_grad.rows() << "x" << value_proj_grad.cols() << std::endl;
+
+    // For output projection, we already have grad in hidden dimensions
+    output_proj_grad += matmul(grad.transpose(), input_matrix);  // This one is already correct
+    std::cout << "output_proj_grad dimensions: " << output_proj_grad.rows() << "x" << output_proj_grad.cols() << std::endl;
 
     // Update bias gradients
     Vector d_query_bias = d_query.row_sum();
+    std::cout << "d_query_bias dimensions: " << d_query_bias.size() << std::endl;   
     Vector d_key_bias = d_key.row_sum();
+    std::cout << "d_key_bias dimensions: " << d_key_bias.size() << std::endl;
     Vector d_value_bias = d_value.row_sum();
+    std::cout << "d_value_bias dimensions: " << d_value_bias.size() << std::endl;
     Vector d_output_bias = grad.row_sum();
+    std::cout << "d_output_bias dimensions: " << d_output_bias.size() << std::endl;
 
     // Update bias gradients element by element
+    std::cout << "Updating bias gradients..." << std::endl;
     for (size_t i = 0; i < query_bias_grad.size(); ++i) {
         query_bias_grad[i] += d_query_bias[i];
         key_bias_grad[i] += d_key_bias[i];
         value_bias_grad[i] += d_value_bias[i];
     }
-
+    std::cout << "Updated query bias gradients" << std::endl;
     for (size_t i = 0; i < output_bias_grad.size(); ++i) {
         output_bias_grad[i] += d_output_bias[i];
     }
@@ -1113,4 +981,61 @@ void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
             }
         }
     }
+}
+
+Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
+    // Should produce (seq_len x seq_len) for attention scores
+    int seq_len = input.rows();
+    Matrix d_query(seq_len, seq_len);  // Attention scores dimensions
+    
+    // First compute attention score gradients
+    cuda::compute_attention_scores(grad, input, d_query, 1.0f / std::sqrt(float(input.cols())), num_heads);
+    
+    std::cout << "compute_query_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+
+    return d_query;
+}
+
+Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
+    int seq_len = input.rows();
+    Matrix d_key(seq_len, seq_len);
+    cuda::matmul(grad, key_proj.transpose(), d_key);
+    
+    std::cout << "compute_key_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "key_proj: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
+    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
+    
+    return d_key;
+}
+
+Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
+    int seq_len = input.rows();
+    Matrix d_value(seq_len, seq_len);
+    cuda::matmul(grad, value_proj.transpose(), d_value);
+    
+    std::cout << "compute_value_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "value_proj: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
+    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    
+    return d_value;
+}
+
+Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value) {
+    // Combine the gradients from Q, K, V projections
+    Matrix combined = d_query;
+    combined += d_key;
+    combined += d_value;
+    
+    std::cout << "combine_gradients dimensions:" << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
+    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
+    
+    return combined;
 }

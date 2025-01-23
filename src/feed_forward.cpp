@@ -3,6 +3,9 @@
 #include "../include/cuda/cuda_check.cuh"
 #include "../include/cuda/cuda_launch.cuh"
 #include "../include/cuda/feed_forward_kernels.cuh"
+#include "../include/cuda/backward_ops.cuh"
+#include "../include/cuda/matrix_ops.cuh"
+#include "../include/cuda/memory_manager.cuh"
 #endif
 #include <cmath>
 #include <iostream>
@@ -17,12 +20,16 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
     : w1(hidden_size, intermediate_size), w2(intermediate_size, hidden_size), b1(intermediate_size),
       b2(hidden_size), dropout_prob(dropout), intermediate_cache(1, intermediate_size),
       // Initialize gradients with same dimensions as their parameters
-      w1_grad(hidden_size, intermediate_size), w2_grad(intermediate_size, hidden_size),
-      b1_grad(intermediate_size), b2_grad(hidden_size) {
+      dW1_(hidden_size, intermediate_size), dW2_(intermediate_size, hidden_size),
+      db1_(intermediate_size), db2_(hidden_size) {
 
-    std::cout << "FeedForward dimensions:" << std::endl;
+    std::cout << "\n=== FeedForward Constructor Dimensions ===" << std::endl;
+    std::cout << "Hidden size: " << hidden_size << std::endl;
+    std::cout << "Intermediate size: " << intermediate_size << std::endl;
     std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
     std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
+    std::cout << "b1 size: " << b1.size() << std::endl;
+    std::cout << "b2 size: " << b2.size() << std::endl;
 
     // Initialize weights with Xavier/Glorot initialization
     std::random_device rd;
@@ -54,36 +61,100 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
         b2[i] = 0.0f;
 
     // Initialize gradients to zero
-    for (size_t i = 0; i < w1_grad.rows(); ++i) {
-        for (size_t j = 0; j < w1_grad.cols(); ++j) {
-            w1_grad(i, j) = 0.0f;
+    for (size_t i = 0; i < dW1_.rows(); ++i) {
+        for (size_t j = 0; j < dW1_.cols(); ++j) {
+            dW1_(i, j) = 0.0f;
         }
     }
 
-    for (size_t i = 0; i < w2_grad.rows(); ++i) {
-        for (size_t j = 0; j < w2_grad.cols(); ++j) {
-            w2_grad(i, j) = 0.0f;
+    for (size_t i = 0; i < dW2_.rows(); ++i) {
+        for (size_t j = 0; j < dW2_.cols(); ++j) {
+            dW2_(i, j) = 0.0f;
         }
     }
 
-    for (size_t i = 0; i < b1_grad.size(); ++i)
-        b1_grad[i] = 0.0f;
-    for (size_t i = 0; i < b2_grad.size(); ++i)
-        b2_grad[i] = 0.0f;
+    for (size_t i = 0; i < db1_.size(); ++i)
+        db1_[i] = 0.0f;
+    for (size_t i = 0; i < db2_.size(); ++i)
+        db2_[i] = 0.0f;
 }
 
-Matrix FeedForward::forward(const Matrix& x) {
+Matrix FeedForward::forward(const Matrix& input) {
+    try {
+        std::cout << "\n=== FeedForward Dimensions Debug ===" << std::endl;
+        std::cout << "Input: " << input.rows() << "x" << input.cols() << std::endl;
+        std::cout << "W1: " << w1.rows() << "x" << w1.cols() << std::endl;
+        std::cout << "W2: " << w2.rows() << "x" << w2.cols() << std::endl;
+        std::cout << "B1: " << b1.size() << std::endl;
+        std::cout << "B2: " << b2.size() << std::endl;
 
-    Matrix intermediate = matmul(x, w1);
-    intermediate.add_bias(b1);
-    intermediate.apply_gelu();
-
-    // Store intermediate values for backward pass
-    intermediate_cache = intermediate; // Direct assignment instead of deep copy
-
-    Matrix output = matmul(intermediate, w2);
-    output.add_bias(b2);
-    return output;
+#ifdef USE_CUDA
+        try {
+            // Use CUDA memory manager for efficient memory allocation
+            auto& memory_mgr = cuda::MemoryManager::instance();
+            // Allocate intermediate results
+            Matrix intermediate(input.rows(), w1.cols());
+            std::cout << "Intermediate dimensions: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            cuda::matmul(input, w1, intermediate);
+            std::cout << "After first matmul - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            std::cout << "Bias dimensions: " << b1.size() << std::endl;
+            // Apply bias and activation
+            intermediate.add_bias(b1);
+            std::cout << "After bias addition - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            cuda::gelu_forward(intermediate);
+            std::cout << "After GELU - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            // Store for backward pass
+            intermediate_cache = intermediate;
+            std::cout << "Intermediate cache dimensions: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+            // Explicitly preserve input batch size
+            Matrix output(input.rows(), w2.cols());  // Force output to be 1019 x hidden_size
+            std::cout << "Output dimensions: " << output.rows() << "x" << output.cols() << std::endl;
+            cuda::matmul(intermediate, w2, output);
+            std::cout << "After second matmul - Output: " << output.rows() << "x" << output.cols() << std::endl;
+            output.add_bias(b2);
+            std::cout << "After bias addition - Output: " << output.rows() << "x" << output.cols() << std::endl;
+            // Check dimensions before residual connection
+            if (output.rows() != input.rows() || output.cols() != input.cols()) {
+                throw std::runtime_error("FeedForward output dimensions " + 
+                    std::to_string(output.rows()) + "x" + std::to_string(output.cols()) +
+                    " don't match input dimensions " + 
+                    std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
+            }
+            
+            // Add residual connection
+            output += input;  // This is where the dimension mismatch occurs
+            
+            return output;
+        } catch (const std::runtime_error& e) {
+            std::cerr << "CUDA feed forward failed, falling back to CPU: " << e.what() << std::endl;
+#endif
+            // CPU fallback implementation
+            Matrix intermediate = matmul(input, w1);
+            intermediate.add_bias(b1);
+            intermediate.apply_gelu();
+            intermediate_cache = intermediate;
+            
+            Matrix output = matmul(intermediate, w2);
+            output.add_bias(b2);
+            
+            // Check dimensions before residual connection
+            if (output.rows() != input.rows() || output.cols() != input.cols()) {
+                throw std::runtime_error("FeedForward output dimensions " + 
+                    std::to_string(output.rows()) + "x" + std::to_string(output.cols()) +
+                    " don't match input dimensions " + 
+                    std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
+            }
+            
+            // Add residual connection
+            output += input;  // This is where the dimension mismatch occurs
+            
+            return output;
+#ifdef USE_CUDA
+        }
+#endif
+    } catch (const std::exception& e) {
+        throw std::runtime_error("FeedForward forward failed: " + std::string(e.what()));
+    }
 }
 
 void FeedForward::save(std::ostream& os) const {
@@ -121,72 +192,64 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream& is) {
 }
 
 Matrix FeedForward::backward(const Matrix& grad_output, const Matrix& input) {
-    if (intermediate_cache.empty()) {
-        throw std::runtime_error("No cached intermediate values found for backward pass");
-    }
-
     std::cout << "FeedForward::backward dimensions:" << std::endl;
     std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
     std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-    std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
-    std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
-    std::cout << "intermediate_cache: " << intermediate_cache.rows() << "x"
-              << intermediate_cache.cols() << std::endl;
+    std::cout << "intermediate_cache: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
 
-    // Validate dimensions
-    if (grad_output.cols() != w2.cols()) {
-        throw std::runtime_error("Dimension mismatch: grad_output.cols (" +
-                                 std::to_string(grad_output.cols()) + ") != w2.cols (" +
-                                 std::to_string(w2.cols()) + ")");
-    }
-    if (input.cols() != w1.rows()) {
-        throw std::runtime_error("Dimension mismatch: input.cols (" + std::to_string(input.cols()) +
-                                 ") != w1.rows (" + std::to_string(w1.rows()) + ")");
-    }
-
-    // Create local copy of cache to prevent it being moved/destroyed
-    Matrix cache_copy = intermediate_cache;
-
-    std::cout << "Computing d_intermediate..." << std::endl;
-    Matrix d_intermediate = matmul(grad_output, w2.transpose());
-    std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x" << d_intermediate.cols()
-              << std::endl;
-
-    // Ensure d_intermediate matches cache dimensions before GELU derivative
-    if (d_intermediate.rows() != cache_copy.rows() || d_intermediate.cols() != cache_copy.cols()) {
-        std::cout << "Reshaping d_intermediate to match cache dimensions..." << std::endl;
-        Matrix reshaped_d_intermediate(cache_copy.rows(), cache_copy.cols());
-        for (size_t i = 0; i < cache_copy.rows(); ++i) {
-            for (size_t j = 0; j < cache_copy.cols(); ++j) {
-                reshaped_d_intermediate(i, j) =
-                    d_intermediate(i % d_intermediate.rows(), j % d_intermediate.cols());
-            }
+    try {
+#ifdef USE_CUDA
+        // Compute gradients for second layer
+        Matrix d_intermediate(grad_output.rows(), w2.rows());  // [batch_size x intermediate_size]
+        std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
+        
+        cuda::matmul(grad_output, w2.transpose(), d_intermediate);
+        
+        // Compute gradients for GELU activation
+        Matrix gelu_grad = intermediate_cache;  // Create copy for in-place modification
+        cuda::gelu_backward(gelu_grad, d_intermediate);  // Compute GELU gradient in-place
+        
+        if (d_intermediate.rows() != gelu_grad.rows() || d_intermediate.cols() != gelu_grad.cols()) {
+            throw std::runtime_error("Dimension mismatch in GELU backward: " + 
+                std::to_string(d_intermediate.rows()) + "x" + std::to_string(d_intermediate.cols()) +
+                " vs " + std::to_string(gelu_grad.rows()) + "x" + std::to_string(gelu_grad.cols()));
         }
-        d_intermediate = std::move(reshaped_d_intermediate);
+        d_intermediate = d_intermediate.hadamard(gelu_grad);
+        
+        // Compute input gradients
+        Matrix d_input(input.rows(), input.cols());  // [batch_size x hidden_size]
+        std::cout << "d_input dims before matmul: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+        cuda::matmul(d_intermediate, w1.transpose(), d_input);
+        std::cout << "d_input dims after matmul: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+        
+        // Verify output dimensions match input dimensions
+        if (d_input.rows() != input.rows() || d_input.cols() != input.cols()) {
+            throw std::runtime_error("Output matrix has wrong dimensions: expected " +
+                std::to_string(input.rows()) + "x" + std::to_string(input.cols()) +
+                " got " + std::to_string(d_input.rows()) + "x" + std::to_string(d_input.cols()));
+        }
+        
+        return d_input;
+#else
+        throw std::runtime_error("CUDA support not enabled");
+#endif
+    } catch (const std::exception& e) {
+        throw std::runtime_error("FeedForward backward failed: " + std::string(e.what()));
     }
-
-    std::cout << "Applying GELU derivative..." << std::endl;
-    d_intermediate.apply_gelu_derivative(cache_copy);
-
-    // Compute gradients for w2 and b2
-    w2_grad = matmul(intermediate_cache.transpose(), grad_output);
-    b2_grad = grad_output.row_sum();
-
-    // Compute gradients for w1 and b1
-    w1_grad = matmul(input.transpose(), d_intermediate);
-    b1_grad = d_intermediate.row_sum();
-
-    std::cout << "Computing grad_input..." << std::endl;
-    Matrix grad_input = matmul(d_intermediate, w1.transpose());
-    std::cout << "grad_input dims: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
-
-    return grad_input;
 }
 
-Matrix FeedForward::backward_cuda(const Matrix& grad, const Matrix& input) const {
-#ifdef USE_CUDA
-    return backward_cuda(grad, input);
-#else
-    throw std::runtime_error("CUDA support not enabled");
-#endif
+void FeedForward::update_parameters(const Matrix& grad) {
+    float learning_rate = 0.01f;  // Could be made configurable
+    
+    w1 -= dW1_ * learning_rate;
+    // Scale vector elements individually
+    for (size_t i = 0; i < b1.size(); ++i) {
+        b1[i] -= db1_[i] * learning_rate;
+    }
+    
+    w2 -= dW2_ * learning_rate;
+    // Scale vector elements individually
+    for (size_t i = 0; i < b2.size(); ++i) {
+        b2[i] -= db2_[i] * learning_rate;
+    }
 }
