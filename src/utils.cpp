@@ -410,7 +410,13 @@ float Utils::evaluate_validation(
             total_loss += loss;
 
             // Check if prediction matches target
-            std::vector<std::string>& vocabulary = get_vocabulary();
+            std::vector<std::string>& vocabulary = get_vocabulary(tokenizer);
+            
+            if (vocabulary.size() != tokenizer.vocab_size()) {
+                throw std::runtime_error("Vocabulary size mismatch: " + 
+                    std::to_string(vocabulary.size()) + " vs tokenizer vocab " +
+                    std::to_string(tokenizer.vocab_size()));
+            }
 
             int predicted_token = -1;
             float max_logit = -std::numeric_limits<float>::infinity();
@@ -422,6 +428,19 @@ float Utils::evaluate_validation(
                     predicted_token = i;
                 }
             }
+            // Add debug output for logits
+            std::cout << "Top 5 logits:" << std::endl;
+            std::vector<std::pair<float, int>> logit_pairs;
+            for (size_t i = 0; i < logits.cols(); ++i) {
+                logit_pairs.push_back({logits(logits.rows() - 1, i), i});
+            }
+            std::partial_sort(logit_pairs.begin(), logit_pairs.begin() + 5, logit_pairs.end(),
+                [](const auto& a, const auto& b) { return a.first > b.first; });
+            for (int i = 0; i < 5; ++i) {
+                std::cout << vocabulary[logit_pairs[i].second] << ": " 
+                         << logit_pairs[i].first << std::endl;
+            }
+
             if (predicted_token >= 0 && predicted_token < vocabulary.size()) {
                 std::cout << "predicted token " << predicted_token << ": '" 
                            << vocabulary[predicted_token] << "'" << std::endl;
@@ -503,36 +522,15 @@ void Utils::apply_sampling_parameters(std::vector<float>& logits, float temperat
     }
 }
 
-std::vector<std::string>& Utils::get_vocabulary() {
+std::vector<std::string>& Utils::get_vocabulary(const Tokenizer& tokenizer) {
     static std::vector<std::string> vocabulary;
     if (vocabulary.empty()) {
-        // Load vocabulary from training pairs
-        std::ifstream file("data/training_pairs.txt");
-        std::string line;
-        std::set<std::string> unique_words;
+        vocabulary.reserve(tokenizer.vocab_size());
         
-        while (std::getline(file, line)) {
-            size_t separator = line.find('|');
-            if (separator != std::string::npos) {
-                // Split into words and add to set
-                std::string input = line.substr(0, separator);
-                std::string output = line.substr(separator + 1);
-                
-                std::istringstream iss_input(input);
-                std::string word;
-                while (iss_input >> word) {
-                    unique_words.insert(word);
-                }
-                
-                std::istringstream iss_output(output);
-                while (iss_output >> word) {
-                    unique_words.insert(word);
-                }
-            }
+        // Fill vocabulary with all possible token strings
+        for (size_t i = 0; i < tokenizer.vocab_size(); i++) {
+            vocabulary.push_back(tokenizer.decode({static_cast<int>(i)}));
         }
-        
-        // Convert set to vector for indexing
-        vocabulary.assign(unique_words.begin(), unique_words.end());
         std::cout << "Loaded vocabulary with " << vocabulary.size() << " tokens" << std::endl;
     }
     return vocabulary;
