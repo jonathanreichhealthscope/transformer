@@ -297,11 +297,11 @@ BeamSearch::search(const std::vector<float>& initial_logits,
 }
 
 std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits) {
-    // Add temperature scaling to introduce controlled randomness
-    float temperature = 0.8f; // Can be configured, higher = more random
+    // Increase temperature for more randomness with small datasets
+    float higher_temp = 1.2f;  // Up from 0.8f
     std::vector<float> scaled_logits(logits.size());
     for (size_t i = 0; i < logits.size(); i++) {
-        scaled_logits[i] = logits[i] / temperature;
+        scaled_logits[i] = logits[i] / higher_temp;
     }
     
     // Apply softmax on temperature-scaled logits
@@ -321,12 +321,14 @@ std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits)
     return probs;
 }
 
-// Add diversity penalty to prevent beams from being too similar
+// Increase diversity penalty
 void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float strength) {
+    // Use stronger diversity penalty for small datasets
+    float stronger_penalty = strength * 1.5f;  // Increase the penalty
     for (size_t i = 0; i < candidates.size(); i++) {
         for (size_t j = 0; j < i; j++) {
             float overlap = calculateOverlap(candidates[i].sequence, candidates[j].sequence);
-            candidates[i].score -= strength * overlap;
+            candidates[i].score -= stronger_penalty * overlap;
         }
     }
 }

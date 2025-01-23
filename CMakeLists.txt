@@ -119,6 +119,7 @@ add_library(transformer_lib
     ${ATTENTION_SOURCES}
     ${LM_SOURCES}
     ${OPTIMIZER_SOURCES}
+    src/data_augmentation.cpp
 )
 
 # Set CUDA specific properties for the library
@@ -283,3 +284,8 @@ if(USE_CUDA)
         USE_CUDA
     )
 endif()
+
+# Make sure the include directory is in the include path
+target_include_directories(transformer_lib PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)

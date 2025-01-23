@@ -8,6 +8,7 @@
 #include <random>
 #include <sstream>
 #include <set>
+#include "../include/data_augmentation.hpp"
 
 float Utils::adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
     const size_t WARMUP_STEPS = 50;
@@ -194,7 +195,15 @@ std::vector<std::pair<std::string, std::string>> Utils::create_training_data() {
             training_pairs.emplace_back(input, output);
         }
     }
-    return training_pairs;
+
+    // Apply data augmentation
+    DataAugmentation augmenter(0.3f, 0.3f);
+    auto augmented_pairs = augmenter.augmentDataset(training_pairs);
+    
+    std::cout << "Original dataset size: " << training_pairs.size() << std::endl;
+    std::cout << "Augmented dataset size: " << augmented_pairs.size() << std::endl;
+    
+    return augmented_pairs;
 }
 
 void Utils::analyze_token_mappings(
