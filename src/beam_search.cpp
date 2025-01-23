@@ -1,6 +1,7 @@
 #include "../include/beam_search.hpp"
 #include "../include/cuda/matrix_ops.cuh"
 #include "../include/cuda/memory_manager.cuh"
+#include "../include/utils.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -104,6 +105,7 @@ std::vector<int> BeamSearch::get_best_sequence(
 
 std::vector<int> BeamSearch::cpu_beam_search(
     const std::vector<float>& initial_logits,
+    std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
     size_t max_length) {
     // Initialize with top beam_width_ tokens
     std::vector<std::pair<std::vector<int>, float>> beams;
@@ -135,10 +137,68 @@ std::vector<int> BeamSearch::cpu_beam_search(
                 continue;
             }
             
-            // Add next token with slightly lower score
-            std::vector<int> new_seq = sequence;
-            new_seq.push_back(sequence.back() + 1);
-            new_beams.push_back({new_seq, score * 0.9f});
+            // Get next token logits from the model
+            std::vector<float> next_logits = next_token_fn(sequence);
+            
+            // Apply temperature scaling and sampling
+            std::vector<float> scaled_probs = calculateScores(next_logits);
+            
+            // Get top-k candidates
+            auto candidate_pairs = topKSampling(scaled_probs, top_k);
+            std::vector<size_t> candidate_indices;
+            for (const auto& pair : candidate_pairs) {
+                candidate_indices.push_back(pair.second);
+            }
+            
+            // Apply nucleus sampling if enabled
+            if (top_p < 1.0f) {
+                auto nucleus_pairs = nucleusSampling(scaled_probs, top_p);
+                std::vector<size_t> nucleus_indices;
+                for (const auto& pair : nucleus_pairs) {
+                    nucleus_indices.push_back(pair.second);
+                }
+                
+                // Use intersection of top-k and nucleus sampling
+                std::vector<size_t> filtered_indices;
+                std::set_intersection(
+                    candidate_indices.begin(), candidate_indices.end(),
+                    nucleus_indices.begin(), nucleus_indices.end(),
+                    std::back_inserter(filtered_indices)
+                );
+                candidate_indices = filtered_indices;
+            }
+            
+            // Create beam candidates
+            std::vector<BeamCandidate> candidates;
+            for (size_t idx : candidate_indices) {
+                // Convert int sequence to size_t sequence
+                std::vector<size_t> new_sequence;
+                new_sequence.reserve(sequence.size() + 1);
+                for (int token : sequence) {
+                    new_sequence.push_back(static_cast<size_t>(token));
+                }
+                new_sequence.push_back(idx);
+                float new_score = score + std::log(scaled_probs[idx]);
+                candidates.push_back(BeamCandidate(new_sequence, new_score));
+            }
+            
+            // Apply diversity penalty
+            diversityPenalty(candidates, diversity_strength);
+            
+            // Add top candidates to new beams
+            std::sort(candidates.begin(), candidates.end(),
+                     [](const auto& a, const auto& b) { return a.score > b.score; });
+            
+            size_t num_to_add = std::min(beam_width_, candidates.size());
+            for (size_t i = 0; i < num_to_add; i++) {
+                // Convert size_t sequence back to int sequence
+                std::vector<int> int_sequence;
+                int_sequence.reserve(candidates[i].sequence.size());
+                for (size_t token : candidates[i].sequence) {
+                    int_sequence.push_back(static_cast<int>(token));
+                }
+                new_beams.push_back({int_sequence, candidates[i].score});
+            }
         }
         
         // Sort and prune beams
@@ -165,7 +225,7 @@ std::vector<int> BeamSearch::cpu_beam_search(
         if (all_ended) break;
     }
     
-    // Return sequence with highest score
+    // Return sequence with highest score after length penalty
     return std::max_element(beams.begin(), beams.end(),
                            [this](const auto& a, const auto& b) {
                                float score_a = apply_length_penalty(a.second, a.first.size());
@@ -224,9 +284,9 @@ BeamSearch::search(const std::vector<float>& initial_logits,
             std::cerr << "CUDA beam search failed, falling back to CPU: " << e.what() << std::endl;
 #endif
             // CPU fallback implementation
-            auto result = cpu_beam_search(initial_logits, max_length);
+            auto result = cpu_beam_search(initial_logits, next_token_fn, max_length);
             std::vector<Hypothesis> hypotheses;
-            hypotheses.push_back(Hypothesis{result, 0.0f});
+            hypotheses.push_back(Hypothesis(result, 0.0f));
             return hypotheses;
 #ifdef USE_CUDA
         }
@@ -269,4 +329,59 @@ void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float 
             candidates[i].score -= strength * overlap;
         }
     }
+}
+
+std::vector<std::pair<float, size_t>> BeamSearch::topKSampling(
+    const std::vector<float>& probabilities, size_t k) {
+    std::vector<std::pair<float, size_t>> prob_idx;
+    prob_idx.reserve(probabilities.size());
+    
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        prob_idx.push_back({probabilities[i], i});
+    }
+    
+    // Sort by probability in descending order
+    std::partial_sort(
+        prob_idx.begin(),
+        prob_idx.begin() + std::min(k, prob_idx.size()),
+        prob_idx.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; }
+    );
+    
+    // Return top k pairs
+    return std::vector<std::pair<float, size_t>>(
+        prob_idx.begin(),
+        prob_idx.begin() + std::min(k, prob_idx.size())
+    );
+}
+
+std::vector<std::pair<float, size_t>> BeamSearch::nucleusSampling(
+    const std::vector<float>& probabilities, float p) {
+    std::vector<std::pair<float, size_t>> sorted_probs;
+    sorted_probs.reserve(probabilities.size());
+    
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        sorted_probs.push_back({probabilities[i], i});
+    }
+    
+    // Sort by probability in descending order
+    std::sort(sorted_probs.begin(), sorted_probs.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Find cutoff for cumulative probability >= p
+    float cumsum = 0.0f;
+    size_t cutoff_idx = sorted_probs.size();
+    
+    for (size_t i = 0; i < sorted_probs.size(); i++) {
+        cumsum += sorted_probs[i].first;
+        if (cumsum >= p) {
+            cutoff_idx = i + 1;
+            break;
+        }
+    }
+    
+    return std::vector<std::pair<float, size_t>>(
+        sorted_probs.begin(),
+        sorted_probs.begin() + cutoff_idx
+    );
 }

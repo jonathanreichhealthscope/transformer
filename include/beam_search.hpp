@@ -132,8 +132,16 @@ class BeamSearch {
         const std::vector<std::vector<int>>& sequences,
         const Matrix& beam_scores);
 
+    /**
+     * @brief CPU implementation of beam search
+     * @param initial_logits Initial token probabilities
+     * @param next_token_fn Function to get next token probabilities
+     * @param max_length Maximum sequence length
+     * @return Best sequence found
+     */
     std::vector<int> cpu_beam_search(
         const std::vector<float>& initial_logits,
+        std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
         size_t max_length);
 
     /**
@@ -158,4 +166,16 @@ class BeamSearch {
         }
         return static_cast<float>(overlap) / std::max(seq1.size(), seq2.size());
     }
+
+    /**
+     * @brief Performs top-k sampling on probability distribution
+     */
+    std::vector<std::pair<float, size_t>> topKSampling(
+        const std::vector<float>& probabilities, size_t k);
+
+    /**
+     * @brief Performs nucleus (top-p) sampling on probability distribution
+     */
+    std::vector<std::pair<float, size_t>> nucleusSampling(
+        const std::vector<float>& probabilities, float p);
 };
