@@ -24,8 +24,13 @@ class BeamSearch {
      * @brief Constructs a beam search decoder.
      * @param beam_width Number of beams to maintain (higher means more diverse but slower)
      * @param length_penalty Penalty factor for sequence length (>1.0 favors longer sequences)
+     * @param temperature Temperature for temperature scaling
+     * @param diversity_strength Strength of diversity penalty
+     * @param top_k Top-K sampling parameter
+     * @param top_p Top-P sampling parameter
      */
-    BeamSearch(size_t beam_width, float length_penalty = 1.0f);
+    BeamSearch(size_t beam_width, float length_penalty = 1.0f, float temperature = 0.8f,
+               float diversity_strength = 0.5f, size_t top_k = 40, float top_p = 0.9f);
 
     /**
      * @brief Represents a single hypothesis in beam search.
@@ -67,6 +72,17 @@ class BeamSearch {
     };
 
     /**
+     * @brief Represents a beam candidate during search
+     */
+    struct BeamCandidate {
+        std::vector<size_t> sequence;
+        float score;
+        
+        BeamCandidate(const std::vector<size_t>& seq, float s) 
+            : sequence(seq), score(s) {}
+    };
+
+    /**
      * @brief Performs beam search decoding.
      * 
      * Starting from initial logits, generates sequences by maintaining the top-k
@@ -87,6 +103,10 @@ class BeamSearch {
   private:
     size_t beam_width_;     ///< Number of beams to maintain
     float length_penalty_;  ///< Penalty factor for sequence length
+    float temperature;
+    float diversity_strength;
+    size_t top_k;
+    float top_p;
 
     /**
      * @brief Applies length penalty to a hypothesis score.
@@ -115,4 +135,27 @@ class BeamSearch {
     std::vector<int> cpu_beam_search(
         const std::vector<float>& initial_logits,
         size_t max_length);
+
+    /**
+     * @brief Calculates scores for the next tokens using temperature scaling
+     */
+    std::vector<float> calculateScores(const std::vector<float>& logits);
+    
+    /**
+     * @brief Applies diversity penalty to beam candidates
+     */
+    void diversityPenalty(std::vector<BeamCandidate>& candidates, float strength);
+    
+    /**
+     * @brief Calculates sequence overlap for diversity penalty
+     */
+    float calculateOverlap(const std::vector<size_t>& seq1, const std::vector<size_t>& seq2) {
+        size_t overlap = 0;
+        for (size_t token : seq1) {
+            if (std::find(seq2.begin(), seq2.end(), token) != seq2.end()) {
+                overlap++;
+            }
+        }
+        return static_cast<float>(overlap) / std::max(seq1.size(), seq2.size());
+    }
 };

@@ -6,10 +6,20 @@
 #include <iomanip>
 #include <iostream>
 
-BeamSearch::BeamSearch(size_t beam_width, float length_penalty)
-    : beam_width_(beam_width), length_penalty_(length_penalty) {
+BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperature,
+                       float diversity_strength, size_t top_k, float top_p)
+    : beam_width_(beam_width)
+    , length_penalty_(length_penalty)
+    , temperature(temperature)
+    , diversity_strength(diversity_strength)
+    , top_k(top_k)
+    , top_p(top_p) {
     std::cout << "Initializing BeamSearch with width=" << beam_width
-              << ", length_penalty=" << length_penalty << std::endl;
+              << ", length_penalty=" << length_penalty 
+              << ", temperature=" << temperature
+              << ", diversity_strength=" << diversity_strength
+              << ", top_k=" << top_k
+              << ", top_p=" << top_p << std::endl;
 }
 
 float BeamSearch::apply_length_penalty(float score, size_t length) const {
@@ -120,8 +130,6 @@ std::vector<int> BeamSearch::cpu_beam_search(
         
         // Expand each beam
         for (const auto& [sequence, score] : beams) {
-            // In practice, you would get next token logits from your model here
-            // This is a simplified version that just adds the next token
             if (sequence.back() == 2) {  // End token
                 new_beams.push_back({sequence, score});
                 continue;
@@ -225,5 +233,40 @@ BeamSearch::search(const std::vector<float>& initial_logits,
 #endif
     } catch (const std::exception& e) {
         throw std::runtime_error("Beam search failed: " + std::string(e.what()));
+    }
+}
+
+std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits) {
+    // Add temperature scaling to introduce controlled randomness
+    float temperature = 0.8f; // Can be configured, higher = more random
+    std::vector<float> scaled_logits(logits.size());
+    for (size_t i = 0; i < logits.size(); i++) {
+        scaled_logits[i] = logits[i] / temperature;
+    }
+    
+    // Apply softmax on temperature-scaled logits
+    float max_logit = *std::max_element(scaled_logits.begin(), scaled_logits.end());
+    float sum_exp = 0.0f;
+    std::vector<float> probs(scaled_logits.size());
+    
+    for (size_t i = 0; i < scaled_logits.size(); i++) {
+        probs[i] = std::exp(scaled_logits[i] - max_logit);
+        sum_exp += probs[i];
+    }
+    
+    for (float& prob : probs) {
+        prob /= sum_exp;
+    }
+    
+    return probs;
+}
+
+// Add diversity penalty to prevent beams from being too similar
+void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float strength) {
+    for (size_t i = 0; i < candidates.size(); i++) {
+        for (size_t j = 0; j < i; j++) {
+            float overlap = calculateOverlap(candidates[i].sequence, candidates[j].sequence);
+            candidates[i].score -= strength * overlap;
+        }
     }
 }
