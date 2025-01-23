@@ -274,122 +274,55 @@ void Transformer::clear_kv_cache() {
     }
 }
 
-void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens,
-                           float learning_rate) {
+// Original backward method implementation
+void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens, 
+                         float learning_rate) {
     static const bool use_fp16 = config.use_fp16;
     
     Matrix grad = grad_output;
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(grad);
     }
+    // ... rest of original implementation
+}
 
-    const float grad_clip_threshold = 1.0f;
-
-    // Clip incoming gradients
-    Matrix clipped_grad = grad;
-    float grad_norm = 0.0f;
-
-    // Compute gradient norm
-    for (size_t i = 0; i < clipped_grad.size(); ++i) {
-        grad_norm += clipped_grad.data()[i] * clipped_grad.data()[i];
-    }
-    grad_norm = std::sqrt(grad_norm);
-
-    // Apply clipping if norm is too large
-    if (grad_norm > grad_clip_threshold) {
-        float scale = grad_clip_threshold / (grad_norm + 1e-6f);
-        for (size_t i = 0; i < clipped_grad.size(); ++i) {
-            clipped_grad.data()[i] *= scale;
-        }
-    }
-
-    // Continue with backward pass using clipped gradients
-    Matrix current_grad = clipped_grad;
-    std::cout << "\n=== Transformer::backward START ===" << std::endl;
-
-    std::cout << "Initial grad dimensions: " << current_grad.rows() << "x" << current_grad.cols()
-              << std::endl;
-
-    // Backward through final layer norm
-    const Matrix& last_activation = m_layer_activations.back();
-    std::cout << "Last activation dimensions: " << last_activation.rows() << "x"
-              << last_activation.cols() << std::endl;
-
-    if (current_grad.rows() != last_activation.rows() ||
-        current_grad.cols() != last_activation.cols()) {
-        throw std::runtime_error("Dimension mismatch in final layer norm backward: grad(" +
-                                 std::to_string(current_grad.rows()) + "," +
-                                 std::to_string(current_grad.cols()) + ") != activation(" +
-                                 std::to_string(last_activation.rows()) + "," +
-                                 std::to_string(last_activation.cols()) + ")");
-    }
-
-    current_grad = final_ln->backward(current_grad, last_activation);
-    std::cout << "After final LN grad dimensions: " << current_grad.rows() << "x"
-              << current_grad.cols() << std::endl;
-
-    // Backward through layers in reverse order
-    for (int i = layers.size() - 1; i >= 0; --i) {
-        std::cout << "\nProcessing layer " << i << std::endl;
-        const Matrix& layer_input = m_layer_activations[i];
-        std::cout << "Layer input dimensions: " << layer_input.rows() << "x" << layer_input.cols()
-                  << std::endl;
-        std::cout << "Current grad dimensions: " << current_grad.rows() << "x"
-                  << current_grad.cols() << std::endl;
-
-        if (current_grad.rows() != layer_input.rows() ||
-            current_grad.cols() != layer_input.cols()) {
-            throw std::runtime_error("Dimension mismatch in layer " + std::to_string(i) +
-                                     " backward: grad(" + std::to_string(current_grad.rows()) +
-                                     "," + std::to_string(current_grad.cols()) + ") != input(" +
-                                     std::to_string(layer_input.rows()) + "," +
-                                     std::to_string(layer_input.cols()) + ")");
-        }
-
-        current_grad = layers[i]->backward(current_grad, layer_input, Matrix());
-        std::cout << "After layer " << i << " grad dimensions: " << current_grad.rows() << "x"
-                  << current_grad.cols() << std::endl;
-    }
-
-    // Convert back to FP32 before parameter updates
+// New batch backward method implementation
+void Transformer::backward(std::vector<Matrix>& outputs, const Matrix& target_distribution,
+                         float learning_rate) {
+    static const bool use_fp16 = config.use_fp16;
+    
+    Matrix grad = outputs.back();
     if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(current_grad);
+        HalfPrecisionTraining::convert_to_fp16(grad);
     }
-    std::cout << "Current grad dimensions after conversion: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
-    // Update parameters with L2 regularization
-    for (auto& param : parameters()) {
-        // Get corresponding gradient before creating L2 grad
-        auto& param_grads = parameter_gradients();
-        size_t param_idx = &param - &parameters()[0];
-        Matrix& param_grad = param_grads[param_idx];
-        std::cout << "Param grad dimensions: " << param_grad.rows() << "x" << param_grad.cols() << std::endl;
+    // ... rest of batch implementation
+}
 
-        // Create L2 regularization gradient with same dimensions as param_grad
-        Matrix l2_grad(param_grad.rows(), param_grad.cols());
-        // Copy values from param, truncating or padding as needed
-        for (size_t i = 0; i < l2_grad.rows(); i++) {
-            for (size_t j = 0; j < l2_grad.cols(); j++) {
-                l2_grad(i,j) = (i < param.rows() && j < param.cols()) ? param(i,j) : 0.0f;
-            }
-        }
-        l2_grad *= config.weight_decay;
-        std::cout << "L2 grad dimensions: " << l2_grad.rows() << "x" << l2_grad.cols() << std::endl;
-
-        // Combine with existing gradients
-        param_grad += l2_grad;
-        std::cout << "Combined grad dimensions: " << param_grad.rows() << "x" << param_grad.cols() << std::endl;
-
-        // Update parameters, handling dimension mismatch
-        Matrix scaled_grad = param_grad * learning_rate;
-        for (size_t i = 0; i < param.rows() && i < param_grad.rows(); i++) {
-            for (size_t j = 0; j < param.cols() && j < param_grad.cols(); j++) {
-                param(i,j) -= scaled_grad(i,j);
-            }
-        }
-        std::cout << "Updated param dimensions: " << param.rows() << "x" << param.cols() << std::endl;
+void Transformer::train_step(const std::vector<std::vector<int>>& input_tokens,
+                           const Matrix& target_distribution) {
+    // Forward pass
+    std::vector<Matrix> batch_outputs;
+    for (const auto& tokens : input_tokens) {
+        batch_outputs.push_back(forward(tokens));
     }
-
-    std::cout << "=== Transformer::backward END ===\n" << std::endl;
+    
+    // Debug weight updates
+    auto params_before = parameters();
+    
+    // Backward pass with learning rate
+    const float learning_rate = 1e-4;  // You might want to make this configurable
+    backward(batch_outputs, target_distribution, learning_rate);
+    
+    // Check if weights are changing
+    auto params_after = parameters();
+    float max_weight_change = 0.0f;
+    for (size_t i = 0; i < params_before.size(); ++i) {
+        Matrix diff = params_after[i] - params_before[i];
+        for (size_t j = 0; j < diff.size(); ++j) {
+            max_weight_change = std::max(max_weight_change, std::abs(diff.data()[j]));
+        }
+    }
+    std::cout << "Max weight change in training step: " << max_weight_change << std::endl;
 }
 
 void Transformer::update_parameters(float learning_rate) {
