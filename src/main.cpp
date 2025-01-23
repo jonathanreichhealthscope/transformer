@@ -2,6 +2,8 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <random>
+#include "../include/tokenizer.hpp"
+#include "../include/sentencepiece_tokenizer.hpp"
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -41,36 +43,44 @@ int main(int argc, char* argv[]) {
 #else
         std::cout << "CUDA is not available" << std::endl;
 #endif
-        // Initialize tokenizer first to get vocab size
+
+        // Load training data first
+        auto training_pairs = Utils::create_training_data();
+        std::cout << "Loaded " << training_pairs.size() << " training pairs" << std::endl;
+
+        // Initialize tokenizer with config
         tokenizer = std::make_unique<Tokenizer>();
-        tokenizer->print_vocabulary_mappings();
-        tokenizer->clear_cache();
+        
+        if (config.tokenizer.use_subword) {
+            std::cout << "Initializing SentencePiece tokenizer with:\n"
+                      << "- Vocab size: " << config.tokenizer.vocab_size << "\n";
+              
+            // Prepare texts for tokenizer training
+            std::vector<std::string> texts;
+            texts.reserve(training_pairs.size() * 2);
+            for (const auto& pair : training_pairs) {
+                texts.push_back(pair.first);
+                texts.push_back(pair.second);
+            }
 
-        // Get vocabulary size from the tokenizer
-        size_t actual_vocab_size = tokenizer->vocab_size();
-        std::cout << "Actual vocabulary size: " << actual_vocab_size << std::endl;
+            // Train the tokenizer
+            try {
+                tokenizer->train(texts, "model/tokenizer");
+                std::cout << "SentencePiece tokenizer training completed. Vocabulary size: " 
+                          << tokenizer->vocab_size() << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to train tokenizer: " << e.what() << std::endl;
+                return 1;
+            }
+        }
 
-        // Only update vocab size from tokenizer, keep other settings from config file
-        config.vocab_size = actual_vocab_size;
-        // Only compute head_dim as it depends on other config values
-        config.head_dim = config.hidden_size / config.num_heads;
+        // Update vocabulary size in config based on tokenizer
+        config.vocab_size = tokenizer->vocab_size();
+        std::cout << "Using vocabulary size: " << config.vocab_size << std::endl;
 
-        std::cout << "Using configuration from file:\n"
-                  << "- Hidden size: " << config.hidden_size << "\n"
-                  << "- Number of heads: " << config.num_heads << "\n"
-                  << "- Number of layers: " << config.num_layers << "\n"
-                  << "- Using Flash Attention: " << config.use_flash_attention << "\n"
-                  << "- Using GQA: " << config.use_gqa << "\n"
-                  << "- Using RoPE: " << config.use_rope << "\n"
-                  << "- Using Sliding Window: " << config.use_sliding_window << "\n";
-
-        // Initialize components
+        // Initialize model with updated config
         Transformer transformer(config);
-        size_t vocab_size = tokenizer->vocab_size();
-        std::cout << "Actual vocabulary size from tokenizer: " << vocab_size << std::endl;
-
-        // Initialize language model head with correct vocab size
-        auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, vocab_size);
+        auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
 
         // Setup advanced components
         TensorCache<Matrix> activation_cache(1024, CacheReplacementPolicy::ARC);
@@ -86,20 +96,6 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Get training data
-        std::vector<std::pair<std::string, std::string>> training_data =
-            Utils::create_training_data();
-
-        // Preprocess the training data (convert to lowercase)
-        training_data = TextPreprocessor::preprocess_training_data(training_data);
-
-        // Analyze token mappings
-        Utils::analyze_token_mappings(training_data, *tokenizer);
-
-        // Print vocabulary for inspection
-        std::cout << "\n=== Full Vocabulary Mapping ===\n";
-        tokenizer->print_vocabulary_mappings();
-        std::cout << "\n";
         // Training parameters
         const size_t checkpoint_frequency =
             config.paths.checkpoint_frequency; // Save checkpoint every 2 epochs
@@ -135,7 +131,7 @@ int main(int argc, char* argv[]) {
                             size_t end_pos = epoch_str.find_first_not_of("0123456789");
                             epoch_str = epoch_str.substr(0, end_pos);
                             global_step =
-                                std::stoul(epoch_str) * (training_data.size() / config.batch_size);
+                                std::stoul(epoch_str) * (training_pairs.size() / config.batch_size);
                         }
 
                         std::cout << "Successfully loaded checkpoint. Resuming from global step: "
@@ -156,28 +152,35 @@ int main(int argc, char* argv[]) {
         auto validation_data = Utils::load_validation_data();
         std::cout << "Loaded " << validation_data.size() << " validation examples\n";
 
+        // Update any hardcoded token references
+        int pad_id = tokenizer->get_pad_token_id();    // Should be 0
+        int unk_id = tokenizer->get_unk_token_id();    // Should be 1
+        int bos_id = tokenizer->get_bos_token_id();    // Should be 2
+        int eos_id = tokenizer->get_eos_token_id();    // Should be 3
+        int mask_id = tokenizer->get_mask_token_id();  // Should be 4
+
         for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
             std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
             float epoch_loss = 0.0f;
             size_t total_batches =
-                (training_data.size() + config.batch_size - 1) / config.batch_size;
+                (training_pairs.size() + config.batch_size - 1) / config.batch_size;
 
             // Process batches
             for (size_t batch = 0; batch < total_batches; ++batch) {
                 metrics.start_timer("batch_processing");
 
                 size_t start_idx = batch * config.batch_size;
-                size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
+                size_t end_idx = std::min(start_idx + config.batch_size, training_pairs.size());
                 size_t current_batch_size = end_idx - start_idx;
 
                 // Create batch with validation
                 std::vector<std::vector<int>> input_batch;
-                std::vector<std::vector<int>> target_tokens;
+                std::vector<std::vector<int>> target_batch;  // Rename from target_tokens
 
                 // Find maximum sequence length in this batch
                 size_t max_seq_len = 0;
                 for (size_t j = start_idx; j < end_idx; ++j) {
-                    const auto& [input_str, target_str] = training_data[j];
+                    const auto& [input_str, target_str] = training_pairs[j];
                     std::vector<int> input_tokens = tokenizer->encode(input_str);
                     max_seq_len = std::max(max_seq_len, input_tokens.size());
                 }
@@ -185,21 +188,21 @@ int main(int argc, char* argv[]) {
                 // Fill and validate batch with padding
                 bool batch_valid = true;
                 for (size_t j = start_idx; j < end_idx; ++j) {
-                    const auto& [input_str, target_str] = training_data[j];
+                    const auto& [input_str, target_str] = training_pairs[j];
 
-                    // Preprocess both input and target
+                    // Preprocess text
                     std::string processed_input = input_str;
                     std::string processed_target = target_str;
-
                     tokenizer->preprocess_text(processed_input);
                     tokenizer->preprocess_text(processed_target);
 
+                    // Encode using appropriate tokenizer
                     std::vector<int> input_tokens = tokenizer->encode(processed_input);
-                    std::vector<int> curr_target_tokens = tokenizer->encode(processed_target);
+                    std::vector<int> target_tokens = tokenizer->encode(processed_target);
 
                     // Validate sequences
-                    if (!Utils::validate_input_sequence(input_tokens, config.vocab_size) ||
-                        !Utils::validate_input_sequence(curr_target_tokens, config.vocab_size)) {
+                    if (!Utils::validate_input_sequence(input_tokens, tokenizer->vocab_size()) ||
+                        !Utils::validate_input_sequence(target_tokens, tokenizer->vocab_size())) {
                         std::cerr << "Invalid sequence at position " << j << std::endl;
                         batch_valid = false;
                         break;
@@ -211,7 +214,7 @@ int main(int argc, char* argv[]) {
                     }
 
                     input_batch.push_back(input_tokens);
-                    target_tokens.push_back(curr_target_tokens);
+                    target_batch.push_back(target_tokens);  // Use target_batch instead of target_tokens
                 }
 
                 if (!batch_valid)
@@ -219,7 +222,7 @@ int main(int argc, char* argv[]) {
 
                 // Create target distribution for entire batch
                 Matrix target_distribution = Utils::create_batch_target_distribution(
-                    target_tokens, *tokenizer, config.vocab_size);
+                    target_batch, *tokenizer, config.vocab_size);
 
                 // Process the batch as a single sequence
                 std::vector<int> flattened_batch;
@@ -347,7 +350,10 @@ int main(int argc, char* argv[]) {
 
             // Test prediction on a sample input
             if ((epoch + 1) % 2 == 0) {
-                std::cout << "\n=== Starting Text Generation Testing ===" << std::endl;
+                std::cout << "\nTesting generation with " 
+                          << (config.tokenizer.use_subword ? "subword" : "regular") 
+                          << " tokenization:" << std::endl;
+                
                 // Initialize beam search with config parameters
                 BeamSearch beam_search(config.beam_size, config.length_penalty);
                 std::cout << "Initialized beam search with width=" << config.beam_size

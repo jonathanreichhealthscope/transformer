@@ -42,7 +42,7 @@ void parallel_tokenize(const std::string& text, const Vocabulary& vocab, std::ve
     const size_t vocab_size = vocab.size();
     
     // Get vocabulary data
-    const auto& vocab_tokens = vocab.get_vocabulary();
+    const auto& vocab_tokens = vocab.get_vocabulary_vector();
     std::vector<char> vocab_data(vocab_size * MAX_TOKEN_LENGTH);
     std::vector<int> vocab_lengths(vocab_size);
     

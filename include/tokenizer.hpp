@@ -1,9 +1,11 @@
 #pragma once
 #include "vocabulary.hpp"
+#include "token_constants.hpp"
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "sentencepiece_tokenizer.hpp"
 
 /**
  * @brief Text tokenizer for converting between text and token sequences.
@@ -11,7 +13,6 @@
  * The Tokenizer class provides functionality for encoding text into token sequences
  * and decoding token sequences back into text. It handles:
  * - Special tokens (PAD, UNK, BOS, EOS, MASK)
- * - Subword tokenization
  * - Text preprocessing
  * - Token caching for efficiency
  */
@@ -105,41 +106,31 @@ class Tokenizer {
      * @brief Gets the ID of the padding token.
      * @return Padding token ID
      */
-    int get_pad_token_id() const {
-        return vocab->get_pad_token_id();
-    }
+    int get_pad_token_id() const { return tokenizer_->get_pad_token_id(); }
 
     /**
      * @brief Gets the ID of the unknown token.
      * @return Unknown token ID
      */
-    int get_unk_token_id() const {
-        return vocab->get_unk_token_id();
-    }
+    int get_unk_token_id() const { return tokenizer_->get_unk_token_id(); }
 
     /**
      * @brief Gets the ID of the beginning-of-sequence token.
      * @return BOS token ID
      */
-    int get_bos_token_id() const {
-        return vocab->get_bos_token_id();
-    }
+    int get_bos_token_id() const { return tokenizer_->get_bos_token_id(); }
 
     /**
      * @brief Gets the ID of the end-of-sequence token.
      * @return EOS token ID
      */
-    int get_eos_token_id() const {
-        return vocab->get_eos_token_id();
-    }
+    int get_eos_token_id() const { return tokenizer_->get_eos_token_id(); }
 
     /**
      * @brief Gets the ID of the mask token.
      * @return Mask token ID
      */
-    int get_mask_token_id() const {
-        return vocab->get_mask_token_id();
-    }
+    int get_mask_token_id() const { return tokens::MASK_ID; }
 
     /**
      * @brief Gets a reference to the vocabulary.
@@ -150,6 +141,14 @@ class Tokenizer {
     }
 
     /**
+     * @brief Gets the vocabulary as a vector.
+     * @return Vector of tokens ordered by ID
+     */
+    std::vector<std::string> get_vocabulary_vector() const {
+        return vocab->get_vocabulary_vector();
+    }
+
+    /**
      * @brief Gets the map of special characters to their string representations.
      * @return Map of special characters
      */
@@ -157,10 +156,21 @@ class Tokenizer {
         return SPECIAL_CHAR_MAP;
     }
 
+    void train(const std::vector<std::string>& texts, const std::string& model_prefix) {
+        tokenizer_->train(texts, model_prefix);
+    }
+
+    void load_model(const std::string& model_path) {
+        tokenizer_->load_model(model_path);
+    }
+
   private:
-    std::unique_ptr<Vocabulary> vocab;                                    ///< Vocabulary for token-to-ID mapping
-    mutable std::unordered_map<std::string, std::vector<int>> encoding_cache;  ///< Cache for encoded tokens
-    static constexpr size_t MAX_SUBWORD_LENGTH = 32;                     ///< Maximum length of subword tokens
+    std::unique_ptr<Vocabulary> vocab;
+    std::unique_ptr<SentencePieceTokenizer> tokenizer_;
+    mutable std::unordered_map<std::string, std::vector<int>> encoding_cache;
+
+    /// Map of special characters to their string representations
+    static const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
 
     /**
      * @brief Saves the vocabulary to a stream.
@@ -175,6 +185,8 @@ class Tokenizer {
      */
     static std::unique_ptr<Vocabulary> load_vocabulary(std::istream& is);
 
-    /// Map of special characters to their string representations
-    static const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
+    /**
+     * @brief Syncs the main vocabulary with the tokenizer's vocabulary.
+     */
+    void sync_vocabulary_with_subword_tokenizer();
 };

@@ -174,3 +174,14 @@ std::string DataAugmentation::insertNoise(const std::string& text) {
     
     return noisy;
 }
+
+std::string DataAugmentation::augment_sequence(const std::string& sequence) {
+    // Use consistent token IDs
+    static const int PAD_ID = 0;
+    static const int UNK_ID = 1;
+    static const int BOS_ID = 2;
+    static const int EOS_ID = 3;
+    static const int MASK_ID = 4;
+    
+    // ... rest of the method
+}

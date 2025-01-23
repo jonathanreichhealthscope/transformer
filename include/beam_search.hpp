@@ -29,8 +29,12 @@ class BeamSearch {
      * @param top_k Top-K sampling parameter
      * @param top_p Top-P sampling parameter
      */
-    BeamSearch(size_t beam_width, float length_penalty = 1.0f, float temperature = 0.8f,
-               float diversity_strength = 0.5f, size_t top_k = 40, float top_p = 0.9f);
+    BeamSearch(size_t beam_width = 5, 
+               float length_penalty = 0.6f,
+               float temperature = 1.0f,
+               float diversity_strength = 0.5f,
+               size_t top_k = 40,
+               float top_p = 0.9f);
 
     /**
      * @brief Represents a single hypothesis in beam search.
@@ -107,6 +111,13 @@ class BeamSearch {
     float diversity_strength;
     size_t top_k;
     float top_p;
+
+    // Add special token IDs
+    int pad_token_id_;   ///< ID for padding token
+    int unk_token_id_;   ///< ID for unknown token
+    int bos_token_id_;   ///< ID for beginning of sequence token
+    int eos_token_id_;   ///< ID for end of sequence token
+    int mask_token_id_;  ///< ID for mask token
 
     /**
      * @brief Applies length penalty to a hypothesis score.

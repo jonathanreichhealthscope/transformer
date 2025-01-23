@@ -8,7 +8,7 @@
 
 class DataAugmentation {
 public:
-    DataAugmentation(float p_synonym = 0.3, float p_back_translation = 0.3);
+    DataAugmentation(float p_synonym = 0.3f, float p_back_translation = 0.3f);
 
     /**
      * @brief Augment a single training pair
@@ -26,6 +26,8 @@ public:
      */
     std::vector<std::pair<std::string, std::string>> augmentDataset(
         const std::vector<std::pair<std::string, std::string>>& training_pairs);
+
+    std::string augment_sequence(const std::string& sequence);
 
 private:
     float p_synonym_;        // Probability of applying synonym replacement

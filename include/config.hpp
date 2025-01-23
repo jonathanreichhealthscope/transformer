@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <string>
+#include <vector>
 
 /**
  * @brief Configuration class for transformer model architecture and training settings.
@@ -60,6 +61,16 @@ class TransformerConfig {
     float temperature;           ///< Temperature for sampling
     float top_p;                ///< Nucleus sampling probability threshold
     size_t max_length;          ///< Maximum generation length
+
+    // Tokenizer configuration
+    struct TokenizerConfig {
+        bool use_subword = true;
+        size_t vocab_size = 32000;  // Changed from max_vocab_size
+        std::string model_path = "model/tokenizer.model";
+        std::vector<std::string> special_tokens = {
+            "<pad>", "<unk>", "<bos>", "<eos>", "<mask>"
+        };
+    } tokenizer;
 
     /**
      * @brief Constructs a transformer configuration with default values.

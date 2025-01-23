@@ -49,6 +49,27 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
+# Add SentencePiece
+FetchContent_Declare(
+    sentencepiece
+    GIT_REPOSITORY https://github.com/google/sentencepiece.git
+    GIT_TAG v0.1.97
+)
+
+# Configure SentencePiece build options
+set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build SentencePiece as static library")
+set(SPM_ENABLE_TENSORFLOW_SHARED OFF CACHE BOOL "Build TensorFlow extension as shared library")
+set(SPM_ENABLE_TENSORFLOW OFF CACHE BOOL "Build TensorFlow extension")
+set(SPM_ENABLE_NEON OFF CACHE BOOL "Enable ARM NEON")
+set(SPM_ENABLE_AVX512BW OFF CACHE BOOL "Enable AVX512BW")
+set(SPM_ENABLE_AVX2 OFF CACHE BOOL "Enable AVX2")
+set(SPM_ENABLE_SSE4_2 OFF CACHE BOOL "Enable SSE4.2")
+set(SPM_ENABLE_SSE4_1 OFF CACHE BOOL "Enable SSE4.1")
+set(SPM_ENABLE_SSE3 OFF CACHE BOOL "Enable SSE3")
+set(SPM_ENABLE_SSE2 OFF CACHE BOOL "Enable SSE2")
+
+FetchContent_MakeAvailable(sentencepiece)
+
 # Include directories
 if(CUDAToolkit_FOUND)
     include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
@@ -68,6 +89,8 @@ set(CORE_SOURCES
     src/gqa.cpp
     src/beam_search.cpp
     src/config.cpp
+    src/tokenizer.cpp
+    src/sentencepiece_tokenizer.cpp
 )
 
 # Neural network components
@@ -81,7 +104,6 @@ set(NN_SOURCES
 
 # Training and utilities
 set(UTIL_SOURCES
-    src/tokenizer.cpp
     src/cache.cpp
     src/quantization.cpp
     src/optimizer.cpp
@@ -135,6 +157,8 @@ add_executable(transformer src/main.cpp)
 target_link_libraries(transformer_lib
     PUBLIC
     nlohmann_json::nlohmann_json
+    sentencepiece-static
+    sentencepiece_train-static
 )
 
 if(CUDAToolkit_FOUND)
@@ -288,4 +312,12 @@ endif()
 # Make sure the include directory is in the include path
 target_include_directories(transformer_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_definitions(
+    -DPAD_TOKEN_ID=0
+    -DUNK_TOKEN_ID=1
+    -DBOS_TOKEN_ID=2
+    -DEOS_TOKEN_ID=3
+    -DMASK_TOKEN_ID=4
 )

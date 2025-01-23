@@ -5,13 +5,24 @@
 #include <stdexcept>
 #include "../include/cuda/matrix_ops.cuh"
 #include "../include/cuda/tokenizer_kernels.cuh"
+#include "../include/sentencepiece_tokenizer.hpp"
 
 // Define the special character map
 const std::unordered_map<char, std::string> Tokenizer::SPECIAL_CHAR_MAP = {
     {'\n', "<newline>"},    {'\t', "<tab>"},     {'.', "<period>"},
     {'!', "<exclamation>"}, {'?', "<question>"}, {',', "<comma>"}};
 
-Tokenizer::Tokenizer() : vocab(std::make_unique<Vocabulary>()) {}
+Tokenizer::Tokenizer() 
+    : vocab(std::make_unique<Vocabulary>())
+    , tokenizer_(std::make_unique<SentencePieceTokenizer>()) {
+    
+    // Initialize vocabulary with special tokens
+    vocab->add_special_token(tokens::PAD_TOKEN, tokens::PAD_ID);
+    vocab->add_special_token(tokens::UNK_TOKEN, tokens::UNK_ID);
+    vocab->add_special_token(tokens::BOS_TOKEN, tokens::BOS_ID);
+    vocab->add_special_token(tokens::EOS_TOKEN, tokens::EOS_ID);
+    vocab->add_special_token(tokens::MASK_TOKEN, tokens::MASK_ID);
+}
 
 void Tokenizer::save_vocabulary(std::ostream& os) const {
     size_t vocab_size = vocab->size();
@@ -52,91 +63,13 @@ std::vector<int> Tokenizer::encode(const std::string& text) const {
         return cache_it->second;
     }
 
-    try {
-#ifdef USE_CUDA
-        try {
-            // Use CUDA for parallel token matching
-            std::vector<int> tokens;
-            cuda::parallel_tokenize(text, *vocab, tokens);
-            encoding_cache[text] = tokens;
-            return tokens;
-        } catch (const std::runtime_error& e) {
-            std::cerr << "CUDA tokenization failed, falling back to CPU: " << e.what() << std::endl;
-#endif
-            // CPU fallback implementation
-            std::vector<int> tokens;
-            size_t pos = 0;
-            while (pos < text.length()) {
-                // Find longest matching token at current position
-                int longest_token = vocab->get_unk_token_id();
-                size_t longest_len = 0;
-                
-                for (size_t i = 0; i < vocab->size(); i++) {
-                    std::string token = vocab->get_token(i);
-                    if (text.compare(pos, token.length(), token) == 0) {
-                        if (token.length() > longest_len) {
-                            longest_token = i;
-                            longest_len = token.length();
-                        }
-                    }
-                }
-
-                tokens.push_back(longest_token);
-                pos += longest_len > 0 ? longest_len : 1;
-            }
-            encoding_cache[text] = tokens;
-            return tokens;
-#ifdef USE_CUDA
-        }
-#endif
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Tokenization failed: " + std::string(e.what()));
-    }
+    auto ids = tokenizer_->encode(text);
+    encoding_cache[text] = ids;
+    return ids;
 }
 
 std::string Tokenizer::decode(const std::vector<int>& tokens) const {
-    std::string result;
-    bool skip_space = false; // To handle consecutive whitespace tokens
-
-    for (int token : tokens) {
-        std::string token_str = vocab->get_token(token);
-
-        // Skip special control tokens
-        if (token_str == "<pad>" || token_str == "<bos>" || token_str == "<eos>") {
-            continue;
-        }
-
-        // Handle special character tokens
-        if (token_str == "<whitespace>") {
-            if (!skip_space) {
-                result += " ";
-                skip_space = true;
-            }
-        } else if (token_str == "<newline>") {
-            result += "\n";
-            skip_space = false;
-        } else if (token_str == "<tab>") {
-            result += "\t";
-            skip_space = false;
-        } else if (token_str == "<period>") {
-            result += ".";
-            skip_space = false;
-        } else if (token_str == "<exclamation>") {
-            result += "!";
-            skip_space = false;
-        } else if (token_str == "<question>") {
-            result += "?";
-            skip_space = false;
-        } else if (token_str == "<comma>") {
-            result += ",";
-            skip_space = false;
-        } else {
-            result += token_str;
-            skip_space = false;
-        }
-    }
-
-    return result;
+    return tokenizer_->decode(tokens);
 }
 
 void Tokenizer::save(std::ostream& os) const {
@@ -207,4 +140,31 @@ void Tokenizer::preprocess_text(std::string& text) const {
     }
 
     text = result;
+}
+
+void Tokenizer::sync_vocabulary_with_subword_tokenizer() {
+    if (!tokenizer_) return;
+    
+    // Create new vocabulary preserving special tokens
+    auto new_vocab = std::make_unique<Vocabulary>();
+    
+    // First add special tokens in correct order
+    new_vocab->add_special_token(tokens::PAD_TOKEN, tokens::PAD_ID);
+    new_vocab->add_special_token(tokens::UNK_TOKEN, tokens::UNK_ID);
+    new_vocab->add_special_token(tokens::BOS_TOKEN, tokens::BOS_ID);
+    new_vocab->add_special_token(tokens::EOS_TOKEN, tokens::EOS_ID);
+    new_vocab->add_special_token(tokens::MASK_TOKEN, tokens::MASK_ID);
+    
+    // Then add all other tokens from SentencePiece tokenizer
+    for (size_t i = tokens::NUM_SPECIAL_TOKENS; i < tokenizer_->vocab_size(); i++) {
+        std::string token = tokenizer_->id_to_token(i);
+        new_vocab->add_token(token, i);
+    }
+    
+    // Verify consistency before replacing
+    if (!new_vocab->verify_mappings()) {
+        throw std::runtime_error("Inconsistent mappings after vocabulary sync");
+    }
+    
+    vocab = std::move(new_vocab);
 }

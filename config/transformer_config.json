@@ -1,6 +1,6 @@
 {
     "model": {
-        "vocab_size": 32000,
+        "vocab_size": 1924,
         "hidden_size": 128,
         "num_heads": 4,
         "num_layers": 2,
@@ -42,5 +42,11 @@
         "max_length": 1
     },
     "load_from_checkpoint": false,
-    "checkpoint_to_load": ""
+    "checkpoint_to_load": "",
+    "tokenizer": {
+        "use_subword": true,
+        "vocab_size": 32000,
+        "model_path": "model/tokenizer.model",
+        "special_tokens": ["<pad>", "<unk>", "<bos>", "<eos>", "<mask>"]
+    }
 } 

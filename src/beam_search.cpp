@@ -21,6 +21,12 @@ BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperatur
               << ", diversity_strength=" << diversity_strength
               << ", top_k=" << top_k
               << ", top_p=" << top_p << std::endl;
+    // Use consistent special token IDs
+    pad_token_id_ = 0;
+    unk_token_id_ = 1;
+    bos_token_id_ = 2;
+    eos_token_id_ = 3;
+    mask_token_id_ = 4;
 }
 
 float BeamSearch::apply_length_penalty(float score, size_t length) const {

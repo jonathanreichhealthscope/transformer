@@ -169,6 +169,16 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
             }
         }
 
+        // Load tokenizer settings
+        if (j.contains("tokenizer")) {
+            const auto& tok = j["tokenizer"];
+            config.tokenizer.use_subword = tok.value("use_subword", true);
+            config.tokenizer.vocab_size = tok.value("vocab_size", 32000);
+            config.tokenizer.model_path = tok.value("model_path", "model/tokenizer.model");
+            config.tokenizer.special_tokens = tok.value("special_tokens", 
+                std::vector<std::string>{"<pad>", "<s>", "</s>", "<unk>", "<mask>"});
+        }
+
     } catch (const std::exception& e) {
         throw std::runtime_error("Error parsing config file: " + std::string(e.what()));
     }
@@ -601,4 +611,11 @@ std::vector<size_t> nucleusSampling(const std::vector<float>& probabilities, flo
         if (cumsum >= p) break;
     }
     return result;
+}
+
+void from_json(const nlohmann::json& j, TransformerConfig::TokenizerConfig& t) {
+    j.at("use_subword").get_to(t.use_subword);
+    j.at("vocab_size").get_to(t.vocab_size);
+    j.at("model_path").get_to(t.model_path);
+    j.at("special_tokens").get_to(t.special_tokens);
 }
