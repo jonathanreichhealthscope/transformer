@@ -41,16 +41,27 @@ void BeamSearch::update_beams(std::vector<std::vector<int>>& sequences,
                               Matrix& beam_scores,
                               const Matrix& next_scores,
                               const std::vector<int>& next_tokens) {
+    const float MIN_SCORE = -1e4f;  // Prevent -inf
+    
     // Create temporary vectors to store candidates
     std::vector<std::pair<float, std::pair<size_t, int>>> candidates;
     candidates.reserve(beam_width_ * beam_width_);
     
     // Gather all candidates from all beams
     for (size_t i = 0; i < beam_width_; i++) {
+        float current_score = std::max(beam_scores(i, 0), MIN_SCORE);
         for (size_t j = 0; j < beam_width_; j++) {
-            float score = beam_scores(i, 0) + next_scores(i, j);
-            candidates.push_back({score, {i, next_tokens[j]}});
+            float next_score = std::max(next_scores(i, j), MIN_SCORE);
+            float score = current_score + next_score;
+            if (score > MIN_SCORE) {  // Only add valid candidates
+                candidates.push_back({score, {i, next_tokens[j]}});
+            }
         }
+    }
+    
+    // If we have no valid candidates, create a fallback candidate
+    if (candidates.empty()) {
+        candidates.push_back({MIN_SCORE, {0, eos_token_id_}});
     }
     
     // Sort candidates by score
@@ -62,7 +73,8 @@ void BeamSearch::update_beams(std::vector<std::vector<int>>& sequences,
     Matrix new_scores(beam_width_, 1);
     
     // Take top beam_width_ candidates
-    for (size_t i = 0; i < beam_width_; i++) {
+    size_t num_beams = std::min(beam_width_, candidates.size());
+    for (size_t i = 0; i < num_beams; i++) {
         const auto& [score, beam_token] = candidates[i];
         const auto& [beam_idx, token] = beam_token;
         
@@ -72,23 +84,29 @@ void BeamSearch::update_beams(std::vector<std::vector<int>>& sequences,
         new_scores(i, 0) = score;
     }
     
+    // Fill remaining beams if needed
+    while (new_sequences.size() < beam_width_) {
+        new_sequences.push_back(new_sequences[0]);
+        new_scores(new_sequences.size() - 1, 0) = MIN_SCORE;
+    }
+    
     // Update sequences and scores
     sequences = std::move(new_sequences);
     beam_scores = std::move(new_scores);
 }
 
 bool BeamSearch::is_search_complete(const std::vector<std::vector<int>>& sequences) {
-    // Check if all sequences have reached the end token
+    // Check if all sequences have reached the end token or max length
+    const size_t MAX_LENGTH = 1024;  // Explicit constant
     for (const auto& seq : sequences) {
         if (seq.empty()) return false;
         
-        // Check if sequence ends with end token (usually 2 for GPT models)
-        if (seq.back() == 2) return true;
-        
-        // Check if sequence has reached maximum length (e.g., 1024 tokens)
-        if (seq.size() >= 1024) return true;
+        // Continue searching if any sequence hasn't ended and hasn't reached max length
+        if (seq.back() != eos_token_id_ && seq.size() < MAX_LENGTH) {
+            return false;
+        }
     }
-    return false;
+    return true;  // All sequences have ended or reached max length
 }
 
 std::vector<int> BeamSearch::get_best_sequence(
@@ -138,7 +156,7 @@ std::vector<int> BeamSearch::cpu_beam_search(
         
         // Expand each beam
         for (const auto& [sequence, score] : beams) {
-            if (sequence.back() == 2) {  // End token
+            if (sequence.back() == eos_token_id_) {  // Use consistent eos_token_id_
                 new_beams.push_back({sequence, score});
                 continue;
             }
@@ -223,7 +241,7 @@ std::vector<int> BeamSearch::cpu_beam_search(
         // Check if all beams have ended
         bool all_ended = true;
         for (const auto& [sequence, _] : beams) {
-            if (sequence.back() != 2) {
+            if (sequence.back() != eos_token_id_) {  // Use consistent eos_token_id_
                 all_ended = false;
                 break;
             }
@@ -303,25 +321,37 @@ BeamSearch::search(const std::vector<float>& initial_logits,
 }
 
 std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits) {
-    // Increase temperature for more randomness with small datasets
-    float higher_temp = 1.2f;  // Up from 0.8f
+    const float SAFE_TEMP = 0.8f;  // More conservative temperature
+    const float MIN_SCORE = -1e4f;  // Prevent -inf
+    const float MAX_SCORE = 1e4f;   // Prevent inf
+    const float eps = 1e-10f;       // Small constant to prevent division by zero
+    
     std::vector<float> scaled_logits(logits.size());
+    
+    // Find max for numerical stability
+    float max_logit = MIN_SCORE;
     for (size_t i = 0; i < logits.size(); i++) {
-        scaled_logits[i] = logits[i] / higher_temp;
+        scaled_logits[i] = std::clamp(logits[i] / SAFE_TEMP, MIN_SCORE, MAX_SCORE);
+        max_logit = std::max(max_logit, scaled_logits[i]);
     }
     
-    // Apply softmax on temperature-scaled logits
-    float max_logit = *std::max_element(scaled_logits.begin(), scaled_logits.end());
+    // Apply softmax with numerical stability
     float sum_exp = 0.0f;
     std::vector<float> probs(scaled_logits.size());
     
     for (size_t i = 0; i < scaled_logits.size(); i++) {
-        probs[i] = std::exp(scaled_logits[i] - max_logit);
+        float exp_val = std::exp(scaled_logits[i] - max_logit);
+        probs[i] = std::max(exp_val, eps);  // Ensure no zero probabilities
         sum_exp += probs[i];
     }
     
-    for (float& prob : probs) {
-        prob /= sum_exp;
+    // Ensure we don't divide by zero
+    sum_exp = std::max(sum_exp, eps);
+    
+    // Normalize probabilities
+    for (size_t i = 0; i < probs.size(); i++) {
+        probs[i] /= sum_exp;
+        probs[i] = std::max(probs[i], eps);  // Final safety check
     }
     
     return probs;

@@ -62,9 +62,7 @@ std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
 
         if (result.empty()) {
             std::cout << "Warning: Encoding produced empty tokens for text: '" << text << "'" << std::endl;
-        } else {
-            std::cout << "Encoded '" << text << "' to " << result.size() << " tokens" << std::endl;
-        }
+        } 
         return result;
     } catch (const std::exception& e) {
         std::cout << "Error encoding text: '" << text << "': " << e.what() << std::endl;

@@ -56,6 +56,7 @@ class TransformerConfig {
     std::string checkpoint_to_load; ///< Path to checkpoint file to load
 
     // Beam search parameters
+    bool use_beam_search;        ///< Whether to use beam search for generation
     size_t beam_size;            ///< Size of beam for beam search
     float length_penalty;        ///< Length penalty for beam search
     float temperature;           ///< Temperature for sampling
