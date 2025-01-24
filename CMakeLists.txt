@@ -38,8 +38,12 @@ else()
     message(STATUS "CUDA not found - building without CUDA support")
 endif()
 
-# Find required packages
-find_package(OpenMP)
+# Optional: Find OpenMP
+if(MSVC)
+    find_package(OpenMP QUIET)
+else()
+    find_package(OpenMP)
+endif()
 
 # Download and build nlohmann/json
 FetchContent_Declare(
@@ -47,6 +51,7 @@ FetchContent_Declare(
     URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
+set(FETCHCONTENT_QUIET OFF)
 FetchContent_MakeAvailable(json)
 
 # Include directories
@@ -273,4 +278,17 @@ add_definitions(
     -DBOS_TOKEN_ID=2
     -DEOS_TOKEN_ID=3
     -DMASK_TOKEN_ID=4
+)
+
+# Simplified tiktoken data copying
+add_custom_command(TARGET transformer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tiktoken_data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/third_party/tiktoken/tiktoken/tiktoken_data"
+        "${CMAKE_BINARY_DIR}/tiktoken_data"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/third_party/tiktoken/tiktoken/cl100k_base.vocab.json"
+        "${CMAKE_SOURCE_DIR}/third_party/tiktoken/tiktoken/cl100k_base.merges.json"
+        "${CMAKE_BINARY_DIR}/tiktoken_data/"
+    COMMENT "Copying tiktoken data files to build directory"
 )

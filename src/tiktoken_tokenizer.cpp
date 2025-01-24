@@ -3,10 +3,7 @@
 #include <iostream>
 #include <sstream>
 
-TiktokenTokenizer::TiktokenTokenizer() {
-    // Default initialization with cl100k_base encoding
-    initialize();
-}
+TiktokenTokenizer::TiktokenTokenizer() = default;
 
 void TiktokenTokenizer::initialize(const std::string& encoding_name) {
     try {
@@ -53,31 +50,22 @@ std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
             return std::vector<int>();
         }
 
-        // Simple whitespace tokenization as temporary solution
-        std::vector<int> tokens;
-        std::string word;
-        std::istringstream iss(text);
+        // Use tiktoken's encode method directly instead of custom tokenization
+        auto tokens = tiktoken_->encode(text);
         
-        // Add BOS token if not empty
-        tokens.push_back(tokens::BOS_ID);
-        
-        // Split on whitespace and assign temporary token IDs
-        while (iss >> word) {
-            // For now, just hash the word to get a token ID, ensuring it's within vocab range
-            size_t hash_val = std::hash<std::string>{}(word);
-            int token_id = (hash_val % (tiktoken_->get_vocab_size() - tokens::NUM_SPECIAL_TOKENS)) + tokens::NUM_SPECIAL_TOKENS;
-            tokens.push_back(token_id);
-        }
-        
-        // Add EOS token
-        tokens.push_back(tokens::EOS_ID);
+        // Add BOS and EOS tokens
+        std::vector<int> result;
+        result.reserve(tokens.size() + 2);
+        result.push_back(tokens::BOS_ID);
+        result.insert(result.end(), tokens.begin(), tokens.end());
+        result.push_back(tokens::EOS_ID);
 
-        if (tokens.empty()) {
+        if (result.empty()) {
             std::cout << "Warning: Encoding produced empty tokens for text: '" << text << "'" << std::endl;
         } else {
-            std::cout << "Encoded '" << text << "' to " << tokens.size() << " tokens" << std::endl;
+            std::cout << "Encoded '" << text << "' to " << result.size() << " tokens" << std::endl;
         }
-        return tokens;
+        return result;
     } catch (const std::exception& e) {
         std::cout << "Error encoding text: '" << text << "': " << e.what() << std::endl;
         throw std::runtime_error("Encoding failed: " + std::string(e.what()));
@@ -90,20 +78,17 @@ std::string TiktokenTokenizer::decode(const std::vector<int>& tokens) const {
     }
 
     try {
-        std::string result;
-        for (size_t i = 0; i < tokens.size(); i++) {
-            int token = tokens[i];
-            // Skip special tokens
-            if (token == tokens::BOS_ID || token == tokens::EOS_ID) {
-                continue;
+        // Filter out special tokens
+        std::vector<int> filtered_tokens;
+        filtered_tokens.reserve(tokens.size());
+        for (int token : tokens) {
+            if (token != tokens::BOS_ID && token != tokens::EOS_ID) {
+                filtered_tokens.push_back(token);
             }
-            // For now, just return the token ID as a string
-            if (!result.empty()) {
-                result += " ";
-            }
-            result += "<" + std::to_string(token) + ">";
         }
-        return result;
+        
+        // Use tiktoken's decode method
+        return tiktoken_->decode(filtered_tokens);
     } catch (const std::exception& e) {
         throw std::runtime_error("Decoding failed: " + std::string(e.what()));
     }
@@ -113,6 +98,5 @@ size_t TiktokenTokenizer::vocab_size() const {
     if (!is_initialized()) {
         throw std::runtime_error("Tokenizer not initialized");
     }
-    // Special tokens are already included in tiktoken's vocabulary
     return tiktoken_->get_vocab_size();
 } 
