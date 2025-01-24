@@ -21,6 +21,9 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     active_tokens.resize(vocab_size, 1);  // 1 = true
     
 #ifdef USE_CUDA
+    // Initialize cuBLAS
+    CUBLAS_CHECK(cublasCreate(&cublas_handle));
+    
     // Allocate device memory
     CUDA_CHECK(cudaMalloc(&d_projection, hidden_size * vocab_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_bias, vocab_size * sizeof(float)));
@@ -40,6 +43,11 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
 
 LanguageModelHead::~LanguageModelHead() {
 #ifdef USE_CUDA
+    // Destroy cuBLAS handle
+    if (cublas_handle) {
+        cublasDestroy(cublas_handle);
+    }
+    
     if (d_projection) cudaFree(d_projection);
     if (d_bias) cudaFree(d_bias);
     if (d_projection_fp16) cudaFree(d_projection_fp16);
@@ -97,19 +105,29 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
 
 #ifdef USE_CUDA
     try {
-        // First, ensure we have device memory allocated
+        // Allocate all device memory first
+        if (d_hidden_states_fp16 == nullptr) {
+            CUDA_CHECK(cudaMalloc(&d_hidden_states_fp16, batch_size * hidden_size_ * sizeof(half)));
+        }
+        if (d_output_fp16 == nullptr) {
+            CUDA_CHECK(cudaMalloc(&d_output_fp16, batch_size * active_vocab_size * sizeof(half)));
+        }
+        if (d_output == nullptr) {
+            CUDA_CHECK(cudaMalloc(&d_output, batch_size * vocab_size_ * sizeof(float)));
+        }
+
+        // Allocate and copy input data
         float* d_input = nullptr;
         CUDA_CHECK(cudaMalloc(&d_input, batch_size * hidden_size_ * sizeof(float)));
-        // Copy input data to device
         CUDA_CHECK(cudaMemcpy(d_input, hidden_states.data(), 
                             batch_size * hidden_size_ * sizeof(float),
                             cudaMemcpyHostToDevice));
 
-        // Now call launch_convert_to_fp16 with device pointers
+        // Now we can safely convert to FP16
         launch_convert_to_fp16(d_hidden_states_fp16, d_input,
                              batch_size * hidden_size_);
 
-        // Free temporary device memory
+        // Free temporary input buffer
         CUDA_CHECK(cudaFree(d_input));
 
         // Use FP16 for projection matrix to reduce memory and increase speed
@@ -145,14 +163,22 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
         // Use cuBLAS for FP16 matrix multiplication
         const half alpha = __float2half(1.0f);
         const half beta = __float2half(0.0f);
+        
+        // Note: cuBLAS uses column-major order, so we need to transpose our operation
+        // M = active_vocab_size (output rows)
+        // N = batch_size (output cols)
+        // K = hidden_size (inner dimension)
         CUBLAS_CHECK(cublasGemmEx(cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                active_vocab_size, batch_size, hidden_size_,
+                                CUBLAS_OP_T,  // Transpose first matrix
+                                CUBLAS_OP_T,  // Transpose second matrix
+                                batch_size,    // M: number of rows of output
+                                active_vocab_size, // N: number of columns of output
+                                hidden_size_,  // K: inner dimension
                                 &alpha,
-                                d_projection_fp16, CUDA_R_16F, active_vocab_size,
-                                d_hidden_states_fp16, CUDA_R_16F, hidden_size_,
+                                d_hidden_states_fp16, CUDA_R_16F, hidden_size_,  // lda = K
+                                d_projection_fp16, CUDA_R_16F, active_vocab_size,  // ldb = N
                                 &beta,
-                                d_output_fp16, CUDA_R_16F, active_vocab_size,
+                                d_output_fp16, CUDA_R_16F, batch_size,  // ldc = M
                                 CUDA_R_16F,
                                 CUBLAS_GEMM_DEFAULT_TENSOR_OP));
         
