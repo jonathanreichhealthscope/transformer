@@ -18,6 +18,8 @@ TransformerLayer::TransformerLayer(const TransformerConfig& config_, size_t idx)
     std::cout << "Initializing TransformerLayer " << idx << " with GQA config:" << std::endl;
     std::cout << "- use_gqa: " << (config.use_gqa ? "true" : "false") << std::endl;
     std::cout << "- num_kv_heads: " << config.num_kv_heads << std::endl;
+    std::cout << "- hidden_size: " << config.hidden_size << std::endl;
+    std::cout << "- intermediate_size: " << config.intermediate_size << std::endl;
 
     self_attention = std::make_unique<MultiHeadAttention>(
         config.hidden_size, config.num_heads, config.head_dim, config.dropout_prob,
