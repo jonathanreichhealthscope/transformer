@@ -8,6 +8,11 @@
 #include <cuda_fp16.h>
 #endif
 
+// Forward declarations of CUDA kernels
+__global__ void convert_projection_to_fp16_kernel(
+    half* output, const float* input, const unsigned char* active_tokens,
+    size_t hidden_size, size_t vocab_size);
+
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     : hidden_size_(hidden_size), vocab_size_(vocab_size), projection(hidden_size, vocab_size),
       bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f)
@@ -19,34 +24,43 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     // Initialize pruning threshold and active token mask
     pruning_threshold = 1e-6f;
     active_tokens.resize(vocab_size, 1);  // 1 = true
+    active_token_indices.reserve(vocab_size);
     
 #ifdef USE_CUDA
-    // Initialize cuBLAS
+    // Initialize cuBLAS handle
     CUBLAS_CHECK(cublasCreate(&cublas_handle));
     
-    // Allocate device memory
+    // Create CUDA stream
+    CUDA_CHECK(cudaStreamCreate(&compute_stream));
+    
+    // Allocate device memory with maximum sizes
     CUDA_CHECK(cudaMalloc(&d_projection, hidden_size * vocab_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_bias, vocab_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_projection_fp16, hidden_size * vocab_size * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&d_hidden_states_fp16, max_batch_size * hidden_size * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&d_output_fp16, max_batch_size * vocab_size * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&d_output, max_batch_size * vocab_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_active_tokens, vocab_size * sizeof(unsigned char)));
+    CUDA_CHECK(cudaMalloc(&d_active_token_indices, vocab_size * sizeof(int)));
     
     // Copy initial data to device
-    CUDA_CHECK(cudaMemcpy(d_projection, projection.data(), 
-                         hidden_size * vocab_size * sizeof(float), 
-                         cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_bias, bias.data(), 
-                         vocab_size * sizeof(float), 
-                         cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(d_active_tokens, 1, vocab_size * sizeof(unsigned char)));
+    CUDA_CHECK(cudaMemcpyAsync(d_projection, projection.data(), 
+                              hidden_size * vocab_size * sizeof(float), 
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_bias, bias.data(), 
+                              vocab_size * sizeof(float), 
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemsetAsync(d_active_tokens, 1, vocab_size * sizeof(unsigned char), 
+                              compute_stream));
 #endif
 }
 
 LanguageModelHead::~LanguageModelHead() {
 #ifdef USE_CUDA
-    // Destroy cuBLAS handle
-    if (cublas_handle) {
-        cublasDestroy(cublas_handle);
-    }
+    if (cublas_handle) cublasDestroy(cublas_handle);
+    
+    cudaStreamSynchronize(compute_stream);
+    cudaStreamDestroy(compute_stream);
     
     if (d_projection) cudaFree(d_projection);
     if (d_bias) cudaFree(d_bias);
@@ -55,6 +69,7 @@ LanguageModelHead::~LanguageModelHead() {
     if (d_output_fp16) cudaFree(d_output_fp16);
     if (d_output) cudaFree(d_output);
     if (d_active_tokens) cudaFree(d_active_tokens);
+    if (d_active_token_indices) cudaFree(d_active_token_indices);
     if (h_projection) cudaFreeHost(h_projection);
     if (h_bias) cudaFreeHost(h_bias);
 #endif
@@ -95,155 +110,73 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
     this->hidden_states = hidden_states;
     size_t batch_size = hidden_states.rows();
     
+    if (batch_size > max_batch_size) {
+        throw std::runtime_error("Batch size exceeds maximum allocated size");
+    }
+    
     // Update active tokens based on frequency
     if (training_steps % PRUNE_INTERVAL == 0) {
         update_active_tokens();
     }
     
-    // Count active tokens
-    size_t active_vocab_size = std::count(active_tokens.begin(), active_tokens.end(), 1);
+    size_t active_vocab_size = active_token_indices.size();
 
 #ifdef USE_CUDA
     try {
-        // Allocate all device memory first
-        if (d_hidden_states_fp16 == nullptr) {
-            CUDA_CHECK(cudaMalloc(&d_hidden_states_fp16, batch_size * hidden_size_ * sizeof(half)));
-        }
-        if (d_output_fp16 == nullptr) {
-            CUDA_CHECK(cudaMalloc(&d_output_fp16, batch_size * active_vocab_size * sizeof(half)));
-        }
-        if (d_output == nullptr) {
-            CUDA_CHECK(cudaMalloc(&d_output, batch_size * vocab_size_ * sizeof(float)));
-        }
+        // Copy input data to device and convert to FP16
+        CUDA_CHECK(cudaMemcpyAsync(d_projection, hidden_states.data(), 
+                                 batch_size * hidden_size_ * sizeof(float),
+                                 cudaMemcpyHostToDevice, compute_stream));
 
-        // Allocate and copy input data
-        float* d_input = nullptr;
-        CUDA_CHECK(cudaMalloc(&d_input, batch_size * hidden_size_ * sizeof(float)));
-        CUDA_CHECK(cudaMemcpy(d_input, hidden_states.data(), 
-                            batch_size * hidden_size_ * sizeof(float),
-                            cudaMemcpyHostToDevice));
-
-        // Now we can safely convert to FP16
-        launch_convert_to_fp16(d_hidden_states_fp16, d_input,
-                             batch_size * hidden_size_);
-
-        // Free temporary input buffer
-        CUDA_CHECK(cudaFree(d_input));
-
-        // Use FP16 for projection matrix to reduce memory and increase speed
-        half *d_projection_fp16, *d_hidden_states_fp16, *d_output_fp16;
-        float *d_output;
-        
-        // Allocate device memory
-        CUDA_CHECK(cudaMalloc(&d_projection_fp16, hidden_size_ * active_vocab_size * sizeof(half)));
-        CUDA_CHECK(cudaMalloc(&d_hidden_states_fp16, batch_size * hidden_size_ * sizeof(half)));
-        CUDA_CHECK(cudaMalloc(&d_output_fp16, batch_size * active_vocab_size * sizeof(half)));
-        CUDA_CHECK(cudaMalloc(&d_output, batch_size * vocab_size_ * sizeof(float)));
-        
-        // Convert and copy active tokens to FP16
-        std::vector<half> h_projection_fp16;
-        h_projection_fp16.reserve(hidden_size_ * active_vocab_size);
-        for (size_t i = 0; i < vocab_size_; i++) {
-            if (active_tokens[i]) {
-                for (size_t j = 0; j < hidden_size_; j++) {
-                    h_projection_fp16.push_back(__float2half(projection(j, i)));
-                }
-            }
-        }
-        
-        // Copy data to device
-        CUDA_CHECK(cudaMemcpyAsync(d_projection_fp16, h_projection_fp16.data(),
-                                  hidden_size_ * active_vocab_size * sizeof(half),
-                                  cudaMemcpyHostToDevice));
-                                  
-        // Convert input to FP16
-        launch_convert_to_fp16(d_hidden_states_fp16, d_input,
+        // Convert input to FP16 (first copy to device, then convert)
+        launch_convert_to_fp16(d_hidden_states_fp16, d_projection,
                              batch_size * hidden_size_);
         
+        // Convert projection matrix to FP16
+        const int block_size = 256;
+        const int num_blocks = (hidden_size_ * vocab_size_ + block_size - 1) / block_size;
+        
+        convert_projection_to_fp16_kernel<<<num_blocks, block_size, 0, compute_stream>>>(
+            d_projection_fp16, d_projection, d_active_tokens,
+            hidden_size_, vocab_size_);
+
         // Use cuBLAS for FP16 matrix multiplication
         const half alpha = __float2half(1.0f);
         const half beta = __float2half(0.0f);
         
-        // Note: cuBLAS uses column-major order, so we need to transpose our operation
-        // M = active_vocab_size (output rows)
-        // N = batch_size (output cols)
-        // K = hidden_size (inner dimension)
+        CUBLAS_CHECK(cublasSetStream(cublas_handle, compute_stream));
         CUBLAS_CHECK(cublasGemmEx(cublas_handle,
-                                CUBLAS_OP_T,  // Transpose first matrix
-                                CUBLAS_OP_T,  // Transpose second matrix
-                                batch_size,    // M: number of rows of output
-                                active_vocab_size, // N: number of columns of output
-                                hidden_size_,  // K: inner dimension
+                                CUBLAS_OP_T,
+                                CUBLAS_OP_T,
+                                batch_size,
+                                active_vocab_size,
+                                hidden_size_,
                                 &alpha,
-                                d_hidden_states_fp16, CUDA_R_16F, hidden_size_,  // lda = K
-                                d_projection_fp16, CUDA_R_16F, active_vocab_size,  // ldb = N
+                                d_hidden_states_fp16, CUDA_R_16F, hidden_size_,
+                                d_projection_fp16, CUDA_R_16F, active_vocab_size,
                                 &beta,
-                                d_output_fp16, CUDA_R_16F, batch_size,  // ldc = M
+                                d_output_fp16, CUDA_R_16F, batch_size,
                                 CUDA_R_16F,
                                 CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-        
-        // Convert back to FP32 and expand to full vocabulary
-        launch_convert_and_expand_vocab(d_output, d_output_fp16,
-                                      batch_size, vocab_size_, active_vocab_size);
         
         // Create output matrix
         Matrix logits(batch_size, vocab_size_);
         
-        // Copy result back to host
+        // Copy result back to host asynchronously
         CUDA_CHECK(cudaMemcpyAsync(logits.data(), d_output,
-                                  batch_size * vocab_size_ * sizeof(float),
-                                  cudaMemcpyDeviceToHost));
+                                 batch_size * vocab_size_ * sizeof(float),
+                                 cudaMemcpyDeviceToHost, compute_stream));
         
-        // Add bias only for active tokens
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < batch_size; ++i) {
-            for (size_t j = 0; j < vocab_size_; ++j) {
-                if (active_tokens[j]) {
-                    logits(i, j) += bias[j];
-                } else {
-                    logits(i, j) = -std::numeric_limits<float>::infinity();
-                }
-            }
-        }
-        
-        // Cleanup
-        CUDA_CHECK(cudaFree(d_projection_fp16));
-        CUDA_CHECK(cudaFree(d_hidden_states_fp16));
-        CUDA_CHECK(cudaFree(d_output_fp16));
-        CUDA_CHECK(cudaFree(d_output));
+        // Make sure all operations are complete
+        CUDA_CHECK(cudaStreamSynchronize(compute_stream));
         
         return logits;
     } catch (const std::runtime_error& e) {
         std::cerr << "CUDA projection failed, falling back to CPU: " << e.what() << std::endl;
-#endif
-        // CPU fallback with sparse computation
-        Matrix logits(batch_size, vocab_size_);
-        
-        // Use OpenMP for parallel processing
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < batch_size; ++i) {
-            for (size_t j = 0; j < vocab_size_; ++j) {
-                if (!active_tokens[j]) {
-                    logits(i, j) = -std::numeric_limits<float>::infinity();
-                    continue;
-                }
-                float sum = 0.0f;
-                // Manual loop unrolling for better CPU optimization
-                for (size_t k = 0; k < hidden_size_; k += 4) {
-                    sum += hidden_states(i, k) * projection(k, j);
-                    if (k + 1 < hidden_size_)
-                        sum += hidden_states(i, k+1) * projection(k+1, j);
-                    if (k + 2 < hidden_size_)
-                        sum += hidden_states(i, k+2) * projection(k+2, j);
-                    if (k + 3 < hidden_size_)
-                        sum += hidden_states(i, k+3) * projection(k+3, j);
-                }
-                logits(i, j) = sum + bias[j];
-            }
-        }
-        return logits;
-#ifdef USE_CUDA
+        return forward_impl(hidden_states);
     }
+#else
+    return forward_impl(hidden_states);
 #endif
 }
 
@@ -337,9 +270,14 @@ void LanguageModelHead::update_active_tokens() {
     
     // Count tokens above threshold
     size_t active_count = 0;
+    active_token_indices.clear();
+    
     for (size_t i = 0; i < vocab_size_; i++) {
         active_tokens[i] = (token_frequencies[i] > pruning_threshold) ? 1 : 0;
-        if (active_tokens[i]) active_count++;
+        if (active_tokens[i]) {
+            active_token_indices.push_back(i);
+            active_count++;
+        }
     }
     
     // Ensure we keep at least MIN_ACTIVE_TOKENS
@@ -350,24 +288,28 @@ void LanguageModelHead::update_active_tokens() {
             freq_pairs.push_back({token_frequencies[i], i});
         }
         
-        // Sort by frequency
         std::partial_sort(freq_pairs.begin(), 
                          freq_pairs.begin() + MIN_ACTIVE_TOKENS,
                          freq_pairs.end(),
                          std::greater<>());
-                         
-        // Update active tokens
+        
+        active_token_indices.clear();
         std::fill(active_tokens.begin(), active_tokens.end(), 0);
         for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
-            active_tokens[freq_pairs[i].second] = 1;
+            size_t idx = freq_pairs[i].second;
+            active_tokens[idx] = 1;
+            active_token_indices.push_back(idx);
         }
     }
     
 #ifdef USE_CUDA
-    // Update device active tokens
-    CUDA_CHECK(cudaMemcpy(d_active_tokens, active_tokens.data(),
-                         vocab_size_ * sizeof(unsigned char),
-                         cudaMemcpyHostToDevice));
+    // Update device active tokens and indices
+    CUDA_CHECK(cudaMemcpyAsync(d_active_tokens, active_tokens.data(),
+                              vocab_size_ * sizeof(unsigned char),
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_active_token_indices, active_token_indices.data(),
+                              active_token_indices.size() * sizeof(int),
+                              cudaMemcpyHostToDevice, compute_stream));
 #endif
 }
 
@@ -475,5 +417,16 @@ __host__ void LanguageModelHead::launch_convert_and_expand_vocab(
         throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err));
     }
     CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// Add the new GPU kernel for FP16 conversion
+__global__ void convert_projection_to_fp16_kernel(
+    half* output, const float* input, const unsigned char* active_tokens,
+    size_t hidden_size, size_t vocab_size) {
+    
+    const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < hidden_size * vocab_size && active_tokens[idx / hidden_size]) {
+        output[idx] = __float2half(input[idx]);
+    }
 }
 #endif

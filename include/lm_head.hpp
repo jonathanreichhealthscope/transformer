@@ -69,13 +69,23 @@ class LanguageModelHead {
     void update_active_tokens();
 
 #ifdef USE_CUDA
-    // Device memory for active tokens
+    // CUDA streams and synchronization
+    cudaStream_t compute_stream;
+
+    // Device memory for active tokens and indices
     unsigned char* d_active_tokens = nullptr;
-    
+    int* d_active_token_indices = nullptr;
+    std::vector<int> active_token_indices;
+
+    // Maximum batch size for memory allocation
+    static constexpr size_t max_batch_size = 4096;  // Adjust based on your needs
+
     // CUDA kernel launchers
     __host__ void launch_convert_to_fp16(half* output, const float* input, size_t size);
     __host__ void launch_convert_and_expand_vocab(
         float* output, const half* input, size_t batch_size, size_t vocab_size, size_t active_vocab_size);
+
+    cublasHandle_t cublas_handle;
 #endif
 
   public:
