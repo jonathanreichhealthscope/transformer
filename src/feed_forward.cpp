@@ -95,23 +95,42 @@ Matrix FeedForward::forward(const Matrix& input) {
             // Allocate intermediate results
             Matrix intermediate(input.rows(), w1.cols());
             std::cout << "Intermediate dimensions: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            
             cuda::matmul(input, w1, intermediate);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After first matmul - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             std::cout << "Bias dimensions: " << b1.size() << std::endl;
+            
             // Apply bias and activation
             intermediate.add_bias(b1);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After bias addition - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             cuda::gelu_forward(intermediate);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After GELU - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             // Store for backward pass
             intermediate_cache = intermediate;
             std::cout << "Intermediate cache dimensions: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+            
             // Explicitly preserve input batch size
             Matrix output(input.rows(), w2.cols());  // Force output to be 1019 x hidden_size
             std::cout << "Output dimensions: " << output.rows() << "x" << output.cols() << std::endl;
+            
             cuda::matmul(intermediate, w2, output);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After second matmul - Output: " << output.rows() << "x" << output.cols() << std::endl;
             output.add_bias(b2);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After bias addition - Output: " << output.rows() << "x" << output.cols() << std::endl;
             // Check dimensions before residual connection
             if (output.rows() != input.rows() || output.cols() != input.cols()) {
@@ -122,7 +141,9 @@ Matrix FeedForward::forward(const Matrix& input) {
             }
             
             // Add residual connection
-            output += input;  // This is where the dimension mismatch occurs
+            output += input;
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
             
             return output;
         } catch (const std::runtime_error& e) {

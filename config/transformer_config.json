@@ -9,8 +9,8 @@
         "max_seq_length": 32
     },
     "training": {
-        "batch_size": 32, 
-        "num_epochs": 6,
+        "batch_size": 128,
+        "num_epochs": 4,
         "dropout_rate": 0.1,
         "weight_decay": 0.01
     },
@@ -18,14 +18,14 @@
         "use_flash_attention": true,
         "use_rope": true,
         "use_sliding_window": true,
-        "window_size": 32,
+        "window_size": 16,
         "use_gqa": true,
-        "num_kv_heads": 2
+        "num_kv_heads": 1
     },
     "optimization": {
         "use_fp16": true,
-        "use_gradient_checkpointing": false,
-        "memory_pool_size": 512
+        "use_gradient_checkpointing": true,
+        "memory_pool_size": 1024
     },
     "paths": {
         "save_directory": "models",
@@ -46,7 +46,7 @@
     "checkpoint_to_load": "",
     "tokenizer": {
         "use_subword": true,
-        "vocab_size": 32000,
+        "vocab_size": 1924,
         "model_path": "model/tokenizer.model",
         "special_tokens": ["<unk>", "<s>", "</s>", "<pad>", "<mask>"]
     },

@@ -339,91 +339,23 @@ int main(int argc, char* argv[]) {
                           << (config.tokenizer.use_subword ? "subword" : "regular") 
                           << " tokenization:" << std::endl;
                 
-                // Initialize beam search with config parameters
-                BeamSearch beam_search(config.beam_size, config.length_penalty);
-                std::cout << "Initialized beam search with width=" << config.beam_size
-                          << ", penalty=" << config.length_penalty << std::endl;
-
-                // Test multiple different contexts
-                std::vector<std::string> test_inputs = {
-                    "I go to",
-                    "Surgeons operate in the",
-                    "Athletes train in the",
-                    "Musicians perform in the", // Entertainment context
-                    "Students research in the", // Educational context
-                    "Chefs cook in the",        // Culinary context
-                    "Artists create in the",    // Creative context
-                    "Engineers work in the",    // Technical context
-                    "Lawyers practice in the",  // Legal context
-                    "Teachers instruct in the", // Educational context
-                    "Scientists experiment in", // Research context
-                    "Pilots fly through the",   // Aviation context
-                    "Dancers rehearse in the",  // Performance context
-                    "Writers compose in the",   // Literary context
-                    "Mechanics repair in the"   // Automotive context
-                };
-
-                std::cout << "Testing " << test_inputs.size() << " different prompts" << std::endl;
-
-                for (const auto& test_input : test_inputs) {
-                    std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
-                    // Preprocess input
-                    std::string processed_input = test_input;
-                    tokenizer->preprocess_text(processed_input);
-                    std::vector<int> test_tokens = tokenizer->encode(processed_input);
-
-                    // Get initial logits
-                    Matrix test_hidden = transformer.forward(test_tokens);
-                    Matrix initial_logits_matrix = lm_head->project_to_vocab(test_hidden);
-
-                    // Convert matrix to vector for beam search
-                    std::vector<float> initial_logits;
-                    size_t last_token_idx = test_tokens.size() - 1;
-                    for (size_t j = 0; j < initial_logits_matrix.cols(); ++j) {
-                        initial_logits.push_back(initial_logits_matrix(last_token_idx, j));
-                    }
-
-                    // Create next token function for beam search with sampling
-                    auto next_token_fn = [&](const std::vector<int>& tokens) -> std::vector<float> {
-                        Matrix hidden = transformer.forward(tokens);
-                        Matrix logits = lm_head->project_to_vocab(hidden);
-
-                        std::vector<float> next_logits;
-                        size_t last_idx = tokens.size() - 1;
-                        for (size_t j = 0; j < logits.cols(); ++j) {
-                            next_logits.push_back(logits(last_idx, j));
-                        }
-
-                        // Apply temperature and top-p sampling
-                        Utils::apply_sampling_parameters(next_logits, config.temperature,
-                                                         config.top_p);
-
-                        return next_logits;
-                    };
-
-                    // Also apply to initial logits
-                    std::vector<float> processed_initial_logits = initial_logits;
-                    Utils::apply_sampling_parameters(processed_initial_logits, config.temperature,
-                                                     config.top_p);
-
-                    // Perform beam search with processed logits
-                    auto beam_results =
-                        beam_search.search(processed_initial_logits, next_token_fn,
-                                           config.max_length, tokenizer->get_eos_token_id());
-
-                    // Print beam search results
-                    std::cout << "\nBeam Search Completions:\n";
-                    for (size_t i = 0; i < std::min(size_t(3), beam_results.size()); ++i) {
-                        const auto& hypothesis = beam_results[i];
-                        std::string completion = tokenizer->decode(hypothesis.tokens);
-                        std::cout << i + 1 << ". " << completion << " (score: " << hypothesis.score
-                                  << ")\n";
-                    }
-
-                    // Also show greedy search result for comparison
-                    std::cout << "\nGreedy Search Completion:\n";
-                    Utils::print_top_predictions(initial_logits_matrix, *tokenizer, 5);
-                }
+                // Test a simple input
+                std::string test_input = "I go to";
+                std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
+                
+                // Preprocess input
+                std::string processed_input = test_input;
+                tokenizer->preprocess_text(processed_input);
+                std::vector<int> test_tokens = tokenizer->encode(processed_input);
+                
+                // Get model prediction
+                Matrix test_hidden = transformer.forward(test_tokens);
+                Matrix logits = lm_head->project_to_vocab(test_hidden);
+                
+                // For single token prediction, we don't need beam search
+                // Just show the top predictions
+                std::cout << "\nTop Predictions:\n";
+                Utils::print_top_predictions(logits, *tokenizer, 5);
             }
 
             if ((epoch + 1) % 5 == 0) { 

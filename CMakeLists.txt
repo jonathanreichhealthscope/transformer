@@ -14,7 +14,7 @@ if(DOXYGEN_FOUND)
         VERBATIM)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -292,3 +292,12 @@ add_custom_command(TARGET transformer POST_BUILD
         "${CMAKE_BINARY_DIR}/tiktoken_data/"
     COMMENT "Copying tiktoken data files to build directory"
 )
+
+if(CUDAToolkit_FOUND)
+    # Set source file properties to compile with CUDA
+    set_source_files_properties(
+        src/lm_head.cpp
+        PROPERTIES
+        LANGUAGE CUDA
+    )
+endif()

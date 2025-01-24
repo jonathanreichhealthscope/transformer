@@ -145,39 +145,33 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
         Matrix Q = query_proj.forward(input);
         Matrix K = key_proj.forward(input);
         Matrix V = value_proj.forward(input);
-        std::cout << "Q dimensions: " << Q.shape() << std::endl;
-        std::cout << "K dimensions: " << K.shape() << std::endl;
-        std::cout << "V dimensions: " << V.shape() << std::endl;
         
         // Get dimensions
         size_t batch_size = input.rows();
         size_t hidden_size = input.cols();  // This should be the model's hidden_size
         size_t seq_len = batch_size;  // For self-attention, sequence length equals batch size
-        std::cout << "input dimensions: " << input.shape() << std::endl;
         
 #ifdef USE_CUDA
         try {
             // Use CUDA for attention computation
             Matrix scores(batch_size, batch_size);  // Full sequence length for attention
-            std::cout << "scores dimensions: " << scores.shape() << std::endl;
+            
+            // Batch compute attention scores and softmax
             cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
-            std::cout << "computed attention scores" << std::endl;
             if (mask) {
-                std::cout << "mask dimensions: " << mask.value().shape() << std::endl;
                 scores += mask.value();
             }
-            std::cout << "scores dimensions after mask: " << scores.shape() << std::endl;
             cuda::apply_softmax(scores);
-            std::cout << "applied softmax" << std::endl;
-            std::cout << "scores dimensions after softmax: " << scores.shape() << std::endl;
-
-            Matrix output(batch_size, hidden_size);  // Match input dimensions
-            std::cout << "output dimensions: " << output.shape() << std::endl;
-            cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
-            std::cout << "output dimensions after attention forward: " << output.shape() << std::endl;
             
-            // Project back to hidden_size directly
+            // Single synchronization point after main computation
+            Matrix output(batch_size, hidden_size);
+            cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();  // Single sync point
+            
+            // Final projection
             return output_proj.forward(output);
+            
         } catch (const std::runtime_error& e) {
             std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
 #endif
@@ -191,7 +185,6 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
 
             scores.apply_softmax();
             Matrix output = matmul(scores, V);
-            std::cout << "output dimensions after matmul: " << output.shape() << std::endl;
             
             // Ensure output has correct dimensions before projection
             if (output.cols() != hidden_size) {

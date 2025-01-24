@@ -1,17 +1,55 @@
 #include "../include/lm_head.hpp"
 #include <cmath>
 #include <iostream>
+#include <algorithm>
+
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#endif
 
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     : hidden_size_(hidden_size), vocab_size_(vocab_size), projection(hidden_size, vocab_size),
-      bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f) // Initialize frequencies
+      bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f)
 {
     float scale = std::sqrt(1.0f / hidden_size);
-    std::cout << "LM Head initialization:" << std::endl;
-    std::cout << "Creating projection matrix: [" << hidden_size << " × " << vocab_size << "]"
-              << std::endl;
     projection.randomize(-scale, scale);
     bias.randomize(-scale, scale);
+    
+    // Initialize pruning threshold and active token mask
+    pruning_threshold = 1e-6f;
+    active_tokens.resize(vocab_size, 1);  // 1 = true
+    
+#ifdef USE_CUDA
+    // Allocate device memory
+    CUDA_CHECK(cudaMalloc(&d_projection, hidden_size * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_bias, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_projection_fp16, hidden_size * vocab_size * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&d_active_tokens, vocab_size * sizeof(unsigned char)));
+    
+    // Copy initial data to device
+    CUDA_CHECK(cudaMemcpy(d_projection, projection.data(), 
+                         hidden_size * vocab_size * sizeof(float), 
+                         cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_bias, bias.data(), 
+                         vocab_size * sizeof(float), 
+                         cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(d_active_tokens, 1, vocab_size * sizeof(unsigned char)));
+#endif
+}
+
+LanguageModelHead::~LanguageModelHead() {
+#ifdef USE_CUDA
+    if (d_projection) cudaFree(d_projection);
+    if (d_bias) cudaFree(d_bias);
+    if (d_projection_fp16) cudaFree(d_projection_fp16);
+    if (d_hidden_states_fp16) cudaFree(d_hidden_states_fp16);
+    if (d_output_fp16) cudaFree(d_output_fp16);
+    if (d_output) cudaFree(d_output);
+    if (d_active_tokens) cudaFree(d_active_tokens);
+    if (h_projection) cudaFreeHost(h_projection);
+    if (h_bias) cudaFreeHost(h_bias);
+#endif
 }
 
 Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
@@ -46,62 +84,141 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
 }
 
 Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
-    // Store hidden states for backward pass
     this->hidden_states = hidden_states;
-
-    std::cout << "In project_to_vocab:" << std::endl;
-    std::cout << "Hidden states dimensions: " << hidden_states.rows() << "x" << hidden_states.cols()
-              << std::endl;
-    std::cout << "Projection dimensions: " << projection.rows() << "x" << projection.cols()
-              << std::endl;
-
-    // Check dimensions before multiplication
-    if (hidden_states.cols() != projection.rows()) {
-        throw std::runtime_error(
-            "Invalid matrix dimensions for projection: hidden_states.cols() (" +
-            std::to_string(hidden_states.cols()) + ") must match projection.rows() (" +
-            std::to_string(projection.rows()) + ")");
+    size_t batch_size = hidden_states.rows();
+    
+    // Update active tokens based on frequency
+    if (training_steps % PRUNE_INTERVAL == 0) {
+        update_active_tokens();
     }
+    
+    // Count active tokens
+    size_t active_vocab_size = std::count(active_tokens.begin(), active_tokens.end(), 1);
 
-    // Project from hidden space to vocab space
-    // [batch_size x hidden_size] * [hidden_size x vocab_size] = [batch_size x vocab_size]
-    // Ensure projection matrix has correct dimensions
-    if (projection.rows() != hidden_size_ || projection.cols() != vocab_size_) {
-        throw std::runtime_error(
-            "Projection matrix has wrong dimensions: expected [" + std::to_string(hidden_size_) +
-            " x " + std::to_string(vocab_size_) + "], got [" + std::to_string(projection.rows()) +
-            " x " + std::to_string(projection.cols()) + "]");
-    }
+#ifdef USE_CUDA
+    try {
+        // First, ensure we have device memory allocated
+        float* d_input = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_input, batch_size * hidden_size_ * sizeof(float)));
+        // Copy input data to device
+        CUDA_CHECK(cudaMemcpy(d_input, hidden_states.data(), 
+                            batch_size * hidden_size_ * sizeof(float),
+                            cudaMemcpyHostToDevice));
 
-    Matrix logits = matmul(hidden_states, projection);
+        // Now call launch_convert_to_fp16 with device pointers
+        launch_convert_to_fp16(d_hidden_states_fp16, d_input,
+                             batch_size * hidden_size_);
 
-    // Apply temperature scaling before vocab balancing
-    const float temperature = 0.7f; // Lower temperature = sharper predictions
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < logits.cols(); j++) {
-            logits(i, j) /= temperature;
-        }
-    }
+        // Free temporary device memory
+        CUDA_CHECK(cudaFree(d_input));
 
-    // Adjust vocabulary balancing parameters
-    const float freq_penalty = 0.15f; // Increased from 0.1f for stronger effect
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < logits.cols(); j++) {
-            // Penalize frequently occurring tokens with logarithmic scaling
-            if (token_frequencies[j] > 0) {
-                float penalty = freq_penalty * std::log(1 + token_frequencies[j]);
-                logits(i, j) -= penalty;
+        // Use FP16 for projection matrix to reduce memory and increase speed
+        half *d_projection_fp16, *d_hidden_states_fp16, *d_output_fp16;
+        float *d_output;
+        
+        // Allocate device memory
+        CUDA_CHECK(cudaMalloc(&d_projection_fp16, hidden_size_ * active_vocab_size * sizeof(half)));
+        CUDA_CHECK(cudaMalloc(&d_hidden_states_fp16, batch_size * hidden_size_ * sizeof(half)));
+        CUDA_CHECK(cudaMalloc(&d_output_fp16, batch_size * active_vocab_size * sizeof(half)));
+        CUDA_CHECK(cudaMalloc(&d_output, batch_size * vocab_size_ * sizeof(float)));
+        
+        // Convert and copy active tokens to FP16
+        std::vector<half> h_projection_fp16;
+        h_projection_fp16.reserve(hidden_size_ * active_vocab_size);
+        for (size_t i = 0; i < vocab_size_; i++) {
+            if (active_tokens[i]) {
+                for (size_t j = 0; j < hidden_size_; j++) {
+                    h_projection_fp16.push_back(__float2half(projection(j, i)));
+                }
             }
         }
-    }
-
-    // Add bias
-    for (size_t i = 0; i < logits.rows(); ++i) {
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            logits(i, j) += bias[j];
+        
+        // Copy data to device
+        CUDA_CHECK(cudaMemcpyAsync(d_projection_fp16, h_projection_fp16.data(),
+                                  hidden_size_ * active_vocab_size * sizeof(half),
+                                  cudaMemcpyHostToDevice));
+                                  
+        // Convert input to FP16
+        launch_convert_to_fp16(d_hidden_states_fp16, d_input,
+                             batch_size * hidden_size_);
+        
+        // Use cuBLAS for FP16 matrix multiplication
+        const half alpha = __float2half(1.0f);
+        const half beta = __float2half(0.0f);
+        CUBLAS_CHECK(cublasGemmEx(cublas_handle,
+                                CUBLAS_OP_N, CUBLAS_OP_N,
+                                active_vocab_size, batch_size, hidden_size_,
+                                &alpha,
+                                d_projection_fp16, CUDA_R_16F, active_vocab_size,
+                                d_hidden_states_fp16, CUDA_R_16F, hidden_size_,
+                                &beta,
+                                d_output_fp16, CUDA_R_16F, active_vocab_size,
+                                CUDA_R_16F,
+                                CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+        
+        // Convert back to FP32 and expand to full vocabulary
+        launch_convert_and_expand_vocab(d_output, d_output_fp16,
+                                      batch_size, vocab_size_, active_vocab_size);
+        
+        // Create output matrix
+        Matrix logits(batch_size, vocab_size_);
+        
+        // Copy result back to host
+        CUDA_CHECK(cudaMemcpyAsync(logits.data(), d_output,
+                                  batch_size * vocab_size_ * sizeof(float),
+                                  cudaMemcpyDeviceToHost));
+        
+        // Add bias only for active tokens
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < batch_size; ++i) {
+            for (size_t j = 0; j < vocab_size_; ++j) {
+                if (active_tokens[j]) {
+                    logits(i, j) += bias[j];
+                } else {
+                    logits(i, j) = -std::numeric_limits<float>::infinity();
+                }
+            }
         }
+        
+        // Cleanup
+        CUDA_CHECK(cudaFree(d_projection_fp16));
+        CUDA_CHECK(cudaFree(d_hidden_states_fp16));
+        CUDA_CHECK(cudaFree(d_output_fp16));
+        CUDA_CHECK(cudaFree(d_output));
+        
+        return logits;
+    } catch (const std::runtime_error& e) {
+        std::cerr << "CUDA projection failed, falling back to CPU: " << e.what() << std::endl;
+#endif
+        // CPU fallback with sparse computation
+        Matrix logits(batch_size, vocab_size_);
+        
+        // Use OpenMP for parallel processing
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < batch_size; ++i) {
+            for (size_t j = 0; j < vocab_size_; ++j) {
+                if (!active_tokens[j]) {
+                    logits(i, j) = -std::numeric_limits<float>::infinity();
+                    continue;
+                }
+                float sum = 0.0f;
+                // Manual loop unrolling for better CPU optimization
+                for (size_t k = 0; k < hidden_size_; k += 4) {
+                    sum += hidden_states(i, k) * projection(k, j);
+                    if (k + 1 < hidden_size_)
+                        sum += hidden_states(i, k+1) * projection(k+1, j);
+                    if (k + 2 < hidden_size_)
+                        sum += hidden_states(i, k+2) * projection(k+2, j);
+                    if (k + 3 < hidden_size_)
+                        sum += hidden_states(i, k+3) * projection(k+3, j);
+                }
+                logits(i, j) = sum + bias[j];
+            }
+        }
+        return logits;
+#ifdef USE_CUDA
     }
-    return logits;
+#endif
 }
 
 Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& target_distribution) {
@@ -184,3 +301,153 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
         bias[i] -= learning_rate * grad_bias[i];
     }
 }
+
+void LanguageModelHead::update_active_tokens() {
+    // Update token frequencies with exponential decay
+    const float decay = 0.99f;
+    for (size_t i = 0; i < vocab_size_; i++) {
+        token_frequencies[i] *= decay;
+    }
+    
+    // Count tokens above threshold
+    size_t active_count = 0;
+    for (size_t i = 0; i < vocab_size_; i++) {
+        active_tokens[i] = (token_frequencies[i] > pruning_threshold) ? 1 : 0;
+        if (active_tokens[i]) active_count++;
+    }
+    
+    // Ensure we keep at least MIN_ACTIVE_TOKENS
+    if (active_count < MIN_ACTIVE_TOKENS) {
+        std::vector<std::pair<float, size_t>> freq_pairs;
+        freq_pairs.reserve(vocab_size_);
+        for (size_t i = 0; i < vocab_size_; i++) {
+            freq_pairs.push_back({token_frequencies[i], i});
+        }
+        
+        // Sort by frequency
+        std::partial_sort(freq_pairs.begin(), 
+                         freq_pairs.begin() + MIN_ACTIVE_TOKENS,
+                         freq_pairs.end(),
+                         std::greater<>());
+                         
+        // Update active tokens
+        std::fill(active_tokens.begin(), active_tokens.end(), 0);
+        for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
+            active_tokens[freq_pairs[i].second] = 1;
+        }
+    }
+    
+#ifdef USE_CUDA
+    // Update device active tokens
+    CUDA_CHECK(cudaMemcpy(d_active_tokens, active_tokens.data(),
+                         vocab_size_ * sizeof(unsigned char),
+                         cudaMemcpyHostToDevice));
+#endif
+}
+
+#ifdef USE_CUDA
+// Add these CUDA kernel definitions and launchers
+
+// Kernel for converting FP32 to FP16
+__global__ void convert_to_fp16_kernel(half* output, const float* input, size_t size) {
+    const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        output[idx] = __float2half(input[idx]);
+    }
+}
+
+// Kernel for converting and expanding vocabulary
+__global__ void convert_and_expand_vocab_kernel(
+    float* output, const half* input, const unsigned char* active_tokens,
+    size_t batch_size, size_t vocab_size, size_t active_vocab_size) {
+    
+    const size_t row = blockIdx.y;
+    const size_t col = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (row < batch_size && col < vocab_size) {
+        // Count active tokens before this position to determine input index
+        size_t active_idx = 0;
+        for (size_t i = 0; i < col && active_idx < active_vocab_size; i++) {
+            if (active_tokens[i]) active_idx++;
+        }
+        
+        if (active_tokens[col] && active_idx < active_vocab_size) {
+            output[row * vocab_size + col] = __half2float(input[row * active_vocab_size + active_idx]);
+        } else {
+            output[row * vocab_size + col] = -INFINITY;
+        }
+    }
+}
+
+namespace {
+    // Device function declarations
+    __device__ void convert_to_fp16_device(half* output, const float* input, size_t idx) {
+        output[idx] = __float2half(input[idx]);
+    }
+
+    __device__ void convert_and_expand_vocab_device(
+        float* output, const half* input, const unsigned char* active_tokens,
+        size_t row, size_t col, size_t batch_size, size_t vocab_size, size_t active_vocab_size) {
+        
+        if (row < batch_size && col < vocab_size) {
+            size_t active_idx = 0;
+            for (size_t i = 0; i < col && active_idx < active_vocab_size; i++) {
+                if (active_tokens[i]) active_idx++;
+            }
+            
+            if (active_tokens[col] && active_idx < active_vocab_size) {
+                output[row * vocab_size + col] = __half2float(input[row * active_vocab_size + active_idx]);
+            } else {
+                output[row * vocab_size + col] = -INFINITY;
+            }
+        }
+    }
+}
+
+// Launcher for FP32 to FP16 conversion
+__host__ void LanguageModelHead::launch_convert_to_fp16(half* output, const float* input, size_t size) {
+    // First check if pointers are valid
+    if (output == nullptr || input == nullptr) {
+        throw std::runtime_error("Null pointer passed to launch_convert_to_fp16");
+    }
+
+    // Verify these are device pointers
+    cudaPointerAttributes output_attr, input_attr;
+    CUDA_CHECK(cudaPointerGetAttributes(&output_attr, output));
+    CUDA_CHECK(cudaPointerGetAttributes(&input_attr, input));
+    
+    if (output_attr.type != cudaMemoryTypeDevice || input_attr.type != cudaMemoryTypeDevice) {
+        throw std::runtime_error("Non-device memory pointer passed to launch_convert_to_fp16");
+    }
+
+    const int block_size = 256;
+    const int num_blocks = (size + block_size - 1) / block_size;
+    
+    convert_to_fp16_kernel<<<num_blocks, block_size, 0, nullptr>>>(output, input, size);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err));
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// Launcher for vocabulary expansion
+__host__ void LanguageModelHead::launch_convert_and_expand_vocab(
+    float* output, const half* input, size_t batch_size, size_t vocab_size, size_t active_vocab_size) {
+    
+    const int block_size = 256;
+    const int num_blocks_x = (vocab_size + block_size - 1) / block_size;
+    
+    dim3 grid(num_blocks_x, batch_size);
+    dim3 block(block_size);
+    
+    convert_and_expand_vocab_kernel<<<grid, block, 0, nullptr>>>(
+        output, input, d_active_tokens,
+        batch_size, vocab_size, active_vocab_size);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err));
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+#endif

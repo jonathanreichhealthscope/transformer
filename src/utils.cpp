@@ -10,6 +10,11 @@
 #include <set>
 #include "../include/data_augmentation.hpp"
 
+bool starts_with(const std::string& str, const std::string& prefix) {
+    return str.size() >= prefix.size() && 
+           str.compare(0, prefix.size(), prefix) == 0;
+}
+
 float Utils::adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
     const size_t WARMUP_STEPS = 50;
     const float PEAK_LR = 5e-4;
@@ -314,50 +319,54 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         return;
     }
 
-    std::vector<float> last_logits;
+    // Get the last token's logits
+    std::vector<std::pair<float, int>> token_probs;
+    token_probs.reserve(logits.cols());
+    
+    // Get probabilities for the last position
+    float max_logit = -std::numeric_limits<float>::infinity();
     for (size_t i = 0; i < logits.cols(); ++i) {
-        last_logits.push_back(logits(logits.rows() - 1, i));
+        float val = logits(logits.rows() - 1, i);
+        max_logit = std::max(max_logit, val);
+        token_probs.push_back({val, static_cast<int>(i)});
     }
 
-    // Apply softmax with numerical stability
-    float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
-    std::vector<float> probs(last_logits.size());
+    // Apply softmax
     float sum_exp = 0.0f;
-
-    const float MIN_SCORE = -1e4f;  // Prevent -inf
-    for (size_t i = 0; i < last_logits.size(); ++i) {
-        float scaled_logit = std::max(last_logits[i] - max_logit, MIN_SCORE);
-        probs[i] = std::exp(scaled_logit);
-        sum_exp += probs[i];
+    for (auto& pair : token_probs) {
+        pair.first = std::exp(pair.first - max_logit);
+        sum_exp += pair.first;
     }
 
-    // Prevent division by zero
-    const float eps = 1e-10f;
-    sum_exp = std::max(sum_exp, eps);
-
-    for (float& prob : probs) {
-        prob /= sum_exp;
-    }
-
-    // Get all token probabilities
-    std::vector<std::pair<float, int>> scores;
-    scores.reserve(probs.size());
-    for (size_t i = 0; i < probs.size(); ++i) {
-        scores.push_back({probs[i], static_cast<int>(i)});
+    // Normalize and filter
+    const float MIN_PROB = 1e-4f;
+    std::vector<std::pair<float, int>> filtered_probs;
+    filtered_probs.reserve(token_probs.size());
+    
+    for (auto& pair : token_probs) {
+        pair.first /= sum_exp;
+        if (pair.first >= MIN_PROB) {
+            // Decode token only for tokens with sufficient probability
+            std::string token = tokenizer.decode({pair.second});
+            if (!token.empty() && !starts_with(token, "<") && 
+                !std::all_of(token.begin(), token.end(), ::isspace)) {
+                filtered_probs.push_back(pair);
+            }
+        }
     }
 
     // Sort by probability
-    std::partial_sort(scores.begin(), 
-                     scores.begin() + std::min(k, scores.size()), 
-                     scores.end(),
+    std::partial_sort(filtered_probs.begin(),
+                     filtered_probs.begin() + std::min(k, filtered_probs.size()),
+                     filtered_probs.end(),
                      [](const auto& a, const auto& b) { return a.first > b.first; });
 
     // Print top k predictions
     std::cout << "\nTop " << k << " predictions:\n";
-    for (size_t i = 0; i < std::min(k, scores.size()); ++i) {
-        std::string token = tokenizer.decode({scores[i].second});
+    for (size_t i = 0; i < std::min(k, filtered_probs.size()); ++i) {
+        std::string token = tokenizer.decode({filtered_probs[i].second});
         std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
-                  << std::setprecision(4) << scores[i].first << ")\n";
+                  << std::setprecision(4) << filtered_probs[i].first << ")\n";
     }
 }
 

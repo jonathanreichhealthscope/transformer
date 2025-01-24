@@ -169,8 +169,6 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig& config) : config(config) {
-    std::cout << "\n=== Transformer::constructor START ===" << std::endl;
-
     // Initialize dropout with config probability
     dropout = std::make_unique<Dropout>(config.dropout_prob);
 
@@ -200,73 +198,58 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
 
     // Initialize the language model head with bounded values
     lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
-
-    std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache) {
     static const bool use_fp16 = config.use_fp16;
 
-    // Get embeddings
+    // Get embeddings and add positional encodings
     Matrix embeddings = token_embedding->forward(input_tokens);
-    std::cout << "embedding dimensions: " << embeddings.shape() << std::endl;
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(embeddings);
-    }
-
-    // Add positional encodings
     Matrix position_ids(input_tokens.size(), 1);
-    std::cout << "position_ids dimensions: " << position_ids.shape() << std::endl;
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
+    
+    // Batch process embeddings
     Matrix pos_encodings = pos_encoding->forward(position_ids);
-    std::cout << "pos_encodings dimensions: " << pos_encodings.shape() << std::endl;
     if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(embeddings);
         HalfPrecisionTraining::convert_to_fp16(pos_encodings);
     }
-
     embeddings += pos_encodings;
-    std::cout << "embeddings + pos_encodings dimensions: " << embeddings.shape() << std::endl;
+    
     // Create causal mask for next-token prediction
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
     
-    // Forward through layers with stability checks
+    // Forward through layers with minimal synchronization
     hidden_states = embeddings;
-    m_layer_activations.clear();                // Clear previous activations
-    m_layer_activations.reserve(layers.size()); // Reserve space for efficiency
+    m_layer_activations.clear();
+    m_layer_activations.reserve(layers.size());
 
-    // Add dropout after embeddings
     if (training && dropout) {
         hidden_states = dropout->forward(hidden_states, true);
-        std::cout << "hidden_states dimensions after dropout: " << hidden_states.shape() << std::endl;
     }
 
+    // Process layers with minimal synchronization
     for (size_t i = 0; i < layers.size(); ++i) {
         try {
             m_layer_activations.push_back(hidden_states);
             hidden_states = layers[i]->forward(hidden_states, mask,
-                                               use_cache ? std::optional<KVCache>(m_kv_caches[i])
-                                                         : std::nullopt);
-            std::cout << "hidden_states dimensions after layer " << i << ": " << hidden_states.shape() << std::endl;
-            // Convert back to FP32 at the end
-            if (use_fp16 && i == layers.size() - 1) {
-                HalfPrecisionTraining::convert_to_fp32(hidden_states);
-            }
-
-            // Add dropout between layers
-            if (training && dropout && i < layers.size() - 1) {
-                hidden_states = dropout->forward(hidden_states, true);
-            }
+                                             use_cache ? std::optional<KVCache>(m_kv_caches[i])
+                                                     : std::nullopt);
         } catch (const std::exception& e) {
             std::cerr << "Error in layer " << i << ": " << e.what() << std::endl;
             throw;
         }
     }
 
-    // Store final hidden states for backward pass
-    last_hidden_states = hidden_states;
-
+    // Final normalization
+    hidden_states = final_ln->forward(hidden_states);
+    
+    // Single sync point at the end
+    CUDA_CHECK(cudaGetLastError());
+    cudaDeviceSynchronize();
+    
     return hidden_states;
 }
 
