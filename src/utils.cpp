@@ -271,11 +271,13 @@ std::vector<std::pair<std::string, std::string>> Utils::load_validation_data() {
 bool Utils::validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size,
                                     size_t max_seq_length) {
     if (tokens.empty() || tokens.size() > max_seq_length) {
+        std::cout << "Invalid sequence: " << (tokens.empty() ? "empty" : "too long") << std::endl;
         return false;
     }
 
     for (int token : tokens) {
         if (token < 0 || static_cast<size_t>(token) >= vocab_size) {
+            std::cout << "Invalid token " << token << " (vocab size: " << vocab_size << ")" << std::endl;
             return false;
         }
     }
@@ -317,7 +319,7 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
 
     std::vector<std::pair<float, int>> scores;
     for (size_t i = 0; i < probs.size(); ++i) {
-        if (tokenizer.get_vocabulary().is_noun(tokenizer.decode({static_cast<int>(i)}))) {
+        if (tokenizer.is_noun(tokenizer.decode({static_cast<int>(i)}))) {
             scores.push_back({probs[i], static_cast<int>(i)});
         }
     }

@@ -49,32 +49,22 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# Add SentencePiece
-FetchContent_Declare(
-    sentencepiece
-    GIT_REPOSITORY https://github.com/google/sentencepiece.git
-    GIT_TAG v0.1.97
-)
-
-# Configure SentencePiece build options
-set(SPM_ENABLE_SHARED OFF CACHE BOOL "Build SentencePiece as static library")
-set(SPM_ENABLE_TENSORFLOW_SHARED OFF CACHE BOOL "Build TensorFlow extension as shared library")
-set(SPM_ENABLE_TENSORFLOW OFF CACHE BOOL "Build TensorFlow extension")
-set(SPM_ENABLE_NEON OFF CACHE BOOL "Enable ARM NEON")
-set(SPM_ENABLE_AVX512BW OFF CACHE BOOL "Enable AVX512BW")
-set(SPM_ENABLE_AVX2 OFF CACHE BOOL "Enable AVX2")
-set(SPM_ENABLE_SSE4_2 OFF CACHE BOOL "Enable SSE4.2")
-set(SPM_ENABLE_SSE4_1 OFF CACHE BOOL "Enable SSE4.1")
-set(SPM_ENABLE_SSE3 OFF CACHE BOOL "Enable SSE3")
-set(SPM_ENABLE_SSE2 OFF CACHE BOOL "Enable SSE2")
-
-FetchContent_MakeAvailable(sentencepiece)
-
 # Include directories
 if(CUDAToolkit_FOUND)
     include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 endif()
-include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# Base include directories - single source of truth for all includes
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
+# Add tiktoken include directory globally
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiktoken/cpp/include
+)
 
 # Core source files
 set(CORE_SOURCES
@@ -90,7 +80,7 @@ set(CORE_SOURCES
     src/beam_search.cpp
     src/config.cpp
     src/tokenizer.cpp
-    src/sentencepiece_tokenizer.cpp
+    src/tiktoken_tokenizer.cpp
 )
 
 # Neural network components
@@ -157,8 +147,6 @@ add_executable(transformer src/main.cpp)
 target_link_libraries(transformer_lib
     PUBLIC
     nlohmann_json::nlohmann_json
-    sentencepiece-static
-    sentencepiece_train-static
 )
 
 if(CUDAToolkit_FOUND)
@@ -253,7 +241,8 @@ if(CUDAToolkit_FOUND)
     target_include_directories(cuda_kernels
         PRIVATE
         ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
-        ${PROJECT_SOURCE_DIR}/include/cuda
+        ${CMAKE_SOURCE_DIR}/include/cuda
+        ${CMAKE_SOURCE_DIR}/third_party
     )
 
     # Link cuda_kernels to transformer_lib
@@ -271,47 +260,11 @@ target_sources(transformer_lib PRIVATE
 find_package(nlohmann_json 3.2.0 REQUIRED)
 target_link_libraries(transformer_lib PRIVATE nlohmann_json::nlohmann_json)
 
-# Add CUDA include directories
-target_include_directories(transformer_lib
-    PRIVATE
-    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
-    ${PROJECT_SOURCE_DIR}/include/cuda
-)
-
-if(USE_CUDA)
-    enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
-    
-    # Set CUDA architectures
-    set(CMAKE_CUDA_ARCHITECTURES 86)
-    
-    # Add CUDA compilation flags
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
-    
-    # Add CUDA sources to library
-    target_sources(transformer_lib 
-        PRIVATE 
-        ${CUDA_SOURCES}
-    )
-    
-    # Link CUDA libraries
-    target_link_libraries(transformer_lib
-        PRIVATE
-        CUDA::cudart
-        CUDA::cublas
-        CUDA::curand
-    )
-    
-    # Define CUDA macro
-    target_compile_definitions(transformer_lib
-        PRIVATE
-        USE_CUDA
-    )
-endif()
-
 # Make sure the include directory is in the include path
-target_include_directories(transformer_lib PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+target_include_directories(transformer_lib 
+    PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
 )
 
 add_definitions(

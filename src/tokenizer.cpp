@@ -3,69 +3,22 @@
 #include <regex>
 #include <sstream>
 #include <stdexcept>
-#include "../include/cuda/matrix_ops.cuh"
-#include "../include/cuda/tokenizer_kernels.cuh"
-#include "../include/sentencepiece_tokenizer.hpp"
 
 // Define the special character map
 const std::unordered_map<char, std::string> Tokenizer::SPECIAL_CHAR_MAP = {
     {'\n', "<newline>"},    {'\t', "<tab>"},     {'.', "<period>"},
     {'!', "<exclamation>"}, {'?', "<question>"}, {',', "<comma>"}};
 
-Tokenizer::Tokenizer() 
-    : vocab(std::make_unique<Vocabulary>())
-    , tokenizer_(std::make_unique<SentencePieceTokenizer>()) {
+Tokenizer::Tokenizer() {
+    tokenizer_ = std::make_unique<TiktokenTokenizer>();
     
-    // Initialize vocabulary with special tokens
-    vocab->add_special_token(tokens::PAD_TOKEN, tokens::PAD_ID);
-    vocab->add_special_token(tokens::UNK_TOKEN, tokens::UNK_ID);
-    vocab->add_special_token(tokens::BOS_TOKEN, tokens::BOS_ID);
-    vocab->add_special_token(tokens::EOS_TOKEN, tokens::EOS_ID);
-    vocab->add_special_token(tokens::MASK_TOKEN, tokens::MASK_ID);
-}
-
-void Tokenizer::save_vocabulary(std::ostream& os) const {
-    size_t vocab_size = vocab->size();
-    os.write(reinterpret_cast<const char*>(&vocab_size), sizeof(vocab_size));
-
-    for (size_t i = 0; i < vocab_size; ++i) {
-        std::string token = vocab->get_token(i);
-        size_t token_length = token.length();
-        os.write(reinterpret_cast<const char*>(&token_length), sizeof(token_length));
-        os.write(token.c_str(), token_length);
+    if (!tokenizer_) {
+        throw std::runtime_error("Failed to create TiktokenTokenizer");
     }
-}
-
-std::unique_ptr<Vocabulary> Tokenizer::load_vocabulary(std::istream& is) {
-    auto vocab = std::make_unique<Vocabulary>();
-
-    size_t vocab_size;
-    is.read(reinterpret_cast<char*>(&vocab_size), sizeof(vocab_size));
-
-    for (size_t i = 0; i < vocab_size; ++i) {
-        size_t token_length;
-        is.read(reinterpret_cast<char*>(&token_length), sizeof(token_length));
-
-        std::vector<char> token_buffer(token_length + 1, '\0');
-        is.read(token_buffer.data(), token_length);
-        std::string token(token_buffer.data());
-
-        vocab->add_special_token(token, i);
-    }
-
-    return vocab;
 }
 
 std::vector<int> Tokenizer::encode(const std::string& text) const {
-    // Check cache first
-    auto cache_it = encoding_cache.find(text);
-    if (cache_it != encoding_cache.end()) {
-        return cache_it->second;
-    }
-
-    auto ids = tokenizer_->encode(text);
-    encoding_cache[text] = ids;
-    return ids;
+    return tokenizer_->encode(text);
 }
 
 std::string Tokenizer::decode(const std::vector<int>& tokens) const {
@@ -95,7 +48,7 @@ std::unique_ptr<Tokenizer> Tokenizer::load(std::istream& is) {
             throw std::runtime_error("Unsupported tokenizer version");
         }
 
-        tokenizer->vocab = load_vocabulary(is);
+        tokenizer->tokenizer_ = load_vocabulary(is);
 
         if (!is.good()) {
             throw std::runtime_error("Failed to load tokenizer");
@@ -108,9 +61,8 @@ std::unique_ptr<Tokenizer> Tokenizer::load(std::istream& is) {
 }
 
 bool Tokenizer::is_special_token(int token_id) const {
-    std::string token = vocab->get_token(token_id);
-    return token == "<pad>" || token == "<unk>" || token == "<bos>" || token == "<eos>" ||
-           token == "<whitespace>" || token.find("<") == 0; // Check for other special tokens
+    std::string token = tokenizer_->decode({token_id});
+    return token.find("<") == 0 && token.find(">") == token.length() - 1;
 }
 
 void Tokenizer::preprocess_text(std::string& text) const {
@@ -119,18 +71,15 @@ void Tokenizer::preprocess_text(std::string& text) const {
 
     for (size_t i = 0; i < text.length(); ++i) {
         char c = text[i];
-
-        // Handle whitespace
         if (std::isspace(c)) {
             if (!in_whitespace) {
-                result += " <whitespace> ";
+                result += " ";
                 in_whitespace = true;
             }
             continue;
         }
         in_whitespace = false;
 
-        // Handle special characters
         auto it = SPECIAL_CHAR_MAP.find(c);
         if (it != SPECIAL_CHAR_MAP.end()) {
             result += it->second;
@@ -138,33 +87,90 @@ void Tokenizer::preprocess_text(std::string& text) const {
             result += c;
         }
     }
-
     text = result;
 }
 
-void Tokenizer::sync_vocabulary_with_subword_tokenizer() {
-    if (!tokenizer_) return;
+void Tokenizer::save_vocabulary(std::ostream& os) const {
+    if (!tokenizer_) {
+        throw std::runtime_error("Tokenizer not initialized");
+    }
+
+    // Write vocabulary size
+    uint32_t vocab_size = static_cast<uint32_t>(tokenizer_->vocab_size());
+    os.write(reinterpret_cast<const char*>(&vocab_size), sizeof(vocab_size));
+
+    // Write special token IDs
+    int32_t special_tokens[] = {
+        tokenizer_->get_pad_token_id(),
+        tokenizer_->get_unk_token_id(),
+        tokenizer_->get_bos_token_id(),
+        tokenizer_->get_eos_token_id(),
+        tokenizer_->get_mask_token_id()
+    };
+    os.write(reinterpret_cast<const char*>(special_tokens), sizeof(special_tokens));
+
+    // Get vocabulary
+    auto vocab = get_vocabulary_vector();
     
-    // Create new vocabulary preserving special tokens
-    auto new_vocab = std::make_unique<Vocabulary>();
+    // Write each token
+    for (const auto& token : vocab) {
+        uint32_t token_length = static_cast<uint32_t>(token.length());
+        os.write(reinterpret_cast<const char*>(&token_length), sizeof(token_length));
+        os.write(token.c_str(), token_length);
+    }
+}
+
+std::unique_ptr<TiktokenTokenizer> Tokenizer::load_vocabulary(std::istream& is) {
+    auto tokenizer = std::make_unique<TiktokenTokenizer>();
+
+    // Initialize with default encoding
+    tokenizer->initialize();
+
+    // Read vocabulary size (for compatibility with file format)
+    uint32_t vocab_size;
+    is.read(reinterpret_cast<char*>(&vocab_size), sizeof(vocab_size));
+
+    // Read special token IDs (for compatibility with file format)
+    int32_t special_tokens[5];
+    is.read(reinterpret_cast<char*>(special_tokens), sizeof(special_tokens));
+
+    // Skip token data since we're using the pre-defined vocabulary
+    for (uint32_t i = 0; i < vocab_size; ++i) {
+        uint32_t token_length;
+        is.read(reinterpret_cast<char*>(&token_length), sizeof(token_length));
+        is.seekg(token_length, std::ios::cur);  // Skip token data
+    }
+
+    return tokenizer;
+}
+
+void Tokenizer::print_vocabulary_mappings() const {
+    if (!tokenizer_ || !tokenizer_->is_initialized()) {
+        std::cerr << "Warning: Attempting to print mappings before tokenizer initialization" << std::endl;
+        return;
+    }
+
+    std::cout << "Special Token IDs:\n"
+              << "PAD: " << tokenizer_->get_pad_token_id() << "\n"
+              << "UNK: " << tokenizer_->get_unk_token_id() << "\n"
+              << "BOS: " << tokenizer_->get_bos_token_id() << "\n"
+              << "EOS: " << tokenizer_->get_eos_token_id() << "\n"
+              << "MASK: " << tokenizer_->get_mask_token_id() << std::endl;
+}
+
+std::vector<std::string> Tokenizer::get_vocabulary_vector() const {
+    if (!tokenizer_ || !tokenizer_->is_initialized()) {
+        throw std::runtime_error("Tokenizer not initialized");
+    }
+
+    std::vector<std::string> vocab;
+    const size_t vocab_size = tokenizer_->vocab_size();
+    vocab.reserve(vocab_size);
     
-    // First add special tokens in correct order
-    new_vocab->add_special_token(tokens::PAD_TOKEN, tokens::PAD_ID);
-    new_vocab->add_special_token(tokens::UNK_TOKEN, tokens::UNK_ID);
-    new_vocab->add_special_token(tokens::BOS_TOKEN, tokens::BOS_ID);
-    new_vocab->add_special_token(tokens::EOS_TOKEN, tokens::EOS_ID);
-    new_vocab->add_special_token(tokens::MASK_TOKEN, tokens::MASK_ID);
-    
-    // Then add all other tokens from SentencePiece tokenizer
-    for (size_t i = tokens::NUM_SPECIAL_TOKENS; i < tokenizer_->vocab_size(); i++) {
-        std::string token = tokenizer_->id_to_token(i);
-        new_vocab->add_token(token, i);
+    // Get all tokens by decoding their IDs
+    for (size_t i = 0; i < vocab_size; i++) {
+        vocab.push_back(tokenizer_->decode({static_cast<int>(i)}));
     }
     
-    // Verify consistency before replacing
-    if (!new_vocab->verify_mappings()) {
-        throw std::runtime_error("Inconsistent mappings after vocabulary sync");
-    }
-    
-    vocab = std::move(new_vocab);
+    return vocab;
 }

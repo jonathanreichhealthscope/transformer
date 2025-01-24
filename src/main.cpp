@@ -3,7 +3,6 @@
 #include <nlohmann/json.hpp>
 #include <random>
 #include "../include/tokenizer.hpp"
-#include "../include/sentencepiece_tokenizer.hpp"
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -51,27 +50,13 @@ int main(int argc, char* argv[]) {
         // Initialize tokenizer with config
         tokenizer = std::make_unique<Tokenizer>();
         
-        if (config.tokenizer.use_subword) {
-            std::cout << "Initializing SentencePiece tokenizer with:\n"
-                      << "- Vocab size: " << config.tokenizer.vocab_size << "\n";
-              
-            // Prepare texts for tokenizer training
-            std::vector<std::string> texts;
-            texts.reserve(training_pairs.size() * 2);
-            for (const auto& pair : training_pairs) {
-                texts.push_back(pair.first);
-                texts.push_back(pair.second);
-            }
-
-            // Train the tokenizer
-            try {
-                tokenizer->train(texts, "model/tokenizer");
-                std::cout << "SentencePiece tokenizer training completed. Vocabulary size: " 
-                          << tokenizer->vocab_size() << std::endl;
-            } catch (const std::exception& e) {
-                std::cerr << "Failed to train tokenizer: " << e.what() << std::endl;
-                return 1;
-            }
+        try {
+            tokenizer->initialize();  // Initialize with default encoding
+            std::cout << "Initialized tokenizer. Vocabulary size: " 
+                      << tokenizer->vocab_size() << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to initialize tokenizer: " << e.what() << std::endl;
+            return 1;
         }
 
         // Update vocabulary size in config based on tokenizer
@@ -87,14 +72,9 @@ int main(int argc, char* argv[]) {
         QuantizationAwareTraining qat(true);
         auto sam_optimizer = std::make_unique<SAM>(0.05f);
 
-        // Print and verify vocabulary mappings
-        std::cout << "\nVerifying vocabulary mappings:\n";
+        // Print vocabulary mappings
+        std::cout << "\nPrinting vocabulary mappings:\n";
         tokenizer->print_vocabulary_mappings();
-
-        if (!tokenizer->verify_mappings()) {
-            std::cerr << "Error: Vocabulary mappings are inconsistent!\n";
-            return 1;
-        }
 
         // Training parameters
         const size_t checkpoint_frequency =
@@ -154,11 +134,16 @@ int main(int argc, char* argv[]) {
 
         // Update any hardcoded token references
         int pad_id = tokenizer->get_pad_token_id();    // Should be 0
+        std::cout << "pad_id: " << pad_id << std::endl;
         int unk_id = tokenizer->get_unk_token_id();    // Should be 1
+        std::cout << "unk_id: " << unk_id << std::endl;
         int bos_id = tokenizer->get_bos_token_id();    // Should be 2
+        std::cout << "bos_id: " << bos_id << std::endl;
         int eos_id = tokenizer->get_eos_token_id();    // Should be 3
+        std::cout << "eos_id: " << eos_id << std::endl;
         int mask_id = tokenizer->get_mask_token_id();  // Should be 4
-
+        std::cout << "mask_id: " << mask_id << std::endl;
+        std::cout << "epochs: " << config.num_epochs << std::endl;
         for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
             std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
             float epoch_loss = 0.0f;
@@ -441,8 +426,8 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            if ((epoch + 1) % 5 == 0) { // Clear cache every 5 epochs
-                tokenizer->clear_cache();
+            if ((epoch + 1) % 5 == 0) { 
+                // Cache clearing removed since TiktokenTokenizer doesn't use caching
             }
 
             // Run validation every 3 epochs
