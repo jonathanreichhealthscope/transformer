@@ -26,7 +26,8 @@ class Utils {
     static TransformerConfig load_config(const std::string& config_path);
     static Matrix
     create_batch_target_distribution(const std::vector<std::vector<int>>& target_tokens,
-                                     const Tokenizer& tokenizer, size_t vocab_size);
+                                     const Tokenizer& tokenizer, size_t vocab_size,
+                                     size_t input_max_seq_len);
     static float compute_batch_loss(const Matrix& logits, const Matrix& target_distribution);
     static void apply_sampling_parameters(std::vector<float>& logits, float temperature,
                                           float top_p);

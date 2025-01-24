@@ -39,7 +39,8 @@ class LanguageModelHead {
     static constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Minimum number of active tokens
     float pruning_threshold;
     std::vector<unsigned char> active_tokens;  // Changed from vector<bool> to vector<unsigned char>
-    size_t training_steps = 0;
+    std::vector<int> active_token_indices;     // List of indices of active tokens
+    size_t training_steps;
     
     // Pinned memory for efficient GPU transfers
     float* h_projection = nullptr;
@@ -75,7 +76,6 @@ class LanguageModelHead {
     // Device memory for active tokens and indices
     unsigned char* d_active_tokens = nullptr;
     int* d_active_token_indices = nullptr;
-    std::vector<int> active_token_indices;
 
     // Maximum batch size for memory allocation
     static constexpr size_t max_batch_size = 4096;  // Adjust based on your needs
@@ -249,24 +249,21 @@ class LanguageModelHead {
     Matrix backward(const Matrix& grad_output, const Matrix& target_distribution = Matrix());
 
     /**
-     * @brief Updates token frequency tracking with decay.
-     * @param tokens Vector of token IDs to update frequencies for
-     * 
-     * This method implements a simple frequency tracking mechanism with exponential
-     * decay to give more weight to recent occurrences.
+     * @brief Updates token frequencies based on observed tokens.
+     * @param tokens Vector of token indices observed in the current batch
      */
     void update_token_frequencies(const std::vector<int>& tokens) {
-        // Decay old frequencies slightly
-        const float decay_rate = 0.99f;
-        for (auto& freq : token_frequencies) {
-            freq *= decay_rate;
-        }
-
-        // Update frequencies from new tokens
         for (int token : tokens) {
-            if (token >= 0 && static_cast<size_t>(token) < token_frequencies.size()) {
+            if (token >= 0 && static_cast<size_t>(token) < vocab_size_) {
                 token_frequencies[token] += 1.0f;
             }
         }
+        training_steps++;
     }
+
+    /**
+     * @brief Prunes vocabulary by removing infrequently used tokens.
+     * @param min_frequency_threshold Minimum frequency threshold for keeping tokens
+     */
+    void prune_vocabulary(float min_frequency_threshold = 1e-5);
 };

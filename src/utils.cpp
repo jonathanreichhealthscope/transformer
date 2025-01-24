@@ -40,17 +40,50 @@ float Utils::adjust_learning_rate(float current_lr, float loss_ratio, size_t ste
 }
 
 Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int>>& target_tokens,
-                                               const Tokenizer& tokenizer, size_t vocab_size) {
-    Matrix target_distribution(target_tokens.size(), vocab_size, 0.0f);
-    for (size_t i = 0; i < target_tokens.size(); i++) {
-        if (!target_tokens[i].empty()) {
-            target_distribution(i, target_tokens[i].back()) = 1.0f;
+                                               const Tokenizer& tokenizer, size_t vocab_size,
+                                               size_t input_max_seq_len) {
+    // Calculate total size based on input sequence length
+    size_t batch_size = target_tokens.size();
+    size_t total_tokens = batch_size * input_max_seq_len;
+    
+    // Create target distribution for all token positions
+    Matrix target_distribution(total_tokens, vocab_size, 0.0f);
+    
+    // Set target distribution for each token in each sequence
+    size_t current_pos = 0;
+    for (size_t seq = 0; seq < target_tokens.size(); seq++) {
+        
+        // Set actual tokens
+        for (size_t i = 0; i < target_tokens[seq].size(); i++) {
+            target_distribution(current_pos, target_tokens[seq][i]) = 1.0f;
+            current_pos++;
+        }
+        
+        // Pad remaining positions with pad token
+        for (size_t i = target_tokens[seq].size(); i < input_max_seq_len; i++) {
+            target_distribution(current_pos, tokenizer.get_pad_token_id()) = 1.0f;
+            current_pos++;
         }
     }
+    
+    std::cout << "Final target distribution shape: " 
+              << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
+    std::cout << "Final current_pos: " << current_pos << "\n";
+    std::cout << "=== Target Distribution Creation Complete ===\n\n";
+    
     return target_distribution;
 }
 
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
+    // Verify dimensions match
+    std::cout << "\n=== Computing Batch Loss ===\n";
+    if (logits.rows() != target_distribution.rows() || logits.cols() != target_distribution.cols()) {
+        std::cerr << "Dimension mismatch in compute_batch_loss:\n"
+                  << "logits: " << logits.rows() << "x" << logits.cols() << "\n"
+                  << "target: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
+        throw std::runtime_error("Dimension mismatch in compute_batch_loss");
+    }
+
     float loss = 0.0f;
     const float epsilon = 1e-10f;
 

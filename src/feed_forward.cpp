@@ -23,14 +23,6 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
       dW1_(hidden_size, intermediate_size), dW2_(intermediate_size, hidden_size),
       db1_(intermediate_size), db2_(hidden_size) {
 
-    std::cout << "\n=== FeedForward Constructor Dimensions ===" << std::endl;
-    std::cout << "Hidden size: " << hidden_size << std::endl;
-    std::cout << "Intermediate size: " << intermediate_size << std::endl;
-    std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
-    std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
-    std::cout << "b1 size: " << b1.size() << std::endl;
-    std::cout << "b2 size: " << b2.size() << std::endl;
-
     // Initialize weights with Xavier/Glorot initialization
     std::random_device rd;
     std::mt19937 gen(rd());

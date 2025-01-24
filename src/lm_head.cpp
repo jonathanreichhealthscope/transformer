@@ -15,16 +15,18 @@ __global__ void convert_projection_to_fp16_kernel(
 
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     : hidden_size_(hidden_size), vocab_size_(vocab_size), projection(hidden_size, vocab_size),
-      bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f)
+      bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f), pruning_threshold(1e-6f),
+      active_tokens(vocab_size, 1), training_steps(0)
 {
     float scale = std::sqrt(1.0f / hidden_size);
     projection.randomize(-scale, scale);
     bias.randomize(-scale, scale);
     
-    // Initialize pruning threshold and active token mask
-    pruning_threshold = 1e-6f;
-    active_tokens.resize(vocab_size, 1);  // 1 = true
+    // Initialize active token indices with all tokens
     active_token_indices.reserve(vocab_size);
+    for (size_t i = 0; i < vocab_size; i++) {
+        active_token_indices.push_back(i);
+    }
     
 #ifdef USE_CUDA
     // Initialize cuBLAS handle
@@ -50,8 +52,12 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     CUDA_CHECK(cudaMemcpyAsync(d_bias, bias.data(), 
                               vocab_size * sizeof(float), 
                               cudaMemcpyHostToDevice, compute_stream));
-    CUDA_CHECK(cudaMemsetAsync(d_active_tokens, 1, vocab_size * sizeof(unsigned char), 
-                              compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_active_tokens, active_tokens.data(),
+                              vocab_size * sizeof(unsigned char),
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_active_token_indices, active_token_indices.data(),
+                              vocab_size * sizeof(int),
+                              cudaMemcpyHostToDevice, compute_stream));
 #endif
 }
 
@@ -76,42 +82,40 @@ LanguageModelHead::~LanguageModelHead() {
 }
 
 Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
-    // Store hidden states for backward pass
-    this->hidden_states = hidden_states;
-
-    std::cout << "In language Model Head: " << std::endl;
-    std::cout << "Hidden states dimensions: " << hidden_states.rows() << "x" << hidden_states.cols()
-              << std::endl;
-    std::cout << "Projection dimensions: " << projection.rows() << "x" << projection.cols()
-              << std::endl;
-
-    // Check dimensions before multiplication
-    if (hidden_states.cols() != projection.rows()) {
-        throw std::runtime_error(
-            "Invalid matrix dimensions for projection: hidden_states.cols() (" +
-            std::to_string(hidden_states.cols()) + ") must match projection.rows() (" +
-            std::to_string(projection.rows()) + ")");
+    size_t total_size = hidden_states.rows();
+    size_t hidden_dim = hidden_states.cols();
+    
+    if (hidden_dim != hidden_size_) {
+        throw std::runtime_error("Hidden dimension mismatch: " + std::to_string(hidden_dim) +
+                               " != " + std::to_string(hidden_size_));
     }
-
-    // Project hidden states to vocabulary size
-    // [batch_size x hidden_size] * [hidden_size x vocab_size] = [batch_size x vocab_size]
+    
+    // Compute logits using the original dimensions
     Matrix logits = matmul(hidden_states, projection);
-
+    
     // Add bias
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
             logits(i, j) += bias[j];
         }
     }
-    return logits;
+    
+    return logits;  // Return full logits matrix without reshaping
 }
 
 Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
     this->hidden_states = hidden_states;
-    size_t batch_size = hidden_states.rows();
+    size_t total_size = hidden_states.rows();  // This is batch_size * seq_len
+    size_t hidden_dim = hidden_states.cols();  // This should be hidden_size_
     
-    if (batch_size > max_batch_size) {
-        throw std::runtime_error("Batch size exceeds maximum allocated size");
+    // Calculate actual sequence length from hidden states
+    if (hidden_dim != hidden_size_) {
+        throw std::runtime_error("Hidden dimension mismatch: " + std::to_string(hidden_dim) +
+                               " != " + std::to_string(hidden_size_));
+    }
+    
+    if (total_size > max_batch_size) {
+        throw std::runtime_error("Total sequence length exceeds maximum allocated size");
     }
     
     // Update active tokens based on frequency
@@ -125,12 +129,12 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
     try {
         // Copy input data to device and convert to FP16
         CUDA_CHECK(cudaMemcpyAsync(d_projection, hidden_states.data(), 
-                                 batch_size * hidden_size_ * sizeof(float),
+                                 total_size * hidden_size_ * sizeof(float),
                                  cudaMemcpyHostToDevice, compute_stream));
 
-        // Convert input to FP16 (first copy to device, then convert)
+        // Convert input to FP16
         launch_convert_to_fp16(d_hidden_states_fp16, d_projection,
-                             batch_size * hidden_size_);
+                             total_size * hidden_size_);
         
         // Convert projection matrix to FP16
         const int block_size = 256;
@@ -148,29 +152,29 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
         CUBLAS_CHECK(cublasGemmEx(cublas_handle,
                                 CUBLAS_OP_T,
                                 CUBLAS_OP_T,
-                                batch_size,
+                                total_size,  // Keep original dimensions
                                 active_vocab_size,
                                 hidden_size_,
                                 &alpha,
                                 d_hidden_states_fp16, CUDA_R_16F, hidden_size_,
                                 d_projection_fp16, CUDA_R_16F, active_vocab_size,
                                 &beta,
-                                d_output_fp16, CUDA_R_16F, batch_size,
+                                d_output_fp16, CUDA_R_16F, total_size,
                                 CUDA_R_16F,
                                 CUBLAS_GEMM_DEFAULT_TENSOR_OP));
         
-        // Create output matrix
-        Matrix logits(batch_size, vocab_size_);
+        // Create output matrix with original dimensions
+        Matrix logits(total_size, vocab_size_);
         
         // Copy result back to host asynchronously
         CUDA_CHECK(cudaMemcpyAsync(logits.data(), d_output,
-                                 batch_size * vocab_size_ * sizeof(float),
+                                 total_size * vocab_size_ * sizeof(float),
                                  cudaMemcpyDeviceToHost, compute_stream));
         
         // Make sure all operations are complete
         CUDA_CHECK(cudaStreamSynchronize(compute_stream));
         
-        return logits;
+        return logits;  // Return full logits matrix without reshaping
     } catch (const std::runtime_error& e) {
         std::cerr << "CUDA projection failed, falling back to CPU: " << e.what() << std::endl;
         return forward_impl(hidden_states);
@@ -181,39 +185,54 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
 }
 
 Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& target_distribution) {
+    size_t total_size = hidden_states.rows();  // This is batch_size * seq_len
+    size_t batch_size = total_size / 2;  // Since seq_len is 2
+    size_t seq_len = 2;  // Hardcoded for now
+    
     std::cout << "LM Head backward dimensions:" << std::endl;
     std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
     std::cout << "projection: " << projection.rows() << "x" << projection.cols() << std::endl;
-    std::cout << "hidden_states: " << hidden_states.rows() << "x" << hidden_states.cols()
-              << std::endl;
+    std::cout << "hidden_states: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
 
     // Compute cross entropy gradient with respect to logits
     Matrix loss_grad(grad_output.rows(), grad_output.cols());
 
     if (!target_distribution.empty()) {
-        std::cout << "target_distribution: " << target_distribution.rows() << "x"
-                  << target_distribution.cols() << std::endl;
-        // If target distribution is provided, compute cross entropy gradient
-        for (size_t i = 0; i < grad_output.rows(); i++) {
-            for (size_t j = 0; j < grad_output.cols(); j++) {
-                size_t idx = i * grad_output.cols() + j;
-                if (target_distribution.data()[i] > 0.0f) {
-                    loss_grad(i, j) = grad_output(i, j) - target_distribution(i, j);
+            std::cout << "target_distribution: " << target_distribution.rows() << "x"
+                    << target_distribution.cols() << std::endl;
+            // If target distribution is provided, compute cross entropy gradient
+            for (size_t i = 0; i < grad_output.rows(); i++) {
+                for (size_t j = 0; j < grad_output.cols(); j++) {
+                    if (target_distribution(i, j) > 0.0f) {
+                        loss_grad(i, j) = grad_output(i, j) - target_distribution(i, j);
+                    }
                 }
             }
-        }
     } else {
         // Otherwise, just use the provided gradients
         loss_grad = grad_output;
     }
 
-    // Propagate gradients through the linear layer
-    backward_linear(loss_grad);
+    // Expand the gradients back to full sequence length
+    Matrix expanded_grad(total_size, vocab_size_);
+    expanded_grad.fill(0.0f);  // Initialize with zeros
+    
+    // Only set gradients for the last token in each sequence
+    for (size_t b = 0; b < batch_size; b++) {
+        size_t src_idx = b;  // Index in loss_grad
+        size_t dst_idx = (b * seq_len + (seq_len - 1));  // Index in expanded_grad (last token position)
+        for (size_t v = 0; v < vocab_size_; v++) {
+            expanded_grad(dst_idx, v) = loss_grad(src_idx, v);
+        }
+    }
+
+    // Propagate gradients through the linear layer with expanded gradients
+    backward_linear(expanded_grad);
 
     // Return gradients with respect to hidden states
-    // loss_grad: [batch_size x vocab_size], projection: [hidden_size x vocab_size]
-    // Need to transpose projection to get [vocab_size x hidden_size]
-    return matmul(loss_grad, projection.transpose());
+    Matrix hidden_grad = matmul(expanded_grad, projection.transpose());
+    
+    return hidden_grad;  // No need to reshape since dimensions already match hidden_states
 }
 
 void LanguageModelHead::backward_linear(const Matrix& grad_output) {
@@ -225,8 +244,6 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
     }
 
     // Compute gradients for projection matrix
-    // hidden_states: [batch_size x hidden_size], grad_output: [batch_size x vocab_size]
-    // Result should be [hidden_size x vocab_size]
     Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
 
     // Verify gradient dimensions
@@ -246,7 +263,7 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
     }
 
     // Update parameters using gradients
-    const float learning_rate = 0.001f; // You might want to make this configurable
+    const float learning_rate = 0.001f;
 
     // Update projection matrix
     for (size_t i = 0; i < projection.rows(); i++) {
@@ -311,6 +328,109 @@ void LanguageModelHead::update_active_tokens() {
                               active_token_indices.size() * sizeof(int),
                               cudaMemcpyHostToDevice, compute_stream));
 #endif
+}
+
+void LanguageModelHead::prune_vocabulary(float min_frequency_threshold) {
+    // Count total occurrences
+    float total_occurrences = std::accumulate(token_frequencies.begin(), 
+                                            token_frequencies.end(), 0.0f);
+    
+    if (total_occurrences < 1e-10f) {
+        std::cerr << "Warning: No token occurrences recorded, skipping pruning" << std::endl;
+        return;
+    }
+    
+    // Create mapping for tokens to keep
+    std::vector<int> keep_tokens;
+    std::vector<int> token_mapping(vocab_size_, -1);
+    
+    // Keep special tokens (assuming first few tokens are special)
+    for (int i = 0; i < 5; i++) {  // Adjust based on your special token count
+        keep_tokens.push_back(i);
+        token_mapping[i] = i;
+    }
+    
+    // Keep frequent tokens
+    for (size_t i = 5; i < vocab_size_; i++) {
+        float frequency = token_frequencies[i] / total_occurrences;
+        if (frequency >= min_frequency_threshold) {
+            token_mapping[i] = keep_tokens.size();
+            keep_tokens.push_back(i);
+        }
+    }
+    
+    // Ensure we keep at least MIN_ACTIVE_TOKENS
+    if (keep_tokens.size() < MIN_ACTIVE_TOKENS) {
+        std::vector<std::pair<float, size_t>> freq_pairs;
+        freq_pairs.reserve(vocab_size_);
+        for (size_t i = 0; i < vocab_size_; i++) {
+            freq_pairs.push_back({token_frequencies[i], i});
+        }
+        
+        std::partial_sort(freq_pairs.begin(), 
+                         freq_pairs.begin() + MIN_ACTIVE_TOKENS,
+                         freq_pairs.end(),
+                         std::greater<>());
+        
+        keep_tokens.clear();
+        token_mapping.assign(vocab_size_, -1);
+        for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
+            size_t idx = freq_pairs[i].second;
+            token_mapping[idx] = i;
+            keep_tokens.push_back(idx);
+        }
+    }
+    
+    // Resize projection matrix and bias
+    size_t new_vocab_size = keep_tokens.size();
+    Matrix new_projection(hidden_size_, new_vocab_size);
+    Vector new_bias(new_vocab_size);
+    std::vector<float> new_frequencies(new_vocab_size);
+    
+    // Copy kept tokens' weights and frequencies
+    for (size_t i = 0; i < keep_tokens.size(); i++) {
+        int old_idx = keep_tokens[i];
+        for (size_t j = 0; j < hidden_size_; j++) {
+            new_projection(j, i) = projection(j, old_idx);
+        }
+        new_bias[i] = bias[old_idx];
+        new_frequencies[i] = token_frequencies[old_idx];
+    }
+    
+    // Update class members
+    projection = std::move(new_projection);
+    bias = std::move(new_bias);
+    token_frequencies = std::move(new_frequencies);
+    vocab_size_ = new_vocab_size;
+    
+    // Update active tokens
+    active_tokens.resize(vocab_size_);
+    std::fill(active_tokens.begin(), active_tokens.end(), 1);
+    
+    active_token_indices.clear();
+    active_token_indices.reserve(vocab_size_);
+    for (size_t i = 0; i < vocab_size_; i++) {
+        active_token_indices.push_back(i);
+    }
+    
+#ifdef USE_CUDA
+    // Update device memory
+    CUDA_CHECK(cudaMemcpyAsync(d_projection, projection.data(),
+                              hidden_size_ * vocab_size_ * sizeof(float),
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_bias, bias.data(),
+                              vocab_size_ * sizeof(float),
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_active_tokens, active_tokens.data(),
+                              vocab_size_ * sizeof(unsigned char),
+                              cudaMemcpyHostToDevice, compute_stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_active_token_indices, active_token_indices.data(),
+                              vocab_size_ * sizeof(int),
+                              cudaMemcpyHostToDevice, compute_stream));
+#endif
+
+    std::cout << "Pruned vocabulary from " << token_mapping.size() 
+              << " to " << new_vocab_size << " tokens\n";
 }
 
 #ifdef USE_CUDA

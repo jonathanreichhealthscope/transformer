@@ -1,15 +1,15 @@
 {
     "model": {
         "vocab_size": 1924,
-        "hidden_size": 128,
-        "num_heads": 4,
-        "num_layers": 2,
-        "head_dim": 42,
-        "intermediate_size": 512,
+        "hidden_size": 64,
+        "num_heads": 2,
+        "num_layers": 1,
+        "head_dim": 32,
+        "intermediate_size": 128,
         "max_seq_length": 32
     },
     "training": {
-        "batch_size": 128,
+        "batch_size": 64,
         "num_epochs": 4,
         "dropout_rate": 0.1,
         "weight_decay": 0.01
@@ -18,7 +18,7 @@
         "use_flash_attention": true,
         "use_rope": true,
         "use_sliding_window": true,
-        "window_size": 16,
+        "window_size": 8,
         "use_gqa": true,
         "num_kv_heads": 1
     },

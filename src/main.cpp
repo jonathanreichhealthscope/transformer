@@ -158,17 +158,20 @@ int main(int argc, char* argv[]) {
                 size_t end_idx = std::min(start_idx + config.batch_size, training_pairs.size());
                 size_t current_batch_size = end_idx - start_idx;
 
-                // Create batch with validation
-                std::vector<std::vector<int>> input_batch;
-                std::vector<std::vector<int>> target_batch;  // Rename from target_tokens
-
                 // Find maximum sequence length in this batch
                 size_t max_seq_len = 0;
                 for (size_t j = start_idx; j < end_idx; ++j) {
                     const auto& [input_str, target_str] = training_pairs[j];
                     std::vector<int> input_tokens = tokenizer->encode(input_str);
-                    max_seq_len = std::max(max_seq_len, input_tokens.size());
+                    std::vector<int> target_tokens = tokenizer->encode(target_str);
+                    // Consider both input and target sequence lengths
+                    max_seq_len = std::max({max_seq_len, input_tokens.size(), target_tokens.size()});
                 }
+                std::cout << "\n=== Processing Batch " << batch + 1 << " ===\n";
+
+                // Create batch with validation
+                std::vector<std::vector<int>> input_batch;
+                std::vector<std::vector<int>> target_batch;  // Rename from target_tokens
 
                 // Fill and validate batch with padding
                 bool batch_valid = true;
@@ -197,6 +200,9 @@ int main(int argc, char* argv[]) {
                     while (input_tokens.size() < max_seq_len) {
                         input_tokens.push_back(tokenizer->get_pad_token_id());
                     }
+                    while (target_tokens.size() < max_seq_len) {  // Add padding for target tokens
+                        target_tokens.push_back(tokenizer->get_pad_token_id());
+                    }
 
                     input_batch.push_back(input_tokens);
                     target_batch.push_back(target_tokens);  // Use target_batch instead of target_tokens
@@ -205,18 +211,51 @@ int main(int argc, char* argv[]) {
                 if (!batch_valid)
                     continue; // Skip invalid batches
 
-                // Create target distribution for entire batch
+                std::cout << "Input batch size: " << input_batch.size() << " sequences\n";
+                std::cout << "Target batch size: " << target_batch.size() << " sequences\n";
+
+                // First collect valid sequences
+                std::vector<std::vector<int>> valid_input_batch;
+                std::vector<std::vector<int>> valid_target_batch;
+
+                for (size_t i = 0; i < input_batch.size(); i++) {
+                    const auto& input_sequence = input_batch[i];
+                    const auto& target_sequence = target_batch[i];
+                    
+                    if (input_sequence.size() != max_seq_len) {
+                        std::cerr << "Error: Input sequence length mismatch. Expected " << max_seq_len 
+                                  << " but got " << input_sequence.size() << std::endl;
+                        continue;
+                    }
+                    
+                    if (target_sequence.size() != max_seq_len) {
+                        std::cerr << "Error: Target sequence length mismatch. Expected " << max_seq_len 
+                                  << " but got " << target_sequence.size() << std::endl;
+                        continue;
+                    }
+                    
+                    valid_input_batch.push_back(input_sequence);
+                    valid_target_batch.push_back(target_sequence);
+                }
+
+                if (valid_input_batch.empty()) {
+                    std::cerr << "Error: No valid sequences in batch\n";
+                    continue;
+                }
+
+                // Create target distribution for entire batch using only valid sequences
                 Matrix target_distribution = Utils::create_batch_target_distribution(
-                    target_batch, *tokenizer, config.vocab_size);
+                    valid_target_batch, *tokenizer, config.vocab_size, max_seq_len);
 
                 // Process the batch as a single sequence
                 std::vector<int> flattened_batch;
-                flattened_batch.reserve(current_batch_size * max_seq_len);
+                flattened_batch.reserve(valid_input_batch.size() * max_seq_len);
 
                 // Flatten the batch into a single sequence
-                for (const auto& sequence : input_batch) {
+                for (const auto& sequence : valid_input_batch) {
                     flattened_batch.insert(flattened_batch.end(), sequence.begin(), sequence.end());
                 }
+                std::cout << "Flattened batch size: " << flattened_batch.size() << " tokens\n";
 
                 // Forward pass with the flattened batch
                 transformer.set_training(true);
@@ -228,34 +267,19 @@ int main(int argc, char* argv[]) {
 
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
 
-                // Take only the last token's logits for each sequence in the batch
-                Matrix final_logits(current_batch_size, config.vocab_size);
-                for (size_t i = 0; i < current_batch_size; i++) {
-                    size_t seq_end_idx = (i + 1) * max_seq_len - 1;
-                    for (size_t j = 0; j < config.vocab_size; j++) {
-                        if (seq_end_idx < logits.rows()) {
-                            final_logits(i, j) = logits(seq_end_idx, j);
-                        }
-                    }
-                }
+                // Compute loss and its gradients for all tokens in sequence
+                float batch_loss = Utils::compute_batch_loss(logits, target_distribution);
 
-                // Compute loss and its gradients
-                float batch_loss = Utils::compute_batch_loss(final_logits, target_distribution);
-
-                // Compute softmax gradients for each sequence in the batch
+                // Compute softmax gradients for each token in the sequence
                 Matrix loss_gradients = Matrix(logits.rows(), logits.cols(), 0.0f);
-                for (size_t i = 0; i < current_batch_size; i++) {
-                    size_t seq_end_idx = (i + 1) * max_seq_len - 1;
-                    if (seq_end_idx >= logits.rows())
-                        continue;
-
-                    // Compute softmax for this sequence's logits
-                    std::vector<float> sequence_logits;
+                for (size_t i = 0; i < logits.rows(); i++) {
+                    // Compute softmax for this token's logits
+                    std::vector<float> token_logits;
                     float max_logit = -std::numeric_limits<float>::infinity();
 
                     for (size_t j = 0; j < config.vocab_size; j++) {
-                        float logit = logits(seq_end_idx, j);
-                        sequence_logits.push_back(logit);
+                        float logit = logits(i, j);
+                        token_logits.push_back(logit);
                         max_logit = std::max(max_logit, logit);
                     }
 
@@ -263,15 +287,15 @@ int main(int argc, char* argv[]) {
                     std::vector<float> exp_logits(config.vocab_size);
 
                     for (size_t j = 0; j < config.vocab_size; j++) {
-                        exp_logits[j] = std::exp(sequence_logits[j] - max_logit);
+                        exp_logits[j] = std::exp(token_logits[j] - max_logit);
                         sum_exp += exp_logits[j];
                     }
 
                     // Compute gradients for cross-entropy loss
                     for (size_t j = 0; j < config.vocab_size; j++) {
                         float softmax_output = exp_logits[j] / sum_exp;
-                        loss_gradients(seq_end_idx, j) =
-                            (softmax_output - target_distribution(i, j)) / current_batch_size;
+                        loss_gradients(i, j) = 
+                            (softmax_output - target_distribution(i, j)) / logits.rows();
                     }
                 }
 
