@@ -270,11 +270,19 @@ std::vector<std::pair<std::string, std::string>> Utils::load_validation_data() {
 
 bool Utils::validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size,
                                     size_t max_seq_length) {
-    if (tokens.empty() || tokens.size() > max_seq_length) {
-        std::cout << "Invalid sequence: " << (tokens.empty() ? "empty" : "too long") << std::endl;
+    // For target sequences, we allow empty sequences
+    if (tokens.empty()) {
+        return true;  // Empty sequences are valid for targets
+    }
+
+    // For non-empty sequences, check length if max_seq_length is specified
+    if (max_seq_length > 0 && tokens.size() > max_seq_length) {
+        std::cout << "Invalid sequence: too long (length: " << tokens.size() 
+                  << ", max: " << max_seq_length << ")" << std::endl;
         return false;
     }
 
+    // Validate each token
     for (int token : tokens) {
         if (token < 0 || static_cast<size_t>(token) >= vocab_size) {
             std::cout << "Invalid token " << token << " (vocab size: " << vocab_size << ")" << std::endl;
