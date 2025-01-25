@@ -56,12 +56,19 @@ class TransformerConfig {
     std::string checkpoint_to_load; ///< Path to checkpoint file to load
 
     // Beam search parameters
-    bool use_beam_search;        ///< Whether to use beam search for generation
-    size_t beam_size;            ///< Size of beam for beam search
-    float length_penalty;        ///< Length penalty for beam search
-    float temperature;           ///< Temperature for sampling
-    float top_p;                ///< Nucleus sampling probability threshold
-    size_t max_length;          ///< Maximum generation length
+    struct BeamSearchConfig {
+        bool use_beam_search = true;
+        size_t beam_size = 10;
+        float length_penalty = 1.5f;
+        float temperature = 2.5f;
+        float initial_temperature = 3.0f;
+        float diversity_strength = 4.0f;
+        size_t top_k = 100;
+        float top_p = 0.98f;
+        size_t max_length = 4;
+        float initial_noise_scale = 0.8f;
+        float token_noise_scale = 0.1f;
+    } beam_search;
 
     // Tokenizer configuration
     struct TokenizerConfig {

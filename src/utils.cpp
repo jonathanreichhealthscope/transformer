@@ -181,20 +181,30 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         // Parse beam search settings
         if (j.contains("beam_search")) {
             auto& beam = j["beam_search"];
-            config.use_beam_search = beam.value("use_beam_search", true);  // Default to true for backward compatibility
-            config.beam_size = beam["beam_size"];
-            config.length_penalty = beam["length_penalty"];
-            config.temperature = beam["temperature"];
-            config.top_p = beam["top_p"];
-            config.max_length = beam["max_length"];
+            config.beam_search.use_beam_search = beam.value("use_beam_search", true);  // Default to true for backward compatibility
+            config.beam_search.beam_size = beam["beam_size"];
+            config.beam_search.length_penalty = beam["length_penalty"];
+            config.beam_search.temperature = beam["temperature"];
+            config.beam_search.top_p = beam["top_p"];
+            config.beam_search.max_length = beam["max_length"];
+            config.beam_search.initial_temperature = beam.value("initial_temperature", 3.0f);
+            config.beam_search.initial_noise_scale = beam.value("initial_noise_scale", 0.8f);
+            config.beam_search.diversity_strength = beam.value("diversity_strength", 4.0f);
+            config.beam_search.top_k = beam.value("top_k", 100);
+            config.beam_search.token_noise_scale = beam.value("token_noise_scale", 0.1f);
         } else {
             // Default values if not specified
-            config.use_beam_search = true;  // Default to true for backward compatibility
-            config.beam_size = 5;
-            config.length_penalty = 0.6f;
-            config.temperature = 1.0f;
-            config.top_p = 0.9f;
-            config.max_length = 20;
+            config.beam_search.use_beam_search = true;  // Default to true for backward compatibility
+            config.beam_search.beam_size = 5;
+            config.beam_search.length_penalty = 0.6f;
+            config.beam_search.temperature = 1.0f;
+            config.beam_search.top_p = 0.9f;
+            config.beam_search.max_length = 20;
+            config.beam_search.initial_temperature = 3.0f;
+            config.beam_search.initial_noise_scale = 0.8f;
+            config.beam_search.diversity_strength = 4.0f;
+            config.beam_search.top_k = 100;
+            config.beam_search.token_noise_scale = 0.1f;
         }
 
         // Add checkpoint loading settings
@@ -214,7 +224,7 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
             config.tokenizer.vocab_size = tok.value("vocab_size", 32000);
             config.tokenizer.model_path = tok.value("model_path", "model/tokenizer.model");
             config.tokenizer.special_tokens = tok.value("special_tokens", 
-                std::vector<std::string>{"<pad>", "<s>", "</s>", "<unk>", "<mask>"});
+                std::vector<std::string>{"<pad>", "", " ", "</s>", "<mask>"});
         }
 
     } catch (const std::exception& e) {
@@ -393,12 +403,12 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     std::vector<float> initial_logits;
     initial_logits.reserve(logits.cols());
     for (int j = 0; j < logits.cols(); j++) {
-        initial_logits.push_back(logits(logits.rows() - 1, j));
+        initial_logits.push_back(logits(logits.rows() - 1, j) / transformer.getConfig().beam_search.initial_temperature);
     }
     
-    // Add noise to initial logits to break ties and increase diversity
+    // Add stronger noise to initial logits to increase diversity
     for (float& logit : initial_logits) {
-        float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f;
+        float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * transformer.getConfig().beam_search.initial_noise_scale;
         logit += noise;
     }
     

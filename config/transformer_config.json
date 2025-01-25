@@ -36,11 +36,14 @@
         "use_beam_search": true,
         "beam_size": 10,
         "length_penalty": 1.5,
-        "temperature": 1.8,
+        "temperature": 2.5,
+        "initial_temperature": 3.0,
         "diversity_strength": 4.0,
         "top_k": 100,
         "top_p": 0.98,
-        "max_length": 4
+        "max_length": 4,
+        "initial_noise_scale": 0.8,
+        "token_noise_scale": 0.1
     },
     "load_from_checkpoint": false,
     "checkpoint_to_load": "",
