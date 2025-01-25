@@ -348,14 +348,39 @@ int main(int argc, char* argv[]) {
                           << "  Non-padding tokens: " << non_padding_tokens << "/" << total_tokens 
                           << " (" << (100.0f * non_padding_tokens / total_tokens) << "%)\n";
 
-                // Adjust learning rate more aggressively
+                // More dynamic learning rate adjustment
                 float loss_ratio = batch_loss / (prev_loss + 1e-10f);
-                if (loss_ratio > 1.1f) {  // Loss increased significantly
-                    learning_rate *= 0.95f;  // Decrease learning rate
-                } else if (loss_ratio < 0.9f) {  // Loss decreased significantly
-                    learning_rate *= 1.05f;  // Increase learning rate
+                float grad_scale = std::min(avg_grad_magnitude, 1.0f);  // Scale based on gradient magnitude
+                
+                // Adjust thresholds based on training progress
+                float upper_threshold = 1.05f - (0.01f * std::min(global_step / 1000.0f, 0.04f));  // Starts at 1.05, decreases to 1.01
+                float lower_threshold = 0.95f + (0.01f * std::min(global_step / 1000.0f, 0.04f));  // Starts at 0.95, increases to 0.99
+                
+                if (loss_ratio > upper_threshold) {
+                    // More aggressive decrease when loss increases significantly
+                    float decrease_factor = 0.8f + (0.15f * grad_scale);  // Between 0.8 and 0.95
+                    learning_rate *= decrease_factor;
+                    std::cout << "Decreasing learning rate by factor " << decrease_factor 
+                              << " (loss ratio: " << loss_ratio << ")\n";
+                } else if (loss_ratio < lower_threshold) {
+                    // More aggressive increase when loss decreases significantly
+                    float increase_factor = 1.2f - (0.15f * grad_scale);  // Between 1.05 and 1.2
+                    learning_rate *= increase_factor;
+                    std::cout << "Increasing learning rate by factor " << increase_factor 
+                              << " (loss ratio: " << loss_ratio << ")\n";
                 }
-                learning_rate = std::max(1e-5f, std::min(learning_rate, 1e-2f));  // Keep LR in reasonable range
+                
+                // Wider bounds for learning rate
+                float min_lr = 1e-6f;
+                float max_lr = 5e-2f;
+                if (global_step < 100) {  // Allow larger learning rates early in training
+                    max_lr = 1e-1f;
+                }
+                
+                learning_rate = std::max(min_lr, std::min(learning_rate, max_lr));
+                
+                std::cout << "Learning rate adjusted to: " << learning_rate 
+                          << " (loss ratio: " << loss_ratio << ")\n";
 
                 // Backpropagate through the model
                 Matrix lm_head_gradients = lm_head->backward(loss_gradients);
@@ -367,6 +392,23 @@ int main(int argc, char* argv[]) {
                 global_step++;
 
                 metrics.stop_timer("batch_processing");
+
+                // Make predictions after each batch
+                std::string test_input = "I go to";
+                std::string processed_input = test_input;
+                tokenizer->preprocess_text(processed_input);
+                std::vector<int> test_tokens = tokenizer->encode(processed_input);
+                
+                // Get model prediction (in evaluation mode)
+                transformer.set_training(false);
+                Matrix test_hidden = transformer.forward(test_tokens);
+                Matrix pred_logits = lm_head->project_to_vocab(test_hidden);
+                transformer.set_training(true);  // Set back to training mode
+                
+                // Show the top predictions
+                std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << test_input << "' ===\n";
+                Utils::print_top_predictions(pred_logits, *tokenizer, 5);
+                std::cout << "================================================\n";
 
                 // Print progress and metrics every 10 batches
                 if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
@@ -453,6 +495,29 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "\nTraining completed!\n";
+
+        // Final prediction test
+        std::cout << "\nFinal generation test with " 
+                  << (config.tokenizer.use_subword ? "subword" : "regular") 
+                  << " tokenization:" << std::endl;
+        
+        // Test a simple input
+        std::string test_input = "I go to";
+        std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
+        
+        // Preprocess input
+        std::string processed_input = test_input;
+        tokenizer->preprocess_text(processed_input);
+        std::vector<int> test_tokens = tokenizer->encode(processed_input);
+        
+        // Get model prediction
+        transformer.set_training(false);  // Set to evaluation mode
+        Matrix test_hidden = transformer.forward(test_tokens);
+        Matrix logits = lm_head->project_to_vocab(test_hidden);
+        
+        // Show the top predictions
+        std::cout << "\nTop Predictions:\n";
+        Utils::print_top_predictions(logits, *tokenizer, 5);
 
         // Create directories if they don't exist
         std::filesystem::create_directories(save_directory);

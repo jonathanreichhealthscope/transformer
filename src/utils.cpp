@@ -76,7 +76,6 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
 
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
     // Verify dimensions match
-    std::cout << "\n=== Computing Batch Loss ===\n";
     if (logits.rows() != target_distribution.rows() || logits.cols() != target_distribution.cols()) {
         std::cerr << "Dimension mismatch in compute_batch_loss:\n"
                   << "logits: " << logits.rows() << "x" << logits.cols() << "\n"
@@ -84,37 +83,46 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
         throw std::runtime_error("Dimension mismatch in compute_batch_loss");
     }
 
-    float loss = 0.0f;
+    float total_loss = 0.0f;
     const float epsilon = 1e-10f;
+    std::vector<float> max_logits(logits.rows());
+    std::vector<float> sums(logits.rows(), 0.0f);
 
-    // Compute cross-entropy loss
+    // First pass: find max logits for each row (for numerical stability)
+    #pragma omp parallel for
     for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max logit for numerical stability
-        float max_logit = -std::numeric_limits<float>::infinity();
+        max_logits[i] = -std::numeric_limits<float>::infinity();
         for (size_t j = 0; j < logits.cols(); j++) {
-            max_logit = std::max(max_logit, logits(i, j));
-        }
-
-        // Compute softmax with improved numerical stability
-        float sum_exp = 0.0f;
-        std::vector<float> probs(logits.cols());
-
-        for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] = std::exp(logits(i, j) - max_logit);
-            sum_exp += probs[j];
-        }
-
-        // Compute cross-entropy loss
-        for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] /= (sum_exp + epsilon);
-            if (target_distribution(i, j) > 0.0f) {
-                loss -= target_distribution(i, j) * std::log(probs[j] + epsilon);
-            }
+            max_logits[i] = std::max(max_logits[i], logits(i, j));
         }
     }
 
-    // Return average loss
-    return loss / logits.rows();
+    // Second pass: compute exp sums and loss in one go
+    #pragma omp parallel for reduction(+:total_loss)
+    for (size_t i = 0; i < logits.rows(); i++) {
+        float sum_exp = 0.0f;
+        float row_loss = 0.0f;
+        
+        // Find the non-zero target indices for this row
+        std::vector<size_t> target_indices;
+        for (size_t j = 0; j < target_distribution.cols(); j++) {
+            if (target_distribution(i, j) > 0.0f) {
+                target_indices.push_back(j);
+            }
+            float exp_val = std::exp(logits(i, j) - max_logits[i]);
+            sum_exp += exp_val;
+        }
+        
+        // Compute loss only for non-zero targets
+        for (size_t j : target_indices) {
+            float log_prob = logits(i, j) - max_logits[i] - std::log(sum_exp + epsilon);
+            row_loss -= target_distribution(i, j) * log_prob;
+        }
+        
+        total_loss += row_loss;
+    }
+
+    return total_loss / logits.rows();
 }
 
 TransformerConfig Utils::load_config(const std::string& config_path) {
