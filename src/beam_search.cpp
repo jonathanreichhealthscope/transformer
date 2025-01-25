@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <unordered_map>
 
 BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperature,
                        float diversity_strength, size_t top_k, float top_p)
@@ -270,8 +271,34 @@ BeamSearch::search(const std::vector<float>& initial_logits,
     }
 }
 
+void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float strength) {
+    // Apply much stronger diversity penalty
+    const float base_penalty = strength * 2.0f;
+    
+    for (size_t i = 0; i < candidates.size(); i++) {
+        float total_penalty = 0.0f;
+        
+        // Check for self-repetition within the sequence
+        std::unordered_map<size_t, int> token_counts;
+        for (const auto& token : candidates[i].sequence) {
+            token_counts[token]++;
+            if (token_counts[token] > 1) {
+                total_penalty += base_penalty * (token_counts[token] - 1);
+            }
+        }
+        
+        // Check for overlap with other candidates
+        for (size_t j = 0; j < i; j++) {
+            float overlap = calculateOverlap(candidates[i].sequence, candidates[j].sequence);
+            total_penalty += base_penalty * overlap;
+        }
+        
+        // Apply the penalties
+        candidates[i].score -= total_penalty;
+    }
+}
+
 std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits) {
-    const float SAFE_TEMP = 0.8f;  // More conservative temperature
     const float MIN_SCORE = -1e4f;  // Prevent -inf
     const float MAX_SCORE = 1e4f;   // Prevent inf
     const float eps = 1e-10f;       // Small constant to prevent division by zero
@@ -281,42 +308,31 @@ std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits)
     // Find max for numerical stability
     float max_logit = MIN_SCORE;
     for (size_t i = 0; i < logits.size(); i++) {
-        scaled_logits[i] = std::clamp(logits[i] / SAFE_TEMP, MIN_SCORE, MAX_SCORE);
+        scaled_logits[i] = std::clamp(logits[i] / temperature, MIN_SCORE, MAX_SCORE);
         max_logit = std::max(max_logit, scaled_logits[i]);
     }
     
-    // Apply softmax with numerical stability
+    // Apply softmax with temperature
     float sum_exp = 0.0f;
     std::vector<float> probs(scaled_logits.size());
     
     for (size_t i = 0; i < scaled_logits.size(); i++) {
         float exp_val = std::exp(scaled_logits[i] - max_logit);
-        probs[i] = std::max(exp_val, eps);  // Ensure no zero probabilities
+        probs[i] = std::max(exp_val, eps);
         sum_exp += probs[i];
     }
     
-    // Ensure we don't divide by zero
-    sum_exp = std::max(sum_exp, eps);
-    
     // Normalize probabilities
+    sum_exp = std::max(sum_exp, eps);
     for (size_t i = 0; i < probs.size(); i++) {
         probs[i] /= sum_exp;
-        probs[i] = std::max(probs[i], eps);  // Final safety check
+        
+        // Add noise for more diversity
+        float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.01f;
+        probs[i] = std::clamp(probs[i] + noise, eps, 1.0f);
     }
     
     return probs;
-}
-
-// Increase diversity penalty
-void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float strength) {
-    // Use stronger diversity penalty for small datasets
-    float stronger_penalty = strength * 1.5f;  // Increase the penalty
-    for (size_t i = 0; i < candidates.size(); i++) {
-        for (size_t j = 0; j < i; j++) {
-            float overlap = calculateOverlap(candidates[i].sequence, candidates[j].sequence);
-            candidates[i].score -= stronger_penalty * overlap;
-        }
-    }
 }
 
 std::vector<std::pair<float, size_t>> BeamSearch::topKSampling(
@@ -441,28 +457,51 @@ std::vector<BeamSearch::Hypothesis> BeamSearch::search_cpu(
     size_t max_length,
     int eos_token_id) {
     
+    // Safety checks
+    if (initial_logits.empty()) {
+        return {};
+    }
+    
+    // Limit max_length to prevent excessive memory usage
+    const size_t MAX_SAFE_LENGTH = 128;
+    max_length = std::min(max_length, MAX_SAFE_LENGTH);
+    
+    // Limit beam width to prevent combinatorial explosion
+    const size_t MAX_SAFE_BEAM_WIDTH = 10;
+    size_t effective_beam_width = std::min(beam_width_, MAX_SAFE_BEAM_WIDTH);
+    
     // Initialize with top beam_width_ tokens
     std::vector<std::pair<std::vector<int>, float>> beams;
     std::vector<std::pair<float, int>> top_tokens;
+    top_tokens.reserve(std::min(initial_logits.size(), size_t(1000))); // Prevent excessive allocation
     
-    // Get initial top tokens
-    for (size_t i = 0; i < initial_logits.size(); i++) {
+    // Get initial top tokens (safely)
+    for (size_t i = 0; i < std::min(initial_logits.size(), size_t(1000)); i++) {
         top_tokens.push_back({initial_logits[i], static_cast<int>(i)});
     }
     
+    if (top_tokens.empty()) {
+        return {};
+    }
+    
     std::partial_sort(top_tokens.begin(), 
-                      top_tokens.begin() + beam_width_,
+                      top_tokens.begin() + std::min(effective_beam_width, top_tokens.size()),
                       top_tokens.end(),
                       [](const auto& a, const auto& b) { return a.first > b.first; });
     
-    // Initialize beams
-    for (size_t i = 0; i < beam_width_; i++) {
+    // Initialize beams (safely)
+    for (size_t i = 0; i < std::min(effective_beam_width, top_tokens.size()); i++) {
         beams.push_back({{top_tokens[i].second}, top_tokens[i].first});
+    }
+    
+    if (beams.empty()) {
+        return {};
     }
     
     // Main search loop
     for (size_t step = 1; step < max_length; step++) {
         std::vector<std::pair<std::vector<int>, float>> new_beams;
+        new_beams.reserve(effective_beam_width * 2); // Reserve reasonable space
         
         // Expand each beam
         for (const auto& [sequence, score] : beams) {
@@ -471,26 +510,39 @@ std::vector<BeamSearch::Hypothesis> BeamSearch::search_cpu(
                 continue;
             }
             
-            // Get next token logits from the model
-            std::vector<float> next_logits = next_token_fn(sequence);
-            
-            // Apply temperature scaling and sampling
-            std::vector<float> scaled_probs = calculateScores(next_logits);
-            
-            // Get top-k candidates
-            auto candidates = topKSampling(scaled_probs, beam_width_);
-            
-            // Add candidates to new beams
-            for (const auto& [prob, token_id] : candidates) {
-                std::vector<int> new_sequence = sequence;
-                new_sequence.push_back(token_id);
-                new_beams.push_back({new_sequence, score + std::log(prob)});
+            try {
+                // Get next token logits from the model
+                std::vector<float> next_logits = next_token_fn(sequence);
+                if (next_logits.empty()) continue;
+                
+                // Apply temperature scaling and sampling
+                std::vector<float> scaled_probs = calculateScores(next_logits);
+                
+                // Get top-k candidates (safely)
+                auto candidates = topKSampling(scaled_probs, std::min(effective_beam_width, size_t(5)));
+                
+                // Add candidates to new beams (with size check)
+                for (const auto& [prob, token_id] : candidates) {
+                    if (new_beams.size() >= effective_beam_width * 2) break;
+                    
+                    std::vector<int> new_sequence = sequence;
+                    new_sequence.push_back(token_id);
+                    new_beams.push_back({new_sequence, score + std::log(prob)});
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error in beam expansion: " << e.what() << std::endl;
+                continue;
             }
         }
         
-        // Sort and prune beams
+        if (new_beams.empty()) {
+            break;
+        }
+        
+        // Sort and prune beams (safely)
+        size_t sort_size = std::min(effective_beam_width, new_beams.size());
         std::partial_sort(new_beams.begin(),
-                         new_beams.begin() + beam_width_,
+                         new_beams.begin() + sort_size,
                          new_beams.end(),
                          [](const auto& a, const auto& b) { 
                              return a.second > b.second; 
@@ -499,12 +551,25 @@ std::vector<BeamSearch::Hypothesis> BeamSearch::search_cpu(
         beams.clear();
         beams.insert(beams.end(), 
                     new_beams.begin(),
-                    new_beams.begin() + std::min(beam_width_, new_beams.size()));
+                    new_beams.begin() + sort_size);
+                    
+        // Early stopping if all beams end with EOS
+        bool all_finished = true;
+        for (const auto& [seq, _] : beams) {
+            if (seq.empty() || seq.back() != eos_token_id) {
+                all_finished = false;
+                break;
+            }
+        }
+        if (all_finished) break;
     }
     
-    // Convert to hypotheses
+    // Convert to hypotheses (safely)
     std::vector<Hypothesis> hypotheses;
-    for (const auto& [sequence, score] : beams) {
+    hypotheses.reserve(std::min(beams.size(), effective_beam_width));
+    
+    for (size_t i = 0; i < std::min(beams.size(), effective_beam_width); i++) {
+        const auto& [sequence, score] = beams[i];
         hypotheses.push_back(Hypothesis{sequence, score});
     }
     

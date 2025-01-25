@@ -383,70 +383,98 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
     // Initialize beam search with parameters tuned for diversity
     BeamSearch beam_search(k,       // beam width
-                          0.8f,     // length penalty (higher favors longer sequences)
-                          0.9f,     // temperature (higher = more diversity)
-                          0.8f,     // diversity strength (higher = more diversity)
-                          100,      // top_k (higher = more options to choose from)
-                          0.95f);   // top_p (higher = more options to choose from)
+                          1.0f,     // length penalty (higher favors longer sequences)
+                          1.2f,     // temperature (higher = more diversity) 
+                          2.0f,     // diversity strength (much higher for stronger diversity)
+                          50,       // top_k (reduced to focus on more likely tokens)
+                          0.9f);    // top_p (nucleus sampling threshold)
     
     // Convert logits matrix to vector for beam search
     std::vector<float> initial_logits;
+    initial_logits.reserve(logits.cols());  // Pre-reserve space
     for (int j = 0; j < logits.cols(); j++) {
         initial_logits.push_back(logits(logits.rows() - 1, j));
     }
     
+    // Store original input tokens before we start generating
+    std::vector<int> original_input = transformer.get_last_input();
+    std::string original_query = transformer.get_last_query();
+    size_t input_length = original_input.size();
+    
     // Create next token function that uses the transformer with caching
     auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) -> std::vector<float> {
-        // Only forward the last token, using the cached key-value pairs
-        std::vector<int> last_token = {tokens.back()};
-        Matrix next_hidden = transformer.forward(last_token, "", tokenizer, true);  // Use caching
-        Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
-        
-        // Convert logits to vector
-        std::vector<float> logits_vec;
-        for (int j = 0; j < next_logits.cols(); j++) {
-            logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
+        try {
+            // Only forward the last token, using the cached key-value pairs
+            if (tokens.empty()) return std::vector<float>();
+            std::vector<int> last_token = {tokens.back()};
+            
+            // Forward pass with empty query since we don't need it for generation
+            Matrix next_hidden = transformer.forward(last_token, "", tokenizer, true);
+            if (next_hidden.empty()) return std::vector<float>();
+            
+            Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
+            if (next_logits.empty()) return std::vector<float>();
+            
+            // Convert logits to vector
+            std::vector<float> logits_vec;
+            logits_vec.reserve(next_logits.cols());  // Pre-reserve space
+            for (int j = 0; j < next_logits.cols(); j++) {
+                logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
+            }
+            return logits_vec;
+        } catch (const std::exception& e) {
+            std::cerr << "Error in next_token_fn: " << e.what() << std::endl;
+            return std::vector<float>();
         }
-        return logits_vec;
     };
     
     // Clear the transformer's key-value cache before starting
     transformer.clear_kv_cache();
     
     // Initialize the cache with the input sequence
-    Matrix initial_hidden = transformer.forward(transformer.get_last_input(), "", tokenizer, true);
+    if (!original_input.empty()) {
+        Matrix initial_hidden = transformer.forward(original_input, original_query, tokenizer, true);
+    }
     
-    // Perform beam search
+    // Perform beam search with shorter max length to prevent runaway generation
     std::vector<BeamSearch::Hypothesis> hypotheses = beam_search.search(
-        initial_logits, next_token_fn, 20, tokenizer.get_eos_token_id());  // Increased max_length
+        initial_logits, next_token_fn, 10, tokenizer.get_eos_token_id());
     
     // Clear the cache after we're done
     transformer.clear_kv_cache();
     
     // Print predictions
-    std::cout << "\nQuery: \"" << transformer.get_last_query() << "\"" << std::endl;
+    std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
     std::cout << "Top " << k << " predicted sequences:" << std::endl;
     int predictions_shown = 0;
     
     for (const auto& hyp : hypotheses) {
         if (predictions_shown >= k) break;
         
-        // Decode the token sequence
-        std::string decoded = tokenizer.decode(hyp.tokens);
-        
-        // Skip empty sequences
-        if (decoded.empty()) continue;
-        
-        // Handle GPT-2's word boundary token (Ġ)
-        if (decoded.find("Ġ") == 0) {
-            decoded = decoded.substr(1);  // Remove the Ġ prefix
-            decoded = " " + decoded;      // Replace with actual space
+        try {
+            // Get just the generated part by removing the input tokens
+            if (hyp.tokens.size() <= input_length) continue;
+            
+            std::vector<int> generated_tokens;
+            generated_tokens.reserve(hyp.tokens.size() - input_length);  // Pre-reserve space
+            for (size_t i = input_length; i < hyp.tokens.size(); i++) {
+                generated_tokens.push_back(hyp.tokens[i]);
+            }
+            
+            // Decode only the generated tokens
+            std::string decoded = tokenizer.decode(generated_tokens);
+            
+            // Skip empty sequences
+            if (decoded.empty()) continue;
+            
+            // Print the prediction with its score
+            std::cout << predictions_shown + 1 << ". \"" << decoded << "\" (score=" 
+                      << hyp.score << ")" << std::endl;
+            predictions_shown++;
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
+            continue;
         }
-        
-        // Print the prediction with its score
-        std::cout << predictions_shown + 1 << ". \"" << decoded << "\" (score=" 
-                  << hyp.score << ")" << std::endl;
-        predictions_shown++;
     }
     
     if (predictions_shown < k) {
