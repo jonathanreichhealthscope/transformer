@@ -32,6 +32,7 @@ class LanguageModelHead {
     size_t vocab_size_;                  ///< Size of the vocabulary
     size_t hidden_size_;                 ///< Size of input hidden states
     Matrix hidden_states;                ///< Cached hidden states for backward pass
+    Matrix hidden_states_;               ///< Cached hidden states for forward pass
     std::vector<float> token_frequencies; ///< Tracked frequencies of token usage
 
     // Vocabulary pruning
@@ -104,8 +105,7 @@ class LanguageModelHead {
      * @return Matrix of logits over vocabulary
      */
     Matrix forward(const Matrix& hidden_states) {
-        // Store hidden states for backward pass
-        this->hidden_states = hidden_states;
+        hidden_states_ = hidden_states;  // Cache for backward pass
         return project_to_vocab(hidden_states);
     }
 

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <queue>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <sstream>
@@ -75,54 +76,40 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
 }
 
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
-    // Verify dimensions match
-    if (logits.rows() != target_distribution.rows() || logits.cols() != target_distribution.cols()) {
-        std::cerr << "Dimension mismatch in compute_batch_loss:\n"
-                  << "logits: " << logits.rows() << "x" << logits.cols() << "\n"
-                  << "target: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
-        throw std::runtime_error("Dimension mismatch in compute_batch_loss");
+    if (logits.empty() || target_distribution.empty()) {
+        return 0.0f;
     }
 
     float total_loss = 0.0f;
-    const float epsilon = 1e-10f;
-    std::vector<float> max_logits(logits.rows());
-    std::vector<float> sums(logits.rows(), 0.0f);
+    const size_t batch_size = logits.rows();
+    const size_t vocab_size = logits.cols();
 
-    // First pass: find max logits for each row (for numerical stability)
-    #pragma omp parallel for
-    for (size_t i = 0; i < logits.rows(); i++) {
-        max_logits[i] = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < logits.cols(); j++) {
+    // Pre-compute max logits and sums for numerical stability
+    std::vector<float> max_logits(batch_size, -std::numeric_limits<float>::infinity());
+    std::vector<float> sums(batch_size, 0.0f);
+
+    #pragma omp parallel for reduction(+:total_loss)
+    for (size_t i = 0; i < batch_size; ++i) {
+        // Find max logit for numerical stability
+        for (size_t j = 0; j < vocab_size; ++j) {
             max_logits[i] = std::max(max_logits[i], logits(i, j));
         }
-    }
 
-    // Second pass: compute exp sums and loss in one go
-    #pragma omp parallel for reduction(+:total_loss)
-    for (size_t i = 0; i < logits.rows(); i++) {
-        float sum_exp = 0.0f;
-        float row_loss = 0.0f;
-        
-        // Find the non-zero target indices for this row
-        std::vector<size_t> target_indices;
-        for (size_t j = 0; j < target_distribution.cols(); j++) {
+        // Compute sum of exp(logits - max_logit)
+        for (size_t j = 0; j < vocab_size; ++j) {
+            sums[i] += std::exp(logits(i, j) - max_logits[i]);
+        }
+
+        // Compute cross entropy loss only for non-zero target probabilities
+        for (size_t j = 0; j < vocab_size; ++j) {
             if (target_distribution(i, j) > 0.0f) {
-                target_indices.push_back(j);
+                float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
+                total_loss -= target_distribution(i, j) * log_prob;
             }
-            float exp_val = std::exp(logits(i, j) - max_logits[i]);
-            sum_exp += exp_val;
         }
-        
-        // Compute loss only for non-zero targets
-        for (size_t j : target_indices) {
-            float log_prob = logits(i, j) - max_logits[i] - std::log(sum_exp + epsilon);
-            row_loss -= target_distribution(i, j) * log_prob;
-        }
-        
-        total_loss += row_loss;
     }
 
-    return total_loss / logits.rows();
+    return total_loss / batch_size;
 }
 
 TransformerConfig Utils::load_config(const std::string& config_path) {
@@ -355,59 +342,56 @@ void Utils::print_matrix(const Matrix& m, const std::string& name, size_t max_ro
 }
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, size_t k) {
-    if (logits.rows() == 0 || logits.cols() == 0) {
-        std::cout << "Error: Empty logits matrix\n";
-        return;
+    if (logits.empty()) return;
+
+    const size_t last_pos = logits.rows() - 1;
+    const size_t vocab_size = logits.cols();
+
+    // Find max logit for numerical stability
+    float max_logit = logits(last_pos, 0);
+    for (size_t j = 1; j < vocab_size; ++j) {
+        max_logit = std::max(max_logit, logits(last_pos, j));
     }
 
-    // Get the last token's logits
-    std::vector<std::pair<float, int>> token_probs;
-    token_probs.reserve(logits.cols());
+    using PriorityQueue = std::priority_queue<
+        std::pair<float, int>,
+        std::vector<std::pair<float, int>>,
+        std::greater<std::pair<float, int>>
+    >;
+    PriorityQueue min_heap;
     
-    // Get probabilities for the last position
-    float max_logit = -std::numeric_limits<float>::infinity();
-    for (size_t i = 0; i < logits.cols(); ++i) {
-        float val = logits(logits.rows() - 1, i);
-        max_logit = std::max(max_logit, val);
-        token_probs.push_back({val, static_cast<int>(i)});
-    }
-
-    // Apply softmax
     float sum_exp = 0.0f;
-    for (auto& pair : token_probs) {
-        pair.first = std::exp(pair.first - max_logit);
-        sum_exp += pair.first;
-    }
-
-    // Normalize and filter
-    const float MIN_PROB = 1e-4f;
-    std::vector<std::pair<float, int>> filtered_probs;
-    filtered_probs.reserve(token_probs.size());
     
-    for (auto& pair : token_probs) {
-        pair.first /= sum_exp;
-        if (pair.first >= MIN_PROB) {
-            // Decode token only for tokens with sufficient probability
-            std::string token = tokenizer.decode({pair.second});
-            if (!token.empty() && !starts_with(token, "<") && 
-                !std::all_of(token.begin(), token.end(), ::isspace)) {
-                filtered_probs.push_back(pair);
-            }
+    // Process all logits in one pass
+    for (size_t j = 0; j < vocab_size; ++j) {
+        float exp_val = std::exp(logits(last_pos, j) - max_logit);
+        sum_exp += exp_val;
+        
+        min_heap.push({exp_val, j});
+        if (min_heap.size() > k) {
+            min_heap.pop();
         }
     }
-
-    // Sort by probability
-    std::partial_sort(filtered_probs.begin(),
-                     filtered_probs.begin() + std::min(k, filtered_probs.size()),
-                     filtered_probs.end(),
-                     [](const auto& a, const auto& b) { return a.first > b.first; });
-
-    // Print top k predictions
+    
+    // Extract results in reverse order
+    std::vector<std::pair<float, int>> results;
+    results.reserve(k);
+    while (!min_heap.empty()) {
+        results.push_back(min_heap.top());
+        min_heap.pop();
+    }
+    std::reverse(results.begin(), results.end());
+    
+    // Print results
     std::cout << "\nTop " << k << " predictions:\n";
-    for (size_t i = 0; i < std::min(k, filtered_probs.size()); ++i) {
-        std::string token = tokenizer.decode({filtered_probs[i].second});
-        std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
-                  << std::setprecision(4) << filtered_probs[i].first << ")\n";
+    for (const auto& [exp_val, token_id] : results) {
+        float prob = exp_val / sum_exp;
+        std::string token = tokenizer.decode({token_id});
+        if (!token.empty() && !starts_with(token, "<") && 
+            !std::all_of(token.begin(), token.end(), ::isspace)) {
+            std::cout << results.size() << ". \"" << token << "\" (probability: " 
+                     << std::fixed << std::setprecision(4) << prob << ")\n";
+        }
     }
 }
 
