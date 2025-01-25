@@ -392,12 +392,14 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
     // Initialize beam search with parameters tuned for diversity and short sequences
-    BeamSearch beam_search(k * 3,  // Wider beam width to ensure enough valid candidates
-                          1.0f,     // length penalty
-                          1.5f,     // Increased temperature for more diversity
-                          4.0f,     // Increased diversity strength
-                          100,      // Increased top_k
-                          0.98f);   // Increased top_p
+    BeamSearch beam_search(
+        transformer.getConfig().beam_search.beam_size,
+        transformer.getConfig().beam_search.length_penalty,
+        transformer.getConfig().beam_search.temperature,
+        transformer.getConfig().beam_search.diversity_strength,
+        transformer.getConfig().beam_search.top_k,
+        transformer.getConfig().beam_search.top_p
+    );
 
     // Convert logits matrix to vector for beam search
     std::vector<float> initial_logits;
@@ -470,12 +472,17 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                 hyp.tokens.end()
             );
             
-            // Decode the sequence
+            // Decode the sequence and ensure proper spacing
             std::string decoded = tokenizer.decode(generated_tokens);
             if (decoded.empty()) continue;
             
-            // Get first token of prediction
-            size_t space_pos = decoded.find(' ');
+            // Add space at the beginning if it doesn't start with one
+            if (!decoded.empty() && decoded[0] != ' ') {
+                decoded = " " + decoded;
+            }
+            
+            // Get first token of prediction (for diversity)
+            size_t space_pos = decoded.find(' ', 1);  // Start search after initial space
             std::string first_token = space_pos == std::string::npos ? 
                                     decoded : decoded.substr(0, space_pos);
             
