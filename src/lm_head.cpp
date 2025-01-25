@@ -13,9 +13,14 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
       bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f), pruning_threshold(1e-6f),
       active_tokens(vocab_size, 1), training_steps(0)
 {
-    float scale = std::sqrt(2.0f / (hidden_size + vocab_size));  // Xavier initialization
+    // Scale initialization based on vocab size to prevent vanishing gradients
+    float scale = std::sqrt(6.0f / (hidden_size + vocab_size));  // He initialization with vocab scaling
     projection.randomize(-scale, scale);
-    bias.randomize(-scale, scale);
+    
+    // Initialize bias to small positive values to encourage exploration
+    for (size_t i = 0; i < vocab_size; i++) {
+        bias[i] = 0.01f;  // Small positive bias
+    }
     
     // Initialize active token indices with all tokens
     active_token_indices.reserve(vocab_size);
@@ -65,28 +70,25 @@ Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& targ
     size_t batch_size = total_size / 2;
     size_t seq_len = 2;
     
-    // Compute cross entropy gradient with respect to logits
     Matrix loss_grad(grad_output.rows(), grad_output.cols());
 
-    if (!target_distribution.empty()) {
-        // If target distribution is provided, compute cross entropy gradient
-        for (size_t i = 0; i < grad_output.rows(); i++) {
-            for (size_t j = 0; j < grad_output.cols(); j++) {
-                if (target_distribution(i, j) > 0.0f) {
-                    loss_grad(i, j) = grad_output(i, j) - target_distribution(i, j);
-                }
+    // Parallelize gradient computation
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < grad_output.rows(); i++) {
+        for (size_t j = 0; j < grad_output.cols(); j++) {
+            if (!target_distribution.empty() && target_distribution(i, j) > 0.0f) {
+                loss_grad(i, j) = grad_output(i, j) - target_distribution(i, j);
+            } else {
+                loss_grad(i, j) = grad_output(i, j);
             }
         }
-    } else {
-        // Otherwise, just use the provided gradients
-        loss_grad = grad_output;
     }
 
-    // Expand the gradients back to full sequence length
     Matrix expanded_grad(total_size, vocab_size_);
     expanded_grad.fill(0.0f);
     
-    // Only set gradients for the last token in each sequence
+    // Parallelize gradient expansion
+    #pragma omp parallel for
     for (size_t b = 0; b < batch_size; b++) {
         size_t src_idx = b;
         size_t dst_idx = (b * seq_len + (seq_len - 1));
@@ -95,10 +97,7 @@ Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& targ
         }
     }
 
-    // Propagate gradients through the linear layer with expanded gradients
     backward_linear(expanded_grad);
-
-    // Return gradients with respect to hidden states
     return matmul(expanded_grad, projection.transpose());
 }
 
@@ -107,72 +106,70 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
         throw std::runtime_error("Invalid matrix dimensions for gradient computation");
     }
 
-    // Compute gradients for projection matrix
     Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
-
-    // Compute gradients for bias
     Vector grad_bias(bias.size(), 0.0f);
+
+    // Parallelize bias gradient computation
+    #pragma omp parallel for collapse(2) reduction(+:grad_bias[:bias.size()])
     for (size_t i = 0; i < grad_output.rows(); i++) {
         for (size_t j = 0; j < grad_output.cols(); j++) {
             grad_bias[j] += grad_output(i, j);
         }
     }
 
-    // Update parameters using gradients
     const float learning_rate = 0.001f;
     
-    // Update projection matrix
+    // Parallelize weight updates
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < projection.rows(); i++) {
         for (size_t j = 0; j < projection.cols(); j++) {
             projection(i, j) -= learning_rate * grad_proj(i, j);
         }
     }
 
-    // Update bias
+    // Parallelize bias updates
+    #pragma omp parallel for
     for (size_t i = 0; i < bias.size(); i++) {
         bias[i] -= learning_rate * grad_bias[i];
     }
 }
 
 void LanguageModelHead::update_active_tokens() {
-    // Update token frequencies with exponential decay
     const float decay = 0.99f;
+    
+    // Parallelize frequency decay
+    #pragma omp parallel for
     for (size_t i = 0; i < vocab_size_; i++) {
         token_frequencies[i] *= decay;
     }
     
-    // Count tokens above threshold
     size_t active_count = 0;
     active_token_indices.clear();
     
+    // Use vector of pairs to avoid multiple passes
+    std::vector<std::pair<float, size_t>> freq_pairs(vocab_size_);
+    
+    #pragma omp parallel for
     for (size_t i = 0; i < vocab_size_; i++) {
-        active_tokens[i] = (token_frequencies[i] > pruning_threshold) ? 1 : 0;
-        if (active_tokens[i]) {
-            active_token_indices.push_back(i);
-            active_count++;
-        }
+        freq_pairs[i] = {token_frequencies[i], i};
     }
     
-    // Ensure we keep at least MIN_ACTIVE_TOKENS
-    if (active_count < MIN_ACTIVE_TOKENS) {
-        std::vector<std::pair<float, size_t>> freq_pairs;
-        freq_pairs.reserve(vocab_size_);
-        for (size_t i = 0; i < vocab_size_; i++) {
-            freq_pairs.push_back({token_frequencies[i], i});
-        }
-        
-        std::partial_sort(freq_pairs.begin(), 
-                         freq_pairs.begin() + MIN_ACTIVE_TOKENS,
-                         freq_pairs.end(),
-                         std::greater<>());
-        
-        active_token_indices.clear();
-        std::fill(active_tokens.begin(), active_tokens.end(), 0);
-        for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
-            size_t idx = freq_pairs[i].second;
-            active_tokens[idx] = 1;
-            active_token_indices.push_back(idx);
-        }
+    // Partial sort only what we need
+    std::partial_sort(freq_pairs.begin(), 
+                     freq_pairs.begin() + MIN_ACTIVE_TOKENS,
+                     freq_pairs.end(),
+                     std::greater<>());
+    
+    // Reset active tokens
+    std::fill(active_tokens.begin(), active_tokens.end(), 0);
+    active_token_indices.clear();
+    active_token_indices.reserve(MIN_ACTIVE_TOKENS);
+    
+    // Set active tokens based on sorted frequencies
+    for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
+        size_t idx = freq_pairs[i].second;
+        active_tokens[idx] = 1;
+        active_token_indices.push_back(idx);
     }
 }
 

@@ -346,52 +346,48 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
 
     const size_t last_pos = logits.rows() - 1;
     const size_t vocab_size = logits.cols();
+    const float temperature = 0.7f;  // Temperature < 1.0 makes distribution more peaked
 
     // Find max logit for numerical stability
-    float max_logit = logits(last_pos, 0);
-    for (size_t j = 1; j < vocab_size; ++j) {
+    float max_logit = -std::numeric_limits<float>::infinity();
+    for (size_t j = 0; j < vocab_size; ++j) {
         max_logit = std::max(max_logit, logits(last_pos, j));
     }
 
-    using PriorityQueue = std::priority_queue<
-        std::pair<float, int>,
-        std::vector<std::pair<float, int>>,
-        std::greater<std::pair<float, int>>
-    >;
-    PriorityQueue min_heap;
-    
+    // First pass: compute sum for softmax with temperature scaling
     float sum_exp = 0.0f;
-    
-    // Process all logits in one pass
+    std::vector<float> exp_values(vocab_size);
     for (size_t j = 0; j < vocab_size; ++j) {
-        float exp_val = std::exp(logits(last_pos, j) - max_logit);
-        sum_exp += exp_val;
+        exp_values[j] = std::exp((logits(last_pos, j) - max_logit) / temperature);
+        sum_exp += exp_values[j];
+    }
+
+    // Use max heap to get top k probabilities
+    std::priority_queue<std::pair<float, int>> max_heap;
+    
+    // Second pass: compute probabilities and filter tokens
+    for (size_t j = 0; j < vocab_size; ++j) {
+        float prob = exp_values[j] / sum_exp;
+        if (prob < 1e-4f) continue;  // Skip very low probability tokens
         
-        min_heap.push({exp_val, j});
-        if (min_heap.size() > k) {
-            min_heap.pop();
-        }
-    }
-    
-    // Extract results in reverse order
-    std::vector<std::pair<float, int>> results;
-    results.reserve(k);
-    while (!min_heap.empty()) {
-        results.push_back(min_heap.top());
-        min_heap.pop();
-    }
-    std::reverse(results.begin(), results.end());
-    
-    // Print results
-    std::cout << "\nTop " << k << " predictions:\n";
-    for (const auto& [exp_val, token_id] : results) {
-        float prob = exp_val / sum_exp;
-        std::string token = tokenizer.decode({token_id});
+        std::string token = tokenizer.decode({static_cast<int>(j)});
         if (!token.empty() && !starts_with(token, "<") && 
             !std::all_of(token.begin(), token.end(), ::isspace)) {
-            std::cout << results.size() << ". \"" << token << "\" (probability: " 
-                     << std::fixed << std::setprecision(4) << prob << ")\n";
+            max_heap.push({prob, j});
         }
+    }
+    
+    // Extract top k results
+    std::cout << "\nTop " << k << " predictions:\n";
+    size_t count = 0;
+    while (!max_heap.empty() && count < k) {
+        auto [prob, token_id] = max_heap.top();
+        max_heap.pop();
+        
+        std::string token = tokenizer.decode({token_id});
+        std::cout << count + 1 << ". \"" << token << "\" (probability: " 
+                 << std::fixed << std::setprecision(4) << prob << ")\n";
+        count++;
     }
 }
 
