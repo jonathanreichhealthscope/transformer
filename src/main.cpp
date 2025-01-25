@@ -292,16 +292,70 @@ int main(int argc, char* argv[]) {
                     }
 
                     // Compute gradients for cross-entropy loss
+                    float scaling_factor = 100.0f;  // Base scaling factor
+                    size_t non_pad_tokens = 0;
+
+                    // First pass to count non-padding tokens
+                    for (size_t j = 0; j < config.vocab_size; j++) {
+                        if (target_distribution(i, j) > 0.0f && j != tokenizer->get_pad_token_id()) {
+                            non_pad_tokens++;
+                        }
+                    }
+
+                    // Adjust scaling factor based on token density
+                    if (non_pad_tokens > 0) {
+                        scaling_factor *= std::sqrt(float(config.vocab_size) / non_pad_tokens);
+                    }
+
                     for (size_t j = 0; j < config.vocab_size; j++) {
                         float softmax_output = exp_logits[j] / sum_exp;
-                        loss_gradients(i, j) = 
-                            (softmax_output - target_distribution(i, j)) / logits.rows();
+                        float gradient = 0.0f;
+                        
+                        // Only compute meaningful gradients for non-padding tokens
+                        if (j != tokenizer->get_pad_token_id()) {
+                            gradient = (softmax_output - target_distribution(i, j)) * scaling_factor;
+                            // Clip gradients to reasonable range
+                            gradient = std::max(std::min(gradient, 1.0f), -1.0f);
+                        }
+                        loss_gradients(i, j) = gradient;
                     }
                 }
 
-                // Update learning rate based on loss
+                // Log gradient and token statistics
+                float total_grad_magnitude = 0.0f;
+                float max_grad_magnitude = 0.0f;
+                size_t total_tokens = loss_gradients.rows() * loss_gradients.cols();
+                size_t non_padding_tokens = 0;
+
+                for (size_t i = 0; i < loss_gradients.rows(); i++) {
+                    for (size_t j = 0; j < loss_gradients.cols(); j++) {
+                        float grad_magnitude = std::abs(loss_gradients(i, j));
+                        if (grad_magnitude > 0.0f) {  // Count non-zero gradients
+                            total_grad_magnitude += grad_magnitude;
+                            max_grad_magnitude = std::max(max_grad_magnitude, grad_magnitude);
+                            non_padding_tokens++;
+                        }
+                    }
+                }
+
+                // Calculate average only over non-padding tokens
+                float avg_grad_magnitude = non_padding_tokens > 0 ? 
+                    total_grad_magnitude / non_padding_tokens : 0.0f;
+
+                std::cout << "Gradient Statistics:\n"
+                          << "  Average magnitude (non-padding): " << avg_grad_magnitude << "\n"
+                          << "  Maximum magnitude: " << max_grad_magnitude << "\n"
+                          << "  Non-padding tokens: " << non_padding_tokens << "/" << total_tokens 
+                          << " (" << (100.0f * non_padding_tokens / total_tokens) << "%)\n";
+
+                // Adjust learning rate more aggressively
                 float loss_ratio = batch_loss / (prev_loss + 1e-10f);
-                learning_rate = Utils::adjust_learning_rate(learning_rate, loss_ratio, global_step);
+                if (loss_ratio > 1.1f) {  // Loss increased significantly
+                    learning_rate *= 0.95f;  // Decrease learning rate
+                } else if (loss_ratio < 0.9f) {  // Loss decreased significantly
+                    learning_rate *= 1.05f;  // Increase learning rate
+                }
+                learning_rate = std::max(1e-5f, std::min(learning_rate, 1e-2f));  // Keep LR in reasonable range
 
                 // Backpropagate through the model
                 Matrix lm_head_gradients = lm_head->backward(loss_gradients);
