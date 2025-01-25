@@ -382,16 +382,17 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
     // Initialize beam search with parameters tuned for diversity
-    BeamSearch beam_search(k,       // beam width
-                          1.0f,     // length penalty (higher favors longer sequences)
-                          1.2f,     // temperature (higher = more diversity) 
-                          2.0f,     // diversity strength (much higher for stronger diversity)
-                          50,       // top_k (reduced to focus on more likely tokens)
-                          0.9f);    // top_p (nucleus sampling threshold)
+    const size_t EXTRA_BEAMS = 3;  // Generate extra beams to account for filtered ones
+    BeamSearch beam_search(k * EXTRA_BEAMS,  // Wider beam width to ensure enough valid candidates
+                          1.0f,     // length penalty
+                          1.2f,     // temperature 
+                          2.0f,     // diversity strength
+                          100,      // increased top_k for more candidates
+                          0.95f);   // increased top_p for more variety
     
     // Convert logits matrix to vector for beam search
     std::vector<float> initial_logits;
-    initial_logits.reserve(logits.cols());  // Pre-reserve space
+    initial_logits.reserve(logits.cols());
     for (int j = 0; j < logits.cols(); j++) {
         initial_logits.push_back(logits(logits.rows() - 1, j));
     }
@@ -404,20 +405,17 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     // Create next token function that uses the transformer with caching
     auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) -> std::vector<float> {
         try {
-            // Only forward the last token, using the cached key-value pairs
             if (tokens.empty()) return std::vector<float>();
             std::vector<int> last_token = {tokens.back()};
             
-            // Forward pass with empty query since we don't need it for generation
             Matrix next_hidden = transformer.forward(last_token, "", tokenizer, true);
             if (next_hidden.empty()) return std::vector<float>();
             
             Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
             if (next_logits.empty()) return std::vector<float>();
             
-            // Convert logits to vector
             std::vector<float> logits_vec;
-            logits_vec.reserve(next_logits.cols());  // Pre-reserve space
+            logits_vec.reserve(next_logits.cols());
             for (int j = 0; j < next_logits.cols(); j++) {
                 logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
             }
@@ -436,9 +434,10 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         Matrix initial_hidden = transformer.forward(original_input, original_query, tokenizer, true);
     }
     
-    // Perform beam search with shorter max length to prevent runaway generation
+    // Generate more hypotheses than needed to ensure enough valid ones
+    const size_t MAX_LENGTH = 20;  // Reasonable max length for continuation
     std::vector<BeamSearch::Hypothesis> hypotheses = beam_search.search(
-        initial_logits, next_token_fn, 10, tokenizer.get_eos_token_id());
+        initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
     
     // Clear the cache after we're done
     transformer.clear_kv_cache();
@@ -448,33 +447,52 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     std::cout << "Top " << k << " predicted sequences:" << std::endl;
     int predictions_shown = 0;
     
+    // Process all hypotheses to find valid ones
+    std::vector<std::pair<std::string, float>> valid_predictions;
+    valid_predictions.reserve(hypotheses.size());
+    
     for (const auto& hyp : hypotheses) {
-        if (predictions_shown >= k) break;
-        
         try {
-            // Get just the generated part by removing the input tokens
             if (hyp.tokens.size() <= input_length) continue;
             
+            // Get generated tokens
             std::vector<int> generated_tokens;
-            generated_tokens.reserve(hyp.tokens.size() - input_length);  // Pre-reserve space
+            generated_tokens.reserve(hyp.tokens.size() - input_length);
             for (size_t i = input_length; i < hyp.tokens.size(); i++) {
                 generated_tokens.push_back(hyp.tokens[i]);
             }
             
-            // Decode only the generated tokens
+            // Decode and validate the sequence
             std::string decoded = tokenizer.decode(generated_tokens);
-            
-            // Skip empty sequences
             if (decoded.empty()) continue;
             
-            // Print the prediction with its score
-            std::cout << predictions_shown + 1 << ". \"" << decoded << "\" (score=" 
-                      << hyp.score << ")" << std::endl;
-            predictions_shown++;
+            // Skip sequences with only special tokens or whitespace
+            bool has_content = false;
+            for (char c : decoded) {
+                if (!std::isspace(c) && c != '<' && c != '>') {
+                    has_content = true;
+                    break;
+                }
+            }
+            if (!has_content) continue;
+            
+            // Add to valid predictions
+            valid_predictions.push_back({decoded, hyp.score});
         } catch (const std::exception& e) {
             std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
             continue;
         }
+    }
+    
+    // Sort valid predictions by score
+    std::sort(valid_predictions.begin(), valid_predictions.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    
+    // Print top k valid predictions
+    for (size_t i = 0; i < std::min(static_cast<size_t>(k), valid_predictions.size()); i++) {
+        std::cout << i + 1 << ". \"" << valid_predictions[i].first << "\" (score="
+                  << valid_predictions[i].second << ")" << std::endl;
+        predictions_shown++;
     }
     
     if (predictions_shown < k) {
