@@ -1,8 +1,10 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <vector>
+#include <stdexcept>
+#include "token_constants.hpp"
 
 /**
  * @brief Manages the vocabulary for the tokenizer, including special tokens and mappings.
@@ -17,7 +19,7 @@
 class Vocabulary {
   private:
     std::unordered_map<std::string, int> token_to_id;  ///< Maps tokens to their unique IDs
-    std::vector<std::string> id_to_token;              ///< Maps IDs back to their tokens
+    std::unordered_map<int, std::string> id_to_token;  ///< Maps IDs back to their tokens (change from vector)
     std::unordered_set<std::string> nouns;             ///< Set of tokens identified as nouns
     int unk_token_id;                                  ///< ID for unknown token
     int pad_token_id;                                  ///< ID for padding token
@@ -44,6 +46,18 @@ class Vocabulary {
      * @param id ID to assign to the token
      */
     void add_special_token(const std::string& token, int id);
+
+    /**
+     * @brief Adds a token with a specific ID.
+     * @param token Token to add
+     * @param id ID to assign to the token
+     */
+    void add_token(const std::string& token, int id) {
+        if (id < tokens::NUM_SPECIAL_TOKENS) {
+            throw std::runtime_error("Cannot add token with reserved special token ID");
+        }
+        add_special_token(token, id);
+    }
 
     /**
      * @brief Initializes the vocabulary with basic tokens.
@@ -144,5 +158,24 @@ class Vocabulary {
      */
     void load_nouns(const std::string& noun_file_path);
 
-    const std::vector<std::string>& get_vocabulary() const { return id_to_token; }
+    /**
+     * @brief Gets the vocabulary as a vector for compatibility.
+     * @return Vector of tokens ordered by ID
+     */
+    std::vector<std::string> get_vocabulary_vector() const {
+        std::vector<std::string> vocab_vec;
+        vocab_vec.resize(id_to_token.size());
+        for (const auto& [id, token] : id_to_token) {
+            vocab_vec[id] = token;
+        }
+        return vocab_vec;
+    }
+
+    /**
+     * @brief Gets the vocabulary map.
+     * @return Const reference to the ID-to-token map
+     */
+    const std::unordered_map<int, std::string>& get_vocabulary_map() const {
+        return id_to_token;
+    }
 };

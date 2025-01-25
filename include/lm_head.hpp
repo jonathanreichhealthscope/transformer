@@ -1,10 +1,17 @@
 #pragma once
 #include "components.hpp"
+#include "cuda_utils.hpp"
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <cuda_fp16.h>
+#endif
 
 /**
  * @brief Language model head for token prediction in transformer models.
@@ -25,7 +32,28 @@ class LanguageModelHead {
     size_t vocab_size_;                  ///< Size of the vocabulary
     size_t hidden_size_;                 ///< Size of input hidden states
     Matrix hidden_states;                ///< Cached hidden states for backward pass
+    Matrix hidden_states_;               ///< Cached hidden states for forward pass
     std::vector<float> token_frequencies; ///< Tracked frequencies of token usage
+
+    // Vocabulary pruning
+    static constexpr size_t PRUNE_INTERVAL = 100;  // Update active tokens every N steps
+    static constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Minimum number of active tokens
+    float pruning_threshold;
+    std::vector<unsigned char> active_tokens;  // Changed from vector<bool> to vector<unsigned char>
+    std::vector<int> active_token_indices;     // List of indices of active tokens
+    size_t training_steps;
+    
+    // Pinned memory for efficient GPU transfers
+    float* h_projection = nullptr;
+    float* h_bias = nullptr;
+
+    // Device memory buffers
+    float* d_projection = nullptr;  // Device copy of projection matrix
+    float* d_bias = nullptr;       // Device copy of bias
+    half* d_projection_fp16 = nullptr;  // FP16 version of projection
+    half* d_hidden_states_fp16 = nullptr;  // FP16 version of input
+    half* d_output_fp16 = nullptr;  // FP16 intermediate output
+    float* d_output = nullptr;      // Final FP32 output
 
     /**
      * @brief Computes gradients for the linear projection.
@@ -40,6 +68,27 @@ class LanguageModelHead {
      */
     Matrix forward_impl(const Matrix& hidden_states);
 
+    void update_active_tokens();
+
+#ifdef USE_CUDA
+    // CUDA streams and synchronization
+    cudaStream_t compute_stream;
+
+    // Device memory for active tokens and indices
+    unsigned char* d_active_tokens = nullptr;
+    int* d_active_token_indices = nullptr;
+
+    // Maximum batch size for memory allocation
+    static constexpr size_t max_batch_size = 4096;  // Adjust based on your needs
+
+    // CUDA kernel launchers
+    __host__ void launch_convert_to_fp16(half* output, const float* input, size_t size);
+    __host__ void launch_convert_and_expand_vocab(
+        float* output, const half* input, size_t batch_size, size_t vocab_size, size_t active_vocab_size);
+
+    cublasHandle_t cublas_handle;
+#endif
+
   public:
     /**
      * @brief Constructs a language model head.
@@ -48,26 +97,7 @@ class LanguageModelHead {
      */
     LanguageModelHead(size_t hidden_size, size_t vocab_size);
 
-    /**
-     * @brief Copy constructor.
-     * @param other LanguageModelHead to copy from
-     */
-    LanguageModelHead(const LanguageModelHead& other)
-        : projection(other.projection), bias(other.bias), dropout_prob(other.dropout_prob) {}
-
-    /**
-     * @brief Assignment operator.
-     * @param other LanguageModelHead to assign from
-     * @return Reference to this instance
-     */
-    LanguageModelHead& operator=(const LanguageModelHead& other) {
-        if (this != &other) {
-            projection = other.projection;
-            bias = other.bias;
-            dropout_prob = other.dropout_prob;
-        }
-        return *this;
-    }
+    ~LanguageModelHead();  // Just declare it here
 
     /**
      * @brief Performs the forward pass, computing logits from hidden states.
@@ -75,8 +105,7 @@ class LanguageModelHead {
      * @return Matrix of logits over vocabulary
      */
     Matrix forward(const Matrix& hidden_states) {
-        // Store hidden states for backward pass
-        this->hidden_states = hidden_states;
+        hidden_states_ = hidden_states;  // Cache for backward pass
         return project_to_vocab(hidden_states);
     }
 
@@ -212,14 +241,6 @@ class LanguageModelHead {
     Matrix project_to_vocab(const Matrix& hidden_states);
 
     /**
-     * @brief Gets the projection matrix.
-     * @return Const reference to projection matrix
-     */
-    const Matrix& get_projection() const {
-        return projection;
-    }
-
-    /**
      * @brief Performs backward pass with optional target distribution.
      * @param grad_output Gradient of the loss with respect to the output
      * @param target_distribution Optional target distribution for distillation
@@ -228,24 +249,14 @@ class LanguageModelHead {
     Matrix backward(const Matrix& grad_output, const Matrix& target_distribution = Matrix());
 
     /**
-     * @brief Updates token frequency tracking with decay.
-     * @param tokens Vector of token IDs to update frequencies for
-     * 
-     * This method implements a simple frequency tracking mechanism with exponential
-     * decay to give more weight to recent occurrences.
+     * @brief Updates token frequencies based on observed tokens.
+     * @param tokens Vector of token indices observed in the current batch
      */
-    void update_token_frequencies(const std::vector<int>& tokens) {
-        // Decay old frequencies slightly
-        const float decay_rate = 0.99f;
-        for (auto& freq : token_frequencies) {
-            freq *= decay_rate;
-        }
+    void update_token_frequencies(const std::vector<int>& tokens);
 
-        // Update frequencies from new tokens
-        for (int token : tokens) {
-            if (token >= 0 && static_cast<size_t>(token) < token_frequencies.size()) {
-                token_frequencies[token] += 1.0f;
-            }
-        }
-    }
+    /**
+     * @brief Prunes vocabulary by removing infrequently used tokens.
+     * @param min_frequency_threshold Minimum frequency threshold for keeping tokens
+     */
+    void prune_vocabulary(float min_frequency_threshold = 1e-5);
 };

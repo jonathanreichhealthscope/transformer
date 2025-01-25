@@ -23,14 +23,6 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
       dW1_(hidden_size, intermediate_size), dW2_(intermediate_size, hidden_size),
       db1_(intermediate_size), db2_(hidden_size) {
 
-    std::cout << "\n=== FeedForward Constructor Dimensions ===" << std::endl;
-    std::cout << "Hidden size: " << hidden_size << std::endl;
-    std::cout << "Intermediate size: " << intermediate_size << std::endl;
-    std::cout << "w1: " << w1.rows() << "x" << w1.cols() << std::endl;
-    std::cout << "w2: " << w2.rows() << "x" << w2.cols() << std::endl;
-    std::cout << "b1 size: " << b1.size() << std::endl;
-    std::cout << "b2 size: " << b2.size() << std::endl;
-
     // Initialize weights with Xavier/Glorot initialization
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -95,23 +87,42 @@ Matrix FeedForward::forward(const Matrix& input) {
             // Allocate intermediate results
             Matrix intermediate(input.rows(), w1.cols());
             std::cout << "Intermediate dimensions: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            
             cuda::matmul(input, w1, intermediate);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After first matmul - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             std::cout << "Bias dimensions: " << b1.size() << std::endl;
+            
             // Apply bias and activation
             intermediate.add_bias(b1);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After bias addition - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             cuda::gelu_forward(intermediate);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After GELU - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             // Store for backward pass
             intermediate_cache = intermediate;
             std::cout << "Intermediate cache dimensions: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+            
             // Explicitly preserve input batch size
             Matrix output(input.rows(), w2.cols());  // Force output to be 1019 x hidden_size
             std::cout << "Output dimensions: " << output.rows() << "x" << output.cols() << std::endl;
+            
             cuda::matmul(intermediate, w2, output);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After second matmul - Output: " << output.rows() << "x" << output.cols() << std::endl;
             output.add_bias(b2);
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
+            
             std::cout << "After bias addition - Output: " << output.rows() << "x" << output.cols() << std::endl;
             // Check dimensions before residual connection
             if (output.rows() != input.rows() || output.cols() != input.cols()) {
@@ -122,7 +133,9 @@ Matrix FeedForward::forward(const Matrix& input) {
             }
             
             // Add residual connection
-            output += input;  // This is where the dimension mismatch occurs
+            output += input;
+            CUDA_CHECK(cudaGetLastError());
+            cudaDeviceSynchronize();
             
             return output;
         } catch (const std::runtime_error& e) {
@@ -252,4 +265,19 @@ void FeedForward::update_parameters(const Matrix& grad) {
     for (size_t i = 0; i < b2.size(); ++i) {
         b2[i] -= db2_[i] * learning_rate;
     }
+}
+
+void FeedForward::initialize_weights() {
+    // Get sizes from weight matrices
+    size_t hidden_size = w1.rows();  // Input/output size
+    size_t intermediate_size = w1.cols();  // Hidden layer size
+    
+    float scale = sqrt(2.0f / (hidden_size + intermediate_size));
+    
+    w1.initialize_random(scale);
+    w2.initialize_random(scale);
+    
+    // Initialize biases to small non-zero values
+    b1.initialize_constant(0.01f);
+    b2.initialize_constant(0.01f);
 }

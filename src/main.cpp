@@ -2,6 +2,7 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <random>
+#include "../include/tokenizer.hpp"
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -41,65 +42,41 @@ int main(int argc, char* argv[]) {
 #else
         std::cout << "CUDA is not available" << std::endl;
 #endif
-        // Initialize tokenizer first to get vocab size
-        tokenizer = std::make_unique<Tokenizer>();
-        tokenizer->print_vocabulary_mappings();
-        tokenizer->clear_cache();
 
-        // Get vocabulary size from the tokenizer
-        size_t actual_vocab_size = tokenizer->vocab_size();
-        std::cout << "Actual vocabulary size: " << actual_vocab_size << std::endl;
+        // Load training data first
+        auto training_pairs = Utils::create_training_data();
+        std::cout << "Loaded " << training_pairs.size() << " training pairs" << std::endl;
 
-        // Only update vocab size from tokenizer, keep other settings from config file
-        config.vocab_size = actual_vocab_size;
-        // Only compute head_dim as it depends on other config values
-        config.head_dim = config.hidden_size / config.num_heads;
+        // Initialize tokenizer with config
+        std::cout << "Initializing tiktoken with encoding: gpt2" << std::endl;
+        tokenizer = std::make_unique<Tokenizer>("gpt2");
+        
+        try {
+            tokenizer->initialize();  // Initialize with default encoding
+            std::cout << "Initialized tokenizer. Vocabulary size: " 
+                      << tokenizer->vocab_size() << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to initialize tokenizer: " << e.what() << std::endl;
+            return 1;
+        }
 
-        std::cout << "Using configuration from file:\n"
-                  << "- Hidden size: " << config.hidden_size << "\n"
-                  << "- Number of heads: " << config.num_heads << "\n"
-                  << "- Number of layers: " << config.num_layers << "\n"
-                  << "- Using Flash Attention: " << config.use_flash_attention << "\n"
-                  << "- Using GQA: " << config.use_gqa << "\n"
-                  << "- Using RoPE: " << config.use_rope << "\n"
-                  << "- Using Sliding Window: " << config.use_sliding_window << "\n";
+        // Update vocabulary size in config based on tokenizer
+        config.vocab_size = tokenizer->vocab_size();
+        std::cout << "Using vocabulary size: " << config.vocab_size << std::endl;
 
-        // Initialize components
+        // Initialize model with updated config
         Transformer transformer(config);
-        size_t vocab_size = tokenizer->vocab_size();
-        std::cout << "Actual vocabulary size from tokenizer: " << vocab_size << std::endl;
-
-        // Initialize language model head with correct vocab size
-        auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, vocab_size);
+        auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
 
         // Setup advanced components
         TensorCache<Matrix> activation_cache(1024, CacheReplacementPolicy::ARC);
         QuantizationAwareTraining qat(true);
         auto sam_optimizer = std::make_unique<SAM>(0.05f);
 
-        // Print and verify vocabulary mappings
-        std::cout << "\nVerifying vocabulary mappings:\n";
+        // Print vocabulary mappings
+        std::cout << "\nPrinting vocabulary mappings:\n";
         tokenizer->print_vocabulary_mappings();
 
-        if (!tokenizer->verify_mappings()) {
-            std::cerr << "Error: Vocabulary mappings are inconsistent!\n";
-            return 1;
-        }
-
-        // Get training data
-        std::vector<std::pair<std::string, std::string>> training_data =
-            Utils::create_training_data();
-
-        // Preprocess the training data (convert to lowercase)
-        training_data = TextPreprocessor::preprocess_training_data(training_data);
-
-        // Analyze token mappings
-        Utils::analyze_token_mappings(training_data, *tokenizer);
-
-        // Print vocabulary for inspection
-        std::cout << "\n=== Full Vocabulary Mapping ===\n";
-        tokenizer->print_vocabulary_mappings();
-        std::cout << "\n";
         // Training parameters
         const size_t checkpoint_frequency =
             config.paths.checkpoint_frequency; // Save checkpoint every 2 epochs
@@ -135,7 +112,7 @@ int main(int argc, char* argv[]) {
                             size_t end_pos = epoch_str.find_first_not_of("0123456789");
                             epoch_str = epoch_str.substr(0, end_pos);
                             global_step =
-                                std::stoul(epoch_str) * (training_data.size() / config.batch_size);
+                                std::stoul(epoch_str) * (training_pairs.size() / config.batch_size);
                         }
 
                         std::cout << "Successfully loaded checkpoint. Resuming from global step: "
@@ -156,50 +133,65 @@ int main(int argc, char* argv[]) {
         auto validation_data = Utils::load_validation_data();
         std::cout << "Loaded " << validation_data.size() << " validation examples\n";
 
+        // Update any hardcoded token references
+        int pad_id = tokenizer->get_pad_token_id();    // Should be 0
+        std::cout << "pad_id: " << pad_id << std::endl;
+        int unk_id = tokenizer->get_unk_token_id();    // Should be 1
+        std::cout << "unk_id: " << unk_id << std::endl;
+        int bos_id = tokenizer->get_bos_token_id();    // Should be 2
+        std::cout << "bos_id: " << bos_id << std::endl;
+        int eos_id = tokenizer->get_eos_token_id();    // Should be 3
+        std::cout << "eos_id: " << eos_id << std::endl;
+        int mask_id = tokenizer->get_mask_token_id();  // Should be 4
+        std::cout << "mask_id: " << mask_id << std::endl;
+        std::cout << "epochs: " << config.num_epochs << std::endl;
         for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
             std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
             float epoch_loss = 0.0f;
             size_t total_batches =
-                (training_data.size() + config.batch_size - 1) / config.batch_size;
+                (training_pairs.size() + config.batch_size - 1) / config.batch_size;
 
             // Process batches
             for (size_t batch = 0; batch < total_batches; ++batch) {
                 metrics.start_timer("batch_processing");
 
                 size_t start_idx = batch * config.batch_size;
-                size_t end_idx = std::min(start_idx + config.batch_size, training_data.size());
+                size_t end_idx = std::min(start_idx + config.batch_size, training_pairs.size());
                 size_t current_batch_size = end_idx - start_idx;
-
-                // Create batch with validation
-                std::vector<std::vector<int>> input_batch;
-                std::vector<std::vector<int>> target_tokens;
 
                 // Find maximum sequence length in this batch
                 size_t max_seq_len = 0;
                 for (size_t j = start_idx; j < end_idx; ++j) {
-                    const auto& [input_str, target_str] = training_data[j];
+                    const auto& [input_str, target_str] = training_pairs[j];
                     std::vector<int> input_tokens = tokenizer->encode(input_str);
-                    max_seq_len = std::max(max_seq_len, input_tokens.size());
+                    std::vector<int> target_tokens = tokenizer->encode(target_str);
+                    // Consider both input and target sequence lengths
+                    max_seq_len = std::max({max_seq_len, input_tokens.size(), target_tokens.size()});
                 }
+                std::cout << "\n=== Processing Batch " << batch + 1 << " ===\n";
+
+                // Create batch with validation
+                std::vector<std::vector<int>> input_batch;
+                std::vector<std::vector<int>> target_batch;  // Rename from target_tokens
 
                 // Fill and validate batch with padding
                 bool batch_valid = true;
                 for (size_t j = start_idx; j < end_idx; ++j) {
-                    const auto& [input_str, target_str] = training_data[j];
+                    const auto& [input_str, target_str] = training_pairs[j];
 
-                    // Preprocess both input and target
+                    // Preprocess text
                     std::string processed_input = input_str;
                     std::string processed_target = target_str;
-
                     tokenizer->preprocess_text(processed_input);
                     tokenizer->preprocess_text(processed_target);
 
+                    // Encode using appropriate tokenizer
                     std::vector<int> input_tokens = tokenizer->encode(processed_input);
-                    std::vector<int> curr_target_tokens = tokenizer->encode(processed_target);
+                    std::vector<int> target_tokens = tokenizer->encode(processed_target);
 
                     // Validate sequences
-                    if (!Utils::validate_input_sequence(input_tokens, config.vocab_size) ||
-                        !Utils::validate_input_sequence(curr_target_tokens, config.vocab_size)) {
+                    if (!Utils::validate_input_sequence(input_tokens, tokenizer->vocab_size()) ||
+                        !Utils::validate_input_sequence(target_tokens, tokenizer->vocab_size())) {
                         std::cerr << "Invalid sequence at position " << j << std::endl;
                         batch_valid = false;
                         break;
@@ -209,65 +201,86 @@ int main(int argc, char* argv[]) {
                     while (input_tokens.size() < max_seq_len) {
                         input_tokens.push_back(tokenizer->get_pad_token_id());
                     }
+                    while (target_tokens.size() < max_seq_len) {  // Add padding for target tokens
+                        target_tokens.push_back(tokenizer->get_pad_token_id());
+                    }
 
                     input_batch.push_back(input_tokens);
-                    target_tokens.push_back(curr_target_tokens);
+                    target_batch.push_back(target_tokens);  // Use target_batch instead of target_tokens
                 }
 
                 if (!batch_valid)
                     continue; // Skip invalid batches
 
-                // Create target distribution for entire batch
+                std::cout << "Input batch size: " << input_batch.size() << " sequences\n";
+                std::cout << "Target batch size: " << target_batch.size() << " sequences\n";
+
+                // First collect valid sequences
+                std::vector<std::vector<int>> valid_input_batch;
+                std::vector<std::vector<int>> valid_target_batch;
+
+                for (size_t i = 0; i < input_batch.size(); i++) {
+                    const auto& input_sequence = input_batch[i];
+                    const auto& target_sequence = target_batch[i];
+                    
+                    if (input_sequence.size() != max_seq_len) {
+                        std::cerr << "Error: Input sequence length mismatch. Expected " << max_seq_len 
+                                  << " but got " << input_sequence.size() << std::endl;
+                        continue;
+                    }
+                    
+                    if (target_sequence.size() != max_seq_len) {
+                        std::cerr << "Error: Target sequence length mismatch. Expected " << max_seq_len 
+                                  << " but got " << target_sequence.size() << std::endl;
+                        continue;
+                    }
+                    
+                    valid_input_batch.push_back(input_sequence);
+                    valid_target_batch.push_back(target_sequence);
+                }
+
+                if (valid_input_batch.empty()) {
+                    std::cerr << "Error: No valid sequences in batch\n";
+                    continue;
+                }
+
+                // Create target distribution for entire batch using only valid sequences
                 Matrix target_distribution = Utils::create_batch_target_distribution(
-                    target_tokens, *tokenizer, config.vocab_size);
+                    valid_target_batch, *tokenizer, config.vocab_size, max_seq_len);
 
                 // Process the batch as a single sequence
                 std::vector<int> flattened_batch;
-                flattened_batch.reserve(current_batch_size * max_seq_len);
+                flattened_batch.reserve(valid_input_batch.size() * max_seq_len);
 
                 // Flatten the batch into a single sequence
-                for (const auto& sequence : input_batch) {
+                for (const auto& sequence : valid_input_batch) {
                     flattened_batch.insert(flattened_batch.end(), sequence.begin(), sequence.end());
                 }
+                std::cout << "Flattened batch size: " << flattened_batch.size() << " tokens\n";
 
                 // Forward pass with the flattened batch
                 transformer.set_training(true);
                 metrics.start_timer("forward_pass");
-                Matrix hidden_states = transformer.forward(flattened_batch);
+                Matrix hidden_states = transformer.forward(flattened_batch, "", *tokenizer);
                 metrics.stop_timer("forward_pass");
 
                 metrics.record_memory_usage(hidden_states.bytes());
 
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
 
-                // Take only the last token's logits for each sequence in the batch
-                Matrix final_logits(current_batch_size, config.vocab_size);
-                for (size_t i = 0; i < current_batch_size; i++) {
-                    size_t seq_end_idx = (i + 1) * max_seq_len - 1;
-                    for (size_t j = 0; j < config.vocab_size; j++) {
-                        if (seq_end_idx < logits.rows()) {
-                            final_logits(i, j) = logits(seq_end_idx, j);
-                        }
-                    }
-                }
+                // Compute loss and its gradients for all tokens in sequence
+                float batch_loss = Utils::compute_batch_loss(logits, target_distribution);
 
-                // Compute loss and its gradients
-                float batch_loss = Utils::compute_batch_loss(final_logits, target_distribution);
-
-                // Compute softmax gradients for each sequence in the batch
+                // Compute softmax gradients for each token in the sequence
                 Matrix loss_gradients = Matrix(logits.rows(), logits.cols(), 0.0f);
-                for (size_t i = 0; i < current_batch_size; i++) {
-                    size_t seq_end_idx = (i + 1) * max_seq_len - 1;
-                    if (seq_end_idx >= logits.rows())
-                        continue;
-
-                    // Compute softmax for this sequence's logits
-                    std::vector<float> sequence_logits;
+                for (size_t i = 0; i < logits.rows(); i++) {
+                    // Compute softmax for this token's logits
+                    std::vector<float> token_logits;
                     float max_logit = -std::numeric_limits<float>::infinity();
 
                     for (size_t j = 0; j < config.vocab_size; j++) {
-                        float logit = logits(seq_end_idx, j);
-                        sequence_logits.push_back(logit);
+                        float logit = logits(i, j);
+                        token_logits.push_back(logit);
                         max_logit = std::max(max_logit, logit);
                     }
 
@@ -275,21 +288,100 @@ int main(int argc, char* argv[]) {
                     std::vector<float> exp_logits(config.vocab_size);
 
                     for (size_t j = 0; j < config.vocab_size; j++) {
-                        exp_logits[j] = std::exp(sequence_logits[j] - max_logit);
+                        exp_logits[j] = std::exp(token_logits[j] - max_logit);
                         sum_exp += exp_logits[j];
                     }
 
                     // Compute gradients for cross-entropy loss
+                    float scaling_factor = 100.0f;  // Base scaling factor
+                    size_t non_pad_tokens = 0;
+
+                    // First pass to count non-padding tokens
+                    for (size_t j = 0; j < config.vocab_size; j++) {
+                        if (target_distribution(i, j) > 0.0f && j != tokenizer->get_pad_token_id()) {
+                            non_pad_tokens++;
+                        }
+                    }
+
+                    // Adjust scaling factor based on token density
+                    if (non_pad_tokens > 0) {
+                        scaling_factor *= std::sqrt(float(config.vocab_size) / non_pad_tokens);
+                    }
+
                     for (size_t j = 0; j < config.vocab_size; j++) {
                         float softmax_output = exp_logits[j] / sum_exp;
-                        loss_gradients(seq_end_idx, j) =
-                            (softmax_output - target_distribution(i, j)) / current_batch_size;
+                        float gradient = 0.0f;
+                        
+                        // Only compute meaningful gradients for non-padding tokens
+                        if (j != tokenizer->get_pad_token_id()) {
+                            gradient = (softmax_output - target_distribution(i, j)) * scaling_factor;
+                            // Clip gradients to reasonable range
+                            gradient = std::max(std::min(gradient, 1.0f), -1.0f);
+                        }
+                        loss_gradients(i, j) = gradient;
                     }
                 }
 
-                // Update learning rate based on loss
+                // Log gradient and token statistics
+                float total_grad_magnitude = 0.0f;
+                float max_grad_magnitude = 0.0f;
+                size_t total_tokens = loss_gradients.rows() * loss_gradients.cols();
+                size_t non_padding_tokens = 0;
+
+                for (size_t i = 0; i < loss_gradients.rows(); i++) {
+                    for (size_t j = 0; j < loss_gradients.cols(); j++) {
+                        float grad_magnitude = std::abs(loss_gradients(i, j));
+                        if (grad_magnitude > 0.0f) {  // Count non-zero gradients
+                            total_grad_magnitude += grad_magnitude;
+                            max_grad_magnitude = std::max(max_grad_magnitude, grad_magnitude);
+                            non_padding_tokens++;
+                        }
+                    }
+                }
+
+                // Calculate average only over non-padding tokens
+                float avg_grad_magnitude = non_padding_tokens > 0 ? 
+                    total_grad_magnitude / non_padding_tokens : 0.0f;
+
+                std::cout << "Gradient Statistics:\n"
+                          << "  Average magnitude (non-padding): " << avg_grad_magnitude << "\n"
+                          << "  Maximum magnitude: " << max_grad_magnitude << "\n"
+                          << "  Non-padding tokens: " << non_padding_tokens << "/" << total_tokens 
+                          << " (" << (100.0f * non_padding_tokens / total_tokens) << "%)\n";
+
+                // More dynamic learning rate adjustment
                 float loss_ratio = batch_loss / (prev_loss + 1e-10f);
-                learning_rate = Utils::adjust_learning_rate(learning_rate, loss_ratio, global_step);
+                float grad_scale = std::min(avg_grad_magnitude, 1.0f);  // Scale based on gradient magnitude
+                
+                // Adjust thresholds based on training progress
+                float upper_threshold = 1.05f - (0.01f * std::min(global_step / 1000.0f, 0.04f));  // Starts at 1.05, decreases to 1.01
+                float lower_threshold = 0.95f + (0.01f * std::min(global_step / 1000.0f, 0.04f));  // Starts at 0.95, increases to 0.99
+                
+                if (loss_ratio > upper_threshold) {
+                    // More aggressive decrease when loss increases significantly
+                    float decrease_factor = 0.8f + (0.15f * grad_scale);  // Between 0.8 and 0.95
+                    learning_rate *= decrease_factor;
+                    std::cout << "Decreasing learning rate by factor " << decrease_factor 
+                              << " (loss ratio: " << loss_ratio << ")\n";
+                } else if (loss_ratio < lower_threshold) {
+                    // More aggressive increase when loss decreases significantly
+                    float increase_factor = 1.2f - (0.15f * grad_scale);  // Between 1.05 and 1.2
+                    learning_rate *= increase_factor;
+                    std::cout << "Increasing learning rate by factor " << increase_factor 
+                              << " (loss ratio: " << loss_ratio << ")\n";
+                }
+                
+                // Wider bounds for learning rate
+                float min_lr = 1e-6f;
+                float max_lr = 5e-2f;
+                if (global_step < 100) {  // Allow larger learning rates early in training
+                    max_lr = 1e-1f;
+                }
+                
+                learning_rate = std::max(min_lr, std::min(learning_rate, max_lr));
+                
+                std::cout << "Learning rate adjusted to: " << learning_rate 
+                          << " (loss ratio: " << loss_ratio << ")\n";
 
                 // Backpropagate through the model
                 Matrix lm_head_gradients = lm_head->backward(loss_gradients);
@@ -301,6 +393,46 @@ int main(int argc, char* argv[]) {
                 global_step++;
 
                 metrics.stop_timer("batch_processing");
+
+                // Make predictions after each batch
+                std::string test_input = "I go to";
+                std::string processed_input = test_input;
+                tokenizer->preprocess_text(processed_input);
+                std::vector<int> test_tokens = tokenizer->encode(processed_input);
+                
+                // Get model prediction (in evaluation mode)
+                transformer.set_training(false);
+                Matrix test_hidden = transformer.forward(test_tokens, test_input, *tokenizer);
+                Matrix pred_logits = lm_head->project_to_vocab(test_hidden);
+                transformer.set_training(true);  // Set back to training mode
+                
+                // Show the top predictions
+                std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << test_input << "' ===\n";
+                Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
+                std::cout << "================================================\n";
+
+                // Test additional queries
+                std::vector<std::string> additional_queries = {
+                    "The weather is",
+                    "I want to",
+                    "The cat",
+                    "She likes to"
+                };
+
+                for (const auto& query : additional_queries) {
+                    processed_input = query;
+                    tokenizer->preprocess_text(processed_input);
+                    test_tokens = tokenizer->encode(processed_input);
+                    
+                    transformer.set_training(false);
+                    test_hidden = transformer.forward(test_tokens, query, *tokenizer);
+                    pred_logits = lm_head->project_to_vocab(test_hidden);
+                    transformer.set_training(true);
+                    
+                    std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << query << "' ===\n";
+                    Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
+                    std::cout << "================================================\n";
+                }
 
                 // Print progress and metrics every 10 batches
                 if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
@@ -347,96 +479,31 @@ int main(int argc, char* argv[]) {
 
             // Test prediction on a sample input
             if ((epoch + 1) % 2 == 0) {
-                std::cout << "\n=== Starting Text Generation Testing ===" << std::endl;
-                // Initialize beam search with config parameters
-                BeamSearch beam_search(config.beam_size, config.length_penalty);
-                std::cout << "Initialized beam search with width=" << config.beam_size
-                          << ", penalty=" << config.length_penalty << std::endl;
-
-                // Test multiple different contexts
-                std::vector<std::string> test_inputs = {
-                    "I go to",
-                    "Surgeons operate in the",
-                    "Athletes train in the",
-                    "Musicians perform in the", // Entertainment context
-                    "Students research in the", // Educational context
-                    "Chefs cook in the",        // Culinary context
-                    "Artists create in the",    // Creative context
-                    "Engineers work in the",    // Technical context
-                    "Lawyers practice in the",  // Legal context
-                    "Teachers instruct in the", // Educational context
-                    "Scientists experiment in", // Research context
-                    "Pilots fly through the",   // Aviation context
-                    "Dancers rehearse in the",  // Performance context
-                    "Writers compose in the",   // Literary context
-                    "Mechanics repair in the"   // Automotive context
-                };
-
-                std::cout << "Testing " << test_inputs.size() << " different prompts" << std::endl;
-
-                for (const auto& test_input : test_inputs) {
-                    std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
-                    // Preprocess input
-                    std::string processed_input = test_input;
-                    tokenizer->preprocess_text(processed_input);
-                    std::vector<int> test_tokens = tokenizer->encode(processed_input);
-
-                    // Get initial logits
-                    Matrix test_hidden = transformer.forward(test_tokens);
-                    Matrix initial_logits_matrix = lm_head->project_to_vocab(test_hidden);
-
-                    // Convert matrix to vector for beam search
-                    std::vector<float> initial_logits;
-                    size_t last_token_idx = test_tokens.size() - 1;
-                    for (size_t j = 0; j < initial_logits_matrix.cols(); ++j) {
-                        initial_logits.push_back(initial_logits_matrix(last_token_idx, j));
-                    }
-
-                    // Create next token function for beam search with sampling
-                    auto next_token_fn = [&](const std::vector<int>& tokens) -> std::vector<float> {
-                        Matrix hidden = transformer.forward(tokens);
-                        Matrix logits = lm_head->project_to_vocab(hidden);
-
-                        std::vector<float> next_logits;
-                        size_t last_idx = tokens.size() - 1;
-                        for (size_t j = 0; j < logits.cols(); ++j) {
-                            next_logits.push_back(logits(last_idx, j));
-                        }
-
-                        // Apply temperature and top-p sampling
-                        Utils::apply_sampling_parameters(next_logits, config.temperature,
-                                                         config.top_p);
-
-                        return next_logits;
-                    };
-
-                    // Also apply to initial logits
-                    std::vector<float> processed_initial_logits = initial_logits;
-                    Utils::apply_sampling_parameters(processed_initial_logits, config.temperature,
-                                                     config.top_p);
-
-                    // Perform beam search with processed logits
-                    auto beam_results =
-                        beam_search.search(processed_initial_logits, next_token_fn,
-                                           config.max_length, tokenizer->get_eos_token_id());
-
-                    // Print beam search results
-                    std::cout << "\nBeam Search Completions:\n";
-                    for (size_t i = 0; i < std::min(size_t(3), beam_results.size()); ++i) {
-                        const auto& hypothesis = beam_results[i];
-                        std::string completion = tokenizer->decode(hypothesis.tokens);
-                        std::cout << i + 1 << ". " << completion << " (score: " << hypothesis.score
-                                  << ")\n";
-                    }
-
-                    // Also show greedy search result for comparison
-                    std::cout << "\nGreedy Search Completion:\n";
-                    Utils::print_top_predictions(initial_logits_matrix, *tokenizer, 5);
-                }
+                std::cout << "\nTesting generation with " 
+                          << (config.tokenizer.use_subword ? "subword" : "regular") 
+                          << " tokenization:" << std::endl;
+                
+                // Test a simple input
+                std::string test_input = "I go to";
+                std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
+                
+                // Preprocess input
+                std::string processed_input = test_input;
+                tokenizer->preprocess_text(processed_input);
+                std::vector<int> test_tokens = tokenizer->encode(processed_input);
+                
+                // Get model prediction
+                Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
+                Matrix logits = lm_head->project_to_vocab(test_hidden);
+                
+                // For single token prediction, we don't need beam search
+                // Just show the top predictions
+                std::cout << "\nTop Predictions:\n";
+                Utils::print_top_predictions(logits, *tokenizer, transformer, 5);
             }
 
-            if ((epoch + 1) % 5 == 0) { // Clear cache every 5 epochs
-                tokenizer->clear_cache();
+            if ((epoch + 1) % 5 == 0) { 
+                // Cache clearing removed since TiktokenTokenizer doesn't use caching
             }
 
             // Run validation every 3 epochs
@@ -452,6 +519,29 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "\nTraining completed!\n";
+
+        // Final prediction test
+        std::cout << "\nFinal generation test with " 
+                  << (config.tokenizer.use_subword ? "subword" : "regular") 
+                  << " tokenization:" << std::endl;
+        
+        // Test a simple input
+        std::string test_input = "I go to";
+        std::cout << "\n=== Processing prompt: '" << test_input << "' ===" << std::endl;
+        
+        // Preprocess input
+        std::string processed_input = test_input;
+        tokenizer->preprocess_text(processed_input);
+        std::vector<int> test_tokens = tokenizer->encode(processed_input);
+        
+        // Get model prediction
+        transformer.set_training(false);  // Set to evaluation mode
+        Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
+        Matrix logits = lm_head->project_to_vocab(test_hidden);
+        
+        // Show the top predictions
+        std::cout << "\nTop Predictions:\n";
+        Utils::print_top_predictions(logits, *tokenizer, transformer, 5);
 
         // Create directories if they don't exist
         std::filesystem::create_directories(save_directory);

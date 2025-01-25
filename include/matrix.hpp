@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <vector>
+#include "vector.hpp"  // Include Vector definition from vector.hpp
 #define M_PI 3.14159265358979323846
 // Forward declarations
 class Matrix;
@@ -384,94 +385,26 @@ class Matrix {
         *this = input;  // Copy input to this matrix
         return *this;
     }
+
+    /**
+     * @brief Initialize matrix with random values using Xavier/Glorot initialization
+     * @param scale Scaling factor for initialization
+     * @throws std::runtime_error if matrix doesn't own its data
+     */
+    void initialize_random(float scale);
+
+    /**
+     * @brief Initialize matrix with a constant value
+     * @param value Value to initialize all elements with
+     * @throws std::runtime_error if matrix doesn't own its data
+     */
+    void initialize_constant(float value);
 };
 
 // Make to_vector inline to allow multiple definitions
 inline std::vector<int> to_vector(const Matrix& m) {
     return std::vector<int>(m.data(), m.data() + m.size());
 }
-
-class Vector {
-  private:
-    std::vector<float> data_;
-    size_t size_;
-
-  public:
-    // Constructors (declarations only)
-    Vector();
-    Vector(size_t size, float default_value = 0.0f);
-    Vector(const std::initializer_list<float>& list);
-    template <typename Iterator>
-    Vector(Iterator first, Iterator last) : data_(first, last), size_(std::distance(first, last)) {}
-
-    // Data access
-    float* data() {
-        return data_.data();
-    }
-    const float* data() const {
-        return data_.data();
-    }
-    size_t size() const {
-        return size_;
-    }
-
-    // Element access
-    float& operator[](size_t i) {
-        return data_[i];
-    }
-    const float& operator[](size_t i) const {
-        return data_[i];
-    }
-
-    // Modified operator+= to handle gradients properly
-    Vector& operator+=(const Vector& other) {
-        if (size_ != other.size()) {
-            throw std::invalid_argument("Vector dimensions must match for addition");
-        }
-        for (size_t i = 0; i < size_; ++i) {
-            data_[i] += other.data_[i];
-        }
-        return *this;
-    }
-
-    // Iterator access
-    auto begin() {
-        return data_.begin();
-    }
-    auto end() {
-        return data_.end();
-    }
-    auto begin() const {
-        return data_.begin();
-    }
-    auto end() const {
-        return data_.end();
-    }
-
-    // Utility functions
-    bool empty() const {
-        return data_.empty();
-    }
-    void resize(size_t new_size) {
-        data_.resize(new_size);
-        size_ = new_size;
-    }
-    void fill(float value) {
-        std::fill(data_.begin(), data_.end(), value);
-    }
-    void randomize(float min_val, float max_val) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<float> dis(min_val, max_val);
-        for (float& val : data_) {
-            val = dis(gen);
-        }
-    }
-
-    // Serialization
-    void save(std::ostream& os) const;
-    static Vector load(std::istream& is);
-};
 
 // Non-member operators
 Matrix operator+(const Matrix& a, const Matrix& b);
@@ -480,6 +413,8 @@ Matrix operator*(const Matrix& m, float scalar);
 Matrix operator*(float scalar, const Matrix& m);
 Matrix operator/(const Matrix& m, float scalar);
 Matrix operator*(const Matrix& a, const Matrix& b);
+
+// Matrix multiplication function
 Matrix matmul(const Matrix& a, const Matrix& b);
 
 inline std::ostream& operator<<(std::ostream& os, const std::tuple<size_t, size_t>& shape) {

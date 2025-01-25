@@ -1,46 +1,63 @@
 {
     "model": {
-        "vocab_size": 32000,
+        "vocab_size": 1665,
         "hidden_size": 128,
-        "num_heads": 4,
-        "num_layers": 2,
-        "head_dim": 42,
-        "intermediate_size": 512,
+        "num_heads": 8,
+        "num_layers": 4,
+        "head_dim": 32,
+        "intermediate_size": 256,
         "max_seq_length": 32
     },
     "training": {
-        "batch_size": 32, 
-        "num_epochs": 6,
+        "batch_size": 32,
+        "num_epochs": 20,
         "dropout_rate": 0.1,
         "weight_decay": 0.01
     },
     "attention": {
         "use_flash_attention": true,
         "use_rope": true,
-        "use_sliding_window": false,
-        "window_size": 32,
+        "use_sliding_window": true,
+        "window_size": 16,
         "use_gqa": true,
-        "num_kv_heads": 2
+        "num_kv_heads": 1
     },
     "optimization": {
         "use_fp16": true,
-        "use_gradient_checkpointing": false,
-        "memory_pool_size": 512
+        "use_gradient_checkpointing": true,
+        "memory_pool_size": 1024
     },
     "paths": {
-        "save_directory": "models",
-        "model_name": "transformer_new_corpus",
-        "checkpoint_frequency": 2
+        "save_directory": "checkpoints",
+        "model_name": "transformer_model",
+        "checkpoint_frequency": 5
     },
     "beam_search": {
-        "beam_size": 5,
-        "length_penalty": 0.6,
-        "temperature": 0.8,
-        "diversity_strength": 0.5,
-        "top_k": 40,
-        "top_p": 0.9,
-        "max_length": 1
+        "use_beam_search": true,
+        "beam_size": 10,
+        "beams_per_group": 4,
+        "num_groups": 3,
+        "length_penalty": 1.5,
+        "temperature": 2.5,
+        "initial_temperature": 3.0,
+        "diversity_strength": 4.0,
+        "top_k": 100,
+        "top_p": 0.98,
+        "max_length": 4,
+        "initial_noise_scale": 0.8,
+        "token_noise_scale": 0.1
     },
     "load_from_checkpoint": false,
-    "checkpoint_to_load": ""
+    "checkpoint_to_load": "",
+    "tokenizer": {
+        "use_subword": false,
+        "vocab_size": 1665,
+        "model_path": "model/tokenizer.model",
+        "special_tokens": ["<unk>", "<s>", "</s>", "<pad>", "<mask>"]
+    },
+    "pad_token_id": 0,
+    "unk_token_id": 1,
+    "bos_token_id": 2,
+    "eos_token_id": 3,
+    "mask_token_id": 4
 } 

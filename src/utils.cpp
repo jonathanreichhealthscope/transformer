@@ -1,13 +1,23 @@
 #include "../include/utils.hpp"
+#include "../include/beam_search.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <set>
+#include <queue>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <sstream>
 #include <set>
+#include <unordered_set>
+#include "../include/data_augmentation.hpp"
+
+bool starts_with(const std::string& str, const std::string& prefix) {
+    return str.size() >= prefix.size() && 
+           str.compare(0, prefix.size(), prefix) == 0;
+}
 
 float Utils::adjust_learning_rate(float current_lr, float loss_ratio, size_t step) {
     const size_t WARMUP_STEPS = 50;
@@ -34,48 +44,75 @@ float Utils::adjust_learning_rate(float current_lr, float loss_ratio, size_t ste
 }
 
 Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int>>& target_tokens,
-                                               const Tokenizer& tokenizer, size_t vocab_size) {
-    Matrix target_distribution(target_tokens.size(), vocab_size, 0.0f);
-    for (size_t i = 0; i < target_tokens.size(); i++) {
-        if (!target_tokens[i].empty()) {
-            target_distribution(i, target_tokens[i].back()) = 1.0f;
+                                               const Tokenizer& tokenizer, size_t vocab_size,
+                                               size_t input_max_seq_len) {
+    // Calculate total size based on input sequence length
+    size_t batch_size = target_tokens.size();
+    size_t total_tokens = batch_size * input_max_seq_len;
+    
+    // Create target distribution for all token positions
+    Matrix target_distribution(total_tokens, vocab_size, 0.0f);
+    
+    // Set target distribution for each token in each sequence
+    size_t current_pos = 0;
+    for (size_t seq = 0; seq < target_tokens.size(); seq++) {
+        
+        // Set actual tokens
+        for (size_t i = 0; i < target_tokens[seq].size(); i++) {
+            target_distribution(current_pos, target_tokens[seq][i]) = 1.0f;
+            current_pos++;
+        }
+        
+        // Pad remaining positions with pad token
+        for (size_t i = target_tokens[seq].size(); i < input_max_seq_len; i++) {
+            target_distribution(current_pos, tokenizer.get_pad_token_id()) = 1.0f;
+            current_pos++;
         }
     }
+    
+    std::cout << "Final target distribution shape: " 
+              << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
+    std::cout << "Final current_pos: " << current_pos << "\n";
+    std::cout << "=== Target Distribution Creation Complete ===\n\n";
+    
     return target_distribution;
 }
 
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
-    float loss = 0.0f;
-    const float epsilon = 1e-10f;
+    if (logits.empty() || target_distribution.empty()) {
+        return 0.0f;
+    }
 
-    // Compute cross-entropy loss
-    for (size_t i = 0; i < logits.rows(); i++) {
+    float total_loss = 0.0f;
+    const size_t batch_size = logits.rows();
+    const size_t vocab_size = logits.cols();
+
+    // Pre-compute max logits and sums for numerical stability
+    std::vector<float> max_logits(batch_size, -std::numeric_limits<float>::infinity());
+    std::vector<float> sums(batch_size, 0.0f);
+
+    #pragma omp parallel for reduction(+:total_loss)
+    for (size_t i = 0; i < batch_size; ++i) {
         // Find max logit for numerical stability
-        float max_logit = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < logits.cols(); j++) {
-            max_logit = std::max(max_logit, logits(i, j));
+        for (size_t j = 0; j < vocab_size; ++j) {
+            max_logits[i] = std::max(max_logits[i], logits(i, j));
         }
 
-        // Compute softmax with improved numerical stability
-        float sum_exp = 0.0f;
-        std::vector<float> probs(logits.cols());
-
-        for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] = std::exp(logits(i, j) - max_logit);
-            sum_exp += probs[j];
+        // Compute sum of exp(logits - max_logit)
+        for (size_t j = 0; j < vocab_size; ++j) {
+            sums[i] += std::exp(logits(i, j) - max_logits[i]);
         }
 
-        // Compute cross-entropy loss
-        for (size_t j = 0; j < logits.cols(); j++) {
-            probs[j] /= (sum_exp + epsilon);
+        // Compute cross entropy loss only for non-zero target probabilities
+        for (size_t j = 0; j < vocab_size; ++j) {
             if (target_distribution(i, j) > 0.0f) {
-                loss -= target_distribution(i, j) * std::log(probs[j] + epsilon);
+                float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
+                total_loss -= target_distribution(i, j) * log_prob;
             }
         }
     }
 
-    // Return average loss
-    return loss / logits.rows();
+    return total_loss / batch_size;
 }
 
 TransformerConfig Utils::load_config(const std::string& config_path) {
@@ -144,18 +181,34 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         // Parse beam search settings
         if (j.contains("beam_search")) {
             auto& beam = j["beam_search"];
-            config.beam_size = beam["beam_size"];
-            config.length_penalty = beam["length_penalty"];
-            config.temperature = beam["temperature"];
-            config.top_p = beam["top_p"];
-            config.max_length = beam["max_length"];
+            config.beam_search.use_beam_search = beam.value("use_beam_search", true);
+            config.beam_search.beam_size = beam["beam_size"];
+            config.beam_search.beams_per_group = beam.value("beams_per_group", 4);
+            config.beam_search.num_groups = beam.value("num_groups", 3);
+            config.beam_search.length_penalty = beam["length_penalty"];
+            config.beam_search.temperature = beam["temperature"];
+            config.beam_search.top_p = beam["top_p"];
+            config.beam_search.max_length = beam["max_length"];
+            config.beam_search.initial_temperature = beam.value("initial_temperature", 3.0f);
+            config.beam_search.initial_noise_scale = beam.value("initial_noise_scale", 0.8f);
+            config.beam_search.diversity_strength = beam.value("diversity_strength", 4.0f);
+            config.beam_search.top_k = beam.value("top_k", 100);
+            config.beam_search.token_noise_scale = beam.value("token_noise_scale", 0.1f);
         } else {
             // Default values if not specified
-            config.beam_size = 5;
-            config.length_penalty = 0.6f;
-            config.temperature = 1.0f;
-            config.top_p = 0.9f;
-            config.max_length = 20;
+            config.beam_search.use_beam_search = true;
+            config.beam_search.beam_size = 5;
+            config.beam_search.beams_per_group = 4;
+            config.beam_search.num_groups = 3;
+            config.beam_search.length_penalty = 0.6f;
+            config.beam_search.temperature = 1.0f;
+            config.beam_search.top_p = 0.9f;
+            config.beam_search.max_length = 20;
+            config.beam_search.initial_temperature = 3.0f;
+            config.beam_search.initial_noise_scale = 0.8f;
+            config.beam_search.diversity_strength = 4.0f;
+            config.beam_search.top_k = 100;
+            config.beam_search.token_noise_scale = 0.1f;
         }
 
         // Add checkpoint loading settings
@@ -166,6 +219,16 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
                 std::cout << "Will load checkpoint from: " << config.checkpoint_to_load
                           << std::endl;
             }
+        }
+
+        // Load tokenizer settings
+        if (j.contains("tokenizer")) {
+            const auto& tok = j["tokenizer"];
+            config.tokenizer.use_subword = tok.value("use_subword", true);
+            config.tokenizer.vocab_size = tok.value("vocab_size", 32000);
+            config.tokenizer.model_path = tok.value("model_path", "model/tokenizer.model");
+            config.tokenizer.special_tokens = tok.value("special_tokens", 
+                std::vector<std::string>{"<pad>", "", " ", "</s>", "<mask>"});
         }
 
     } catch (const std::exception& e) {
@@ -194,7 +257,15 @@ std::vector<std::pair<std::string, std::string>> Utils::create_training_data() {
             training_pairs.emplace_back(input, output);
         }
     }
-    return training_pairs;
+
+    // Apply data augmentation
+    DataAugmentation augmenter(0.3f, 0.3f);
+    auto augmented_pairs = augmenter.augmentDataset(training_pairs);
+    
+    std::cout << "Original dataset size: " << training_pairs.size() << std::endl;
+    std::cout << "Augmented dataset size: " << augmented_pairs.size() << std::endl;
+    
+    return augmented_pairs;
 }
 
 void Utils::analyze_token_mappings(
@@ -251,12 +322,22 @@ std::vector<std::pair<std::string, std::string>> Utils::load_validation_data() {
 
 bool Utils::validate_input_sequence(const std::vector<int>& tokens, size_t vocab_size,
                                     size_t max_seq_length) {
-    if (tokens.empty() || tokens.size() > max_seq_length) {
+    // For target sequences, we allow empty sequences
+    if (tokens.empty()) {
+        return true;  // Empty sequences are valid for targets
+    }
+
+    // For non-empty sequences, check length if max_seq_length is specified
+    if (max_seq_length > 0 && tokens.size() > max_seq_length) {
+        std::cout << "Invalid sequence: too long (length: " << tokens.size() 
+                  << ", max: " << max_seq_length << ")" << std::endl;
         return false;
     }
 
+    // Validate each token
     for (int token : tokens) {
         if (token < 0 || static_cast<size_t>(token) >= vocab_size) {
+            std::cout << "Invalid token " << token << " (vocab size: " << vocab_size << ")" << std::endl;
             return false;
         }
     }
@@ -277,42 +358,181 @@ void Utils::print_matrix(const Matrix& m, const std::string& name, size_t max_ro
     }
 }
 
-void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, size_t k) {
-    std::vector<float> last_logits;
-    for (size_t i = 0; i < logits.cols(); ++i) {
-        last_logits.push_back(logits(logits.rows() - 1, i));
+// Helper function to get multi-token predictions
+std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
+    const Matrix& logits, const Tokenizer& tokenizer, int beam_width) {
+    
+    const int last_pos = logits.rows() - 1;
+    std::vector<std::pair<std::string, float>> predictions;
+    
+    // Get top tokens and their probabilities
+    std::vector<std::pair<float, int>> token_probs;
+    for (int j = 0; j < logits.cols(); j++) {
+        token_probs.push_back({logits(last_pos, j), j});
     }
-
-    float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
-    std::vector<float> probs(last_logits.size());
-    float sum_exp = 0.0f;
-
-    for (size_t i = 0; i < last_logits.size(); ++i) {
-        probs[i] = std::exp(last_logits[i] - max_logit);
-        sum_exp += probs[i];
-    }
-
-    for (float& prob : probs) {
-        prob /= sum_exp;
-    }
-
-    std::vector<std::pair<float, int>> scores;
-    for (size_t i = 0; i < probs.size(); ++i) {
-        if (tokenizer.get_vocabulary().is_noun(tokenizer.decode({static_cast<int>(i)}))) {
-            scores.push_back({probs[i], static_cast<int>(i)});
+    
+    // Sort by probability
+    std::sort(token_probs.begin(), token_probs.end(), std::greater<>());
+    
+    // Take top beam_width tokens
+    for (int i = 0; i < std::min(beam_width, static_cast<int>(token_probs.size())); i++) {
+        int token_id = token_probs[i].second;
+        float prob = token_probs[i].first;
+        
+        // Skip special tokens
+        if (tokenizer.is_special_token(token_id)) continue;
+        
+        // Decode token
+        std::vector<int> token_seq = {token_id};
+        std::string decoded = tokenizer.decode(token_seq);
+        
+        if (!decoded.empty()) {
+            predictions.push_back({decoded, prob});
         }
     }
+    
+    return predictions;
+}
 
-    if (!scores.empty()) {
-        std::partial_sort(scores.begin(), scores.begin() + std::min(k, scores.size()), scores.end(),
-                          [](const auto& a, const auto& b) { return a.first > b.first; });
+void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
+    const auto& config = transformer.getConfig();
+    size_t total_beam_width = std::max(config.beam_search.beam_size, static_cast<size_t>(k * 3));
+    size_t num_groups = config.beam_search.num_groups;
+    size_t beams_per_group = config.beam_search.beams_per_group;
+    
+    BeamSearch beam_search(
+        beams_per_group,
+        config.beam_search.length_penalty,
+        config.beam_search.temperature,
+        config.beam_search.diversity_strength,
+        config.beam_search.top_k,
+        config.beam_search.top_p
+    );
+
+    // Store predictions from each group
+    std::vector<std::vector<BeamSearch::Hypothesis>> group_hypotheses;
+    std::vector<float> initial_logits;
+    initial_logits.reserve(logits.cols());
+    
+    // Get original input
+    std::vector<int> original_input = transformer.get_last_input();
+    std::string original_query = transformer.get_last_query();
+    size_t input_length = original_input.size();
+
+    // Run beam search for each group with different initial conditions
+    for (size_t group = 0; group < num_groups; group++) {
+        // Reset and prepare initial logits with group-specific noise
+        initial_logits.clear();
+        for (int j = 0; j < logits.cols(); j++) {
+            float base_logit = logits(logits.rows() - 1, j) / config.beam_search.initial_temperature;
+            // Add group-specific noise to encourage diversity between groups
+            float group_noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
+                              config.beam_search.initial_noise_scale * 
+                              (1.0f + group * 0.5f);  // Increase noise for later groups
+            initial_logits.push_back(base_logit + group_noise);
+        }
+        
+        // Create next token function with group-specific noise - add config to capture list
+        auto next_token_fn = [&transformer, &tokenizer, group, &config](const std::vector<int>& tokens) -> std::vector<float> {
+            try {
+                Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
+                Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
+                
+                std::vector<float> logits_vec;
+                logits_vec.reserve(next_logits.cols());
+                for (int j = 0; j < next_logits.cols(); j++) {
+                    float logit = next_logits(next_logits.rows() - 1, j);
+                    // Add group-specific noise
+                    float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
+                                config.beam_search.token_noise_scale * 
+                                (1.0f + group * 0.3f);  // Increase noise for later groups
+                    logits_vec.push_back(logit + noise);
+                }
+                return logits_vec;
+            } catch (const std::exception& e) {
+                std::cerr << "Error in next_token_fn: " << e.what() << std::endl;
+                return std::vector<float>();
+            }
+        };
+
+        // Run beam search for this group
+        const size_t MAX_LENGTH = input_length + 4;
+        auto group_results = beam_search.search(
+            initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
+        group_hypotheses.push_back(group_results);
     }
 
-    std::cout << "\nTop " << k << " noun predictions:\n";
-    for (size_t i = 0; i < std::min(k, scores.size()); ++i) {
-        std::string token = tokenizer.decode({scores[i].second});
-        std::cout << i + 1 << ". \"" << token << "\" (probability: " << std::fixed
-                  << std::setprecision(4) << scores[i].first << ")\n";
+    // Clear cache after all groups are done
+    transformer.clear_kv_cache();
+
+    // Merge and process results from all groups
+    std::vector<std::pair<std::string, float>> valid_predictions;
+    std::unordered_set<std::string> used_first_tokens;
+
+    // Process hypotheses from each group
+    for (const auto& group_results : group_hypotheses) {
+        for (const auto& hyp : group_results) {
+            try {
+                if (hyp.tokens.size() <= input_length) continue;
+                
+                // Get generated tokens (excluding input)
+                std::vector<int> generated_tokens(
+                    hyp.tokens.begin() + input_length,
+                    hyp.tokens.end()
+                );
+                
+                // Decode tokens individually and join with spaces
+                std::string decoded;
+                for (size_t i = 0; i < generated_tokens.size(); i++) {
+                    std::string token = tokenizer.decode({generated_tokens[i]});
+                    if (!token.empty()) {
+                        if (!decoded.empty() && token[0] != ' ') {
+                            decoded += " ";
+                        }
+                        decoded += token;
+                    }
+                }
+                
+                if (decoded.empty()) continue;
+                
+                // Add initial space if needed
+                if (decoded[0] != ' ') {
+                    decoded = " " + decoded;
+                }
+                
+                // Get first token for diversity check
+                size_t space_pos = decoded.find(' ', 1);
+                std::string first_token = space_pos == std::string::npos ? 
+                                        decoded.substr(1) : decoded.substr(1, space_pos - 1);
+                
+                // Only add if we haven't seen this first token
+                if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
+                    used_first_tokens.insert(first_token);
+                    valid_predictions.push_back({decoded, hyp.score});
+                    
+                    if (valid_predictions.size() >= k) break;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
+                continue;
+            }
+        }
+        if (valid_predictions.size() >= k) break;
+    }
+
+    // Print predictions
+    std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
+    std::cout << "Top " << k << " predicted sequences:" << std::endl;
+    
+    for (size_t i = 0; i < valid_predictions.size(); i++) {
+        const auto& [prediction, score] = valid_predictions[i];
+        std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
+                 << std::fixed << std::setprecision(4) << score << ")" << std::endl;
+    }
+
+    if (valid_predictions.size() < k) {
+        std::cout << "\nWarning: Only found " << valid_predictions.size() 
+                 << " unique predictions." << std::endl;
     }
 }
 
@@ -362,7 +582,7 @@ float Utils::evaluate_validation(
         try {
             // Get model prediction
             std::cout << "Calling transformer.forward with " << input_tokens.size() << " tokens\n";
-            Matrix output = transformer.forward(input_tokens);
+            Matrix output = transformer.forward(input_tokens, "", tokenizer);
             std::cout << "Forward pass output shape: " << output.rows() << "x" << output.cols()
                       << "\n";
 
@@ -381,67 +601,11 @@ float Utils::evaluate_validation(
             Matrix logits = lm_head->forward(output);
             std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
 
-            // Debug logits distribution
-            float logits_mean = 0.0f, logits_std = 0.0f;
-            float min_logit = std::numeric_limits<float>::max();
-            float max_logit = -std::numeric_limits<float>::max();
-            for (size_t i = 0; i < logits.cols(); ++i) {
-                float val = logits(logits.rows() - 1, i);
-                logits_mean += val;
-                min_logit = std::min(min_logit, val);
-                max_logit = std::max(max_logit, val);
-            }
-            logits_mean /= logits.cols();
-            for (size_t i = 0; i < logits.cols(); ++i) {
-                float val = logits(logits.rows() - 1, i);
-                logits_std += (val - logits_mean) * (val - logits_mean);
-            }
-            logits_std = std::sqrt(logits_std / logits.cols());
-            std::cout << "Logits stats - mean: " << logits_mean 
-                      << ", std: " << logits_std
-                      << ", min: " << min_logit
-                      << ", max: " << max_logit << std::endl;
-
-            // Ensure we have valid output dimensions
-            if (logits.rows() == 0 || logits.cols() != tokenizer.vocab_size()) {
-                continue;
-            }
-            std::cout << "\n=== get target ===\n";
-            // Get target
-            std::string processed_target = pair.second;
-            tokenizer.preprocess_text(processed_target);
-            std::cout << "encode target" << std::endl;
-            std::vector<int> target_tokens = tokenizer.encode(processed_target);
-            std::cout << "target tokens: " << target_tokens.size() << std::endl;
-            // Create target distribution
-            Matrix target_distribution(1, tokenizer.vocab_size(), 0.0f);
-            if (!target_tokens.empty()) {
-                target_distribution(0, target_tokens.back()) = 1.0f;
-            }
-            std::cout << "target distribution: " << target_distribution.rows() << "x"
-                      << target_distribution.cols() << std::endl;
-            // Compute loss using only the last token's prediction
-            Matrix last_token_logits(1, logits.cols());
-            for (size_t i = 0; i < logits.cols(); ++i) {
-                last_token_logits(0, i) = logits(logits.rows() - 1, i);
-            }
-            std::cout << "last token logits: " << last_token_logits.rows() << "x"
-                      << last_token_logits.cols() << std::endl;
-            float loss = compute_batch_loss(last_token_logits, target_distribution);
-            total_loss += loss;
-
-            // Check if prediction matches target
-            std::vector<std::string>& vocabulary = get_vocabulary(tokenizer);
-            
-            if (vocabulary.size() != tokenizer.vocab_size()) {
-                throw std::runtime_error("Vocabulary size mismatch: " + 
-                    std::to_string(vocabulary.size()) + " vs tokenizer vocab " +
-                    std::to_string(tokenizer.vocab_size()));
-            }
-
+            // For single token prediction, we don't need beam search
+            // Just get the highest probability token directly
             int predicted_token = -1;
-            max_logit = -std::numeric_limits<float>::infinity();
-            std::cout << "iterating through logits" << std::endl;
+            float max_logit = -std::numeric_limits<float>::infinity();
+            
             for (size_t i = 0; i < logits.cols(); ++i) {
                 float val = logits(logits.rows() - 1, i);
                 if (val > max_logit) {
@@ -449,40 +613,38 @@ float Utils::evaluate_validation(
                     predicted_token = i;
                 }
             }
-            // Add debug output for logits
-            std::cout << "Top 5 logits:" << std::endl;
-            std::vector<std::pair<float, int>> logit_pairs;
+
+            // Get target
+            std::string processed_target = pair.second;
+            tokenizer.preprocess_text(processed_target);
+            std::vector<int> target_tokens = tokenizer.encode(processed_target);
+
+            // Create target distribution
+            Matrix target_distribution(1, tokenizer.vocab_size(), 0.0f);
+            if (!target_tokens.empty()) {
+                target_distribution(0, target_tokens.back()) = 1.0f;
+            }
+
+            // Compute loss using only the last token's prediction
+            Matrix last_token_logits(1, logits.cols());
             for (size_t i = 0; i < logits.cols(); ++i) {
-                logit_pairs.push_back({logits(logits.rows() - 1, i), i});
-            }
-            std::partial_sort(logit_pairs.begin(), logit_pairs.begin() + 5, logit_pairs.end(),
-                [](const auto& a, const auto& b) { return a.first > b.first; });
-            for (int i = 0; i < 5; ++i) {
-                std::cout << vocabulary[logit_pairs[i].second] << ": " 
-                         << logit_pairs[i].first << std::endl;
+                last_token_logits(0, i) = logits(logits.rows() - 1, i);
             }
 
-            if (predicted_token >= 0 && predicted_token < vocabulary.size()) {
-                std::cout << "predicted token " << predicted_token << ": '" 
-                           << vocabulary[predicted_token] << "'" << std::endl;
-            } else {
-                throw std::runtime_error("Predicted token index " + 
-                    std::to_string(predicted_token) + 
-                    " is outside vocabulary range [0, " + 
-                    std::to_string(vocabulary.size()) + ")");
-            }
+            float loss = compute_batch_loss(last_token_logits, target_distribution);
+            total_loss += loss;
 
+            // Check if prediction matches target
             if (!target_tokens.empty() && predicted_token == target_tokens.back()) {
                 correct_predictions++;
             }
             total_predictions++;
+
         } catch (const std::exception& e) {
             std::cout << "Error evaluating validation: " << e.what() << "\n";
         }
     }
-    std::cout << "total loss: " << total_loss << std::endl;
-    std::cout << "total predictions: " << total_predictions << std::endl;
-    std::cout << "correct predictions: " << correct_predictions << std::endl;
+
     transformer.set_training(true); // Reset to training mode
     return total_predictions > 0 ? total_loss / total_predictions : 0.0f;
 }
@@ -592,4 +754,11 @@ std::vector<size_t> nucleusSampling(const std::vector<float>& probabilities, flo
         if (cumsum >= p) break;
     }
     return result;
+}
+
+void from_json(const nlohmann::json& j, TransformerConfig::TokenizerConfig& t) {
+    j.at("use_subword").get_to(t.use_subword);
+    j.at("vocab_size").get_to(t.vocab_size);
+    j.at("model_path").get_to(t.model_path);
+    j.at("special_tokens").get_to(t.special_tokens);
 }

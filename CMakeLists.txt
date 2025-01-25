@@ -14,7 +14,7 @@ if(DOXYGEN_FOUND)
         VERBATIM)
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -38,8 +38,12 @@ else()
     message(STATUS "CUDA not found - building without CUDA support")
 endif()
 
-# Find required packages
-find_package(OpenMP)
+# Optional: Find OpenMP
+if(MSVC)
+    find_package(OpenMP QUIET)
+else()
+    find_package(OpenMP)
+endif()
 
 # Download and build nlohmann/json
 FetchContent_Declare(
@@ -47,13 +51,25 @@ FetchContent_Declare(
     URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
+set(FETCHCONTENT_QUIET OFF)
 FetchContent_MakeAvailable(json)
 
 # Include directories
 if(CUDAToolkit_FOUND)
     include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 endif()
-include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# Base include directories - single source of truth for all includes
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
+# Add tiktoken include directory globally
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tiktoken/cpp/include
+)
 
 # Core source files
 set(CORE_SOURCES
@@ -68,6 +84,8 @@ set(CORE_SOURCES
     src/gqa.cpp
     src/beam_search.cpp
     src/config.cpp
+    src/tokenizer.cpp
+    src/tiktoken_tokenizer.cpp
 )
 
 # Neural network components
@@ -81,7 +99,6 @@ set(NN_SOURCES
 
 # Training and utilities
 set(UTIL_SOURCES
-    src/tokenizer.cpp
     src/cache.cpp
     src/quantization.cpp
     src/optimizer.cpp
@@ -111,6 +128,12 @@ set(HEADERS
     include/tensor.hpp
 )
 
+# Add CUDA compilation flags
+if(CUDAToolkit_FOUND)
+    set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} -O3 -arch=sm_60)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+endif()
+
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}
@@ -119,6 +142,8 @@ add_library(transformer_lib
     ${ATTENTION_SOURCES}
     ${LM_SOURCES}
     ${OPTIMIZER_SOURCES}
+    src/data_augmentation.cpp
+    src/matrix.cpp
 )
 
 # Set CUDA specific properties for the library
@@ -216,19 +241,20 @@ if(CUDAToolkit_FOUND)
         LANGUAGE CUDA
     )
 
+    # Add CUDA include directories
+    target_include_directories(cuda_kernels
+        PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+
     # Link CUDA libraries to cuda_kernels
     target_link_libraries(cuda_kernels
         PUBLIC
         CUDA::cudart
         CUDA::cublas
         CUDA::curand
-    )
-
-    # Add CUDA include directories
-    target_include_directories(cuda_kernels
-        PRIVATE
-        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
-        ${PROJECT_SOURCE_DIR}/include/cuda
     )
 
     # Link cuda_kernels to transformer_lib
@@ -238,48 +264,48 @@ if(CUDAToolkit_FOUND)
     )
 endif()
 
-# Add to your sources list:
-target_sources(transformer_lib PRIVATE
-    src/tensor.cpp
+# Add SOURCES to the library instead
+target_sources(transformer_lib 
+    PRIVATE 
+    ${SOURCES}
 )
 
 find_package(nlohmann_json 3.2.0 REQUIRED)
 target_link_libraries(transformer_lib PRIVATE nlohmann_json::nlohmann_json)
 
-# Add CUDA include directories
-target_include_directories(transformer_lib
-    PRIVATE
-    ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
-    ${PROJECT_SOURCE_DIR}/include/cuda
+# Make sure the include directory is in the include path
+target_include_directories(transformer_lib 
+    PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
 )
 
-if(USE_CUDA)
-    enable_language(CUDA)
-    find_package(CUDAToolkit REQUIRED)
-    
-    # Set CUDA architectures
-    set(CMAKE_CUDA_ARCHITECTURES 86)
-    
-    # Add CUDA compilation flags
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
-    
-    # Add CUDA sources to library
-    target_sources(transformer_lib 
-        PRIVATE 
-        ${CUDA_SOURCES}
-    )
-    
-    # Link CUDA libraries
-    target_link_libraries(transformer_lib
-        PRIVATE
-        CUDA::cudart
-        CUDA::cublas
-        CUDA::curand
-    )
-    
-    # Define CUDA macro
-    target_compile_definitions(transformer_lib
-        PRIVATE
-        USE_CUDA
+add_definitions(
+    -DPAD_TOKEN_ID=0
+    -DUNK_TOKEN_ID=1
+    -DBOS_TOKEN_ID=2
+    -DEOS_TOKEN_ID=3
+    -DMASK_TOKEN_ID=4
+)
+
+# Simplified tiktoken data copying
+add_custom_command(TARGET transformer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/tiktoken_data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/third_party/tiktoken/tiktoken/tiktoken_data"
+        "${CMAKE_BINARY_DIR}/tiktoken_data"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/third_party/tiktoken/tiktoken/cl100k_base.vocab.json"
+        "${CMAKE_SOURCE_DIR}/third_party/tiktoken/tiktoken/cl100k_base.merges.json"
+        "${CMAKE_BINARY_DIR}/tiktoken_data/"
+    COMMENT "Copying tiktoken data files to build directory"
+)
+
+if(CUDAToolkit_FOUND)
+    # Set source file properties to compile with CUDA
+    set_source_files_properties(
+        src/lm_head.cpp
+        PROPERTIES
+        LANGUAGE CUDA
     )
 endif()

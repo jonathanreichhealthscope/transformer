@@ -18,6 +18,8 @@ TransformerLayer::TransformerLayer(const TransformerConfig& config_, size_t idx)
     std::cout << "Initializing TransformerLayer " << idx << " with GQA config:" << std::endl;
     std::cout << "- use_gqa: " << (config.use_gqa ? "true" : "false") << std::endl;
     std::cout << "- num_kv_heads: " << config.num_kv_heads << std::endl;
+    std::cout << "- hidden_size: " << config.hidden_size << std::endl;
+    std::cout << "- intermediate_size: " << config.intermediate_size << std::endl;
 
     self_attention = std::make_unique<MultiHeadAttention>(
         config.hidden_size, config.num_heads, config.head_dim, config.dropout_prob,
@@ -39,6 +41,29 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
 
     // Layer norm before attention
     Matrix normalized = attention_ln->forward(input);
+    
+    // Debug normalized output
+    float min_norm = std::numeric_limits<float>::infinity();
+    float max_norm = -std::numeric_limits<float>::infinity();
+    float sum_norm = 0.0f;
+    size_t nonzero_norm = 0;
+    
+    for (size_t i = 0; i < normalized.rows(); i++) {
+        for (size_t j = 0; j < normalized.cols(); j++) {
+            float val = normalized(i, j);
+            min_norm = std::min(min_norm, val);
+            max_norm = std::max(max_norm, val);
+            sum_norm += val;
+            if (std::abs(val) > 1e-6) nonzero_norm++;
+        }
+    }
+    
+    std::cout << "After attention layer norm:\n"
+              << "Min norm: " << min_norm << "\n"
+              << "Max norm: " << max_norm << "\n"
+              << "Mean norm: " << sum_norm / (normalized.rows() * normalized.cols()) << "\n"
+              << "Nonzero norm: " << nonzero_norm << "/" 
+              << (normalized.rows() * normalized.cols()) << "\n\n";
 
     // Cache the normalized input for attention backward pass
     std::string attn_key = "attn_norm_" + std::to_string(layer_idx);
@@ -46,12 +71,83 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
 
     // Self attention
     Matrix attention_output = self_attention->forward(normalized, mask, kv_cache);
+    
+    // Debug attention output
+    float min_attn = std::numeric_limits<float>::infinity();
+    float max_attn = -std::numeric_limits<float>::infinity();
+    float sum_attn = 0.0f;
+    size_t nonzero_attn = 0;
+    
+    for (size_t i = 0; i < attention_output.rows(); i++) {
+        for (size_t j = 0; j < attention_output.cols(); j++) {
+            float val = attention_output(i, j);
+            min_attn = std::min(min_attn, val);
+            max_attn = std::max(max_attn, val);
+            sum_attn += val;
+            if (std::abs(val) > 1e-6) nonzero_attn++;
+        }
+    }
+    
+    std::cout << "After self attention:\n"
+              << "Min attn: " << min_attn << "\n"
+              << "Max attn: " << max_attn << "\n"
+              << "Mean attn: " << sum_attn / (attention_output.rows() * attention_output.cols()) << "\n"
+              << "Nonzero attn: " << nonzero_attn << "/" 
+              << (attention_output.rows() * attention_output.cols()) << "\n\n";
+    
     if (training) {
         attention_output = attention_dropout->forward(attention_output, true);
     }
     Matrix residual = attention_output + normalized;
+    
+    // Debug residual
+    float min_res = std::numeric_limits<float>::infinity();
+    float max_res = -std::numeric_limits<float>::infinity();
+    float sum_res = 0.0f;
+    size_t nonzero_res = 0;
+    
+    for (size_t i = 0; i < residual.rows(); i++) {
+        for (size_t j = 0; j < residual.cols(); j++) {
+            float val = residual(i, j);
+            min_res = std::min(min_res, val);
+            max_res = std::max(max_res, val);
+            sum_res += val;
+            if (std::abs(val) > 1e-6) nonzero_res++;
+        }
+    }
+    
+    std::cout << "After residual connection:\n"
+              << "Min res: " << min_res << "\n"
+              << "Max res: " << max_res << "\n"
+              << "Mean res: " << sum_res / (residual.rows() * residual.cols()) << "\n"
+              << "Nonzero res: " << nonzero_res << "/" 
+              << (residual.rows() * residual.cols()) << "\n\n";
+    
     std::cout << "calculating attention ln" << std::endl;
     Matrix norm1 = attention_ln->forward(residual);
+    
+    // Debug norm1
+    float min_norm1 = std::numeric_limits<float>::infinity();
+    float max_norm1 = -std::numeric_limits<float>::infinity();
+    float sum_norm1 = 0.0f;
+    size_t nonzero_norm1 = 0;
+    
+    for (size_t i = 0; i < norm1.rows(); i++) {
+        for (size_t j = 0; j < norm1.cols(); j++) {
+            float val = norm1(i, j);
+            min_norm1 = std::min(min_norm1, val);
+            max_norm1 = std::max(max_norm1, val);
+            sum_norm1 += val;
+            if (std::abs(val) > 1e-6) nonzero_norm1++;
+        }
+    }
+    
+    std::cout << "After second attention layer norm:\n"
+              << "Min norm1: " << min_norm1 << "\n"
+              << "Max norm1: " << max_norm1 << "\n"
+              << "Mean norm1: " << sum_norm1 / (norm1.rows() * norm1.cols()) << "\n"
+              << "Nonzero norm1: " << nonzero_norm1 << "/" 
+              << (norm1.rows() * norm1.cols()) << "\n\n";
 
     // Cache the normalized input for feed forward backward pass
     std::string ffn_key = "ffn_norm_" + std::to_string(layer_idx);
@@ -60,12 +156,60 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
                   << norm1.cols() << std::endl;
     // Feed forward
     Matrix ff_output = feed_forward->forward(norm1);
+    
+    // Debug feed forward output
+    float min_ff = std::numeric_limits<float>::infinity();
+    float max_ff = -std::numeric_limits<float>::infinity();
+    float sum_ff = 0.0f;
+    size_t nonzero_ff = 0;
+    
+    for (size_t i = 0; i < ff_output.rows(); i++) {
+        for (size_t j = 0; j < ff_output.cols(); j++) {
+            float val = ff_output(i, j);
+            min_ff = std::min(min_ff, val);
+            max_ff = std::max(max_ff, val);
+            sum_ff += val;
+            if (std::abs(val) > 1e-6) nonzero_ff++;
+        }
+    }
+    
+    std::cout << "After feed forward:\n"
+              << "Min ff: " << min_ff << "\n"
+              << "Max ff: " << max_ff << "\n"
+              << "Mean ff: " << sum_ff / (ff_output.rows() * ff_output.cols()) << "\n"
+              << "Nonzero ff: " << nonzero_ff << "/" 
+              << (ff_output.rows() * ff_output.cols()) << "\n\n";
+    
     std::cout << "FF output dimensions: " << ff_output.rows() << "x" << ff_output.cols() << std::endl;
     if (training) {
         ff_output = ffn_dropout->forward(ff_output, true);
     }
     std::cout << "FF dropout dimensions: " << ff_output.rows() << "x" << ff_output.cols() << std::endl;
     residual = ff_output + norm1;
+    
+    // Debug final residual
+    float min_final = std::numeric_limits<float>::infinity();
+    float max_final = -std::numeric_limits<float>::infinity();
+    float sum_final = 0.0f;
+    size_t nonzero_final = 0;
+    
+    for (size_t i = 0; i < residual.rows(); i++) {
+        for (size_t j = 0; j < residual.cols(); j++) {
+            float val = residual(i, j);
+            min_final = std::min(min_final, val);
+            max_final = std::max(max_final, val);
+            sum_final += val;
+            if (std::abs(val) > 1e-6) nonzero_final++;
+        }
+    }
+    
+    std::cout << "After final residual:\n"
+              << "Min final: " << min_final << "\n"
+              << "Max final: " << max_final << "\n"
+              << "Mean final: " << sum_final / (residual.rows() * residual.cols()) << "\n"
+              << "Nonzero final: " << nonzero_final << "/" 
+              << (residual.rows() * residual.cols()) << "\n\n";
+    
     std::cout << "Residual dimensions: " << residual.rows() << "x" << residual.cols() << std::endl;
     return ffn_ln->forward(residual);
 }
@@ -167,8 +311,6 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
 
 // Transformer implementation
 Transformer::Transformer(const TransformerConfig& config) : config(config) {
-    std::cout << "\n=== Transformer::constructor START ===" << std::endl;
-
     // Initialize dropout with config probability
     dropout = std::make_unique<Dropout>(config.dropout_prob);
 
@@ -198,73 +340,157 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
 
     // Initialize the language model head with bounded values
     lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
-
-    std::cout << "=== Transformer::constructor END ===\n" << std::endl;
 }
 
-Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache) {
+Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer, bool use_cache) {
     static const bool use_fp16 = config.use_fp16;
 
-    // Get embeddings
-    Matrix embeddings = token_embedding->forward(input_tokens);
-    std::cout << "embedding dimensions: " << embeddings.shape() << std::endl;
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(embeddings);
-    }
+    // Store the input tokens and query
+    last_input_tokens_ = input_tokens;
+    last_input_query_ = original_query.empty() ? tokenizer.decode(input_tokens) : original_query;
 
-    // Add positional encodings
+    // Get embeddings and add positional encodings
+    Matrix embeddings = token_embedding->forward(input_tokens);
+    
+    // Debug embeddings
+    float min_emb = std::numeric_limits<float>::infinity();
+    float max_emb = -std::numeric_limits<float>::infinity();
+    float sum_emb = 0.0f;
+    size_t nonzero_emb = 0;
+    
+    for (size_t i = 0; i < embeddings.rows(); i++) {
+        for (size_t j = 0; j < embeddings.cols(); j++) {
+            float val = embeddings(i, j);
+            min_emb = std::min(min_emb, val);
+            max_emb = std::max(max_emb, val);
+            sum_emb += val;
+            if (std::abs(val) > 1e-6) nonzero_emb++;
+        }
+    }
+    
+    std::cout << "\nEmbedding Statistics:\n"
+              << "Min emb: " << min_emb << "\n"
+              << "Max emb: " << max_emb << "\n"
+              << "Mean emb: " << sum_emb / (embeddings.rows() * embeddings.cols()) << "\n"
+              << "Nonzero emb: " << nonzero_emb << "/" 
+              << (embeddings.rows() * embeddings.cols()) << "\n\n";
+    
     Matrix position_ids(input_tokens.size(), 1);
-    std::cout << "position_ids dimensions: " << position_ids.shape() << std::endl;
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
+    
+    // Batch process embeddings
     Matrix pos_encodings = pos_encoding->forward(position_ids);
-    std::cout << "pos_encodings dimensions: " << pos_encodings.shape() << std::endl;
+    
+    // Debug positional encodings
+    float min_pos = std::numeric_limits<float>::infinity();
+    float max_pos = -std::numeric_limits<float>::infinity();
+    float sum_pos = 0.0f;
+    size_t nonzero_pos = 0;
+    
+    for (size_t i = 0; i < pos_encodings.rows(); i++) {
+        for (size_t j = 0; j < pos_encodings.cols(); j++) {
+            float val = pos_encodings(i, j);
+            min_pos = std::min(min_pos, val);
+            max_pos = std::max(max_pos, val);
+            sum_pos += val;
+            if (std::abs(val) > 1e-6) nonzero_pos++;
+        }
+    }
+    
+    std::cout << "Positional Encoding Statistics:\n"
+              << "Min pos: " << min_pos << "\n"
+              << "Max pos: " << max_pos << "\n"
+              << "Mean pos: " << sum_pos / (pos_encodings.rows() * pos_encodings.cols()) << "\n"
+              << "Nonzero pos: " << nonzero_pos << "/" 
+              << (pos_encodings.rows() * pos_encodings.cols()) << "\n\n";
+    
     if (use_fp16) {
+        HalfPrecisionTraining::convert_to_fp16(embeddings);
         HalfPrecisionTraining::convert_to_fp16(pos_encodings);
     }
-
     embeddings += pos_encodings;
-    std::cout << "embeddings + pos_encodings dimensions: " << embeddings.shape() << std::endl;
+    
     // Create causal mask for next-token prediction
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
     
-    // Forward through layers with stability checks
+    // Forward through layers with minimal synchronization
     hidden_states = embeddings;
-    m_layer_activations.clear();                // Clear previous activations
-    m_layer_activations.reserve(layers.size()); // Reserve space for efficiency
+    m_layer_activations.clear();
+    m_layer_activations.reserve(layers.size());
 
-    // Add dropout after embeddings
     if (training && dropout) {
         hidden_states = dropout->forward(hidden_states, true);
-        std::cout << "hidden_states dimensions after dropout: " << hidden_states.shape() << std::endl;
     }
 
+    // Process layers with minimal synchronization
     for (size_t i = 0; i < layers.size(); ++i) {
         try {
             m_layer_activations.push_back(hidden_states);
+            
+            // Debug hidden states before layer
+            float min_hidden = std::numeric_limits<float>::infinity();
+            float max_hidden = -std::numeric_limits<float>::infinity();
+            float sum_hidden = 0.0f;
+            size_t nonzero_hidden = 0;
+            
+            for (size_t r = 0; r < hidden_states.rows(); r++) {
+                for (size_t c = 0; c < hidden_states.cols(); c++) {
+                    float val = hidden_states(r, c);
+                    min_hidden = std::min(min_hidden, val);
+                    max_hidden = std::max(max_hidden, val);
+                    sum_hidden += val;
+                    if (std::abs(val) > 1e-6) nonzero_hidden++;
+                }
+            }
+            
+            std::cout << "Hidden States Statistics before layer " << i << ":\n"
+                      << "Min hidden: " << min_hidden << "\n"
+                      << "Max hidden: " << max_hidden << "\n"
+                      << "Mean hidden: " << sum_hidden / (hidden_states.rows() * hidden_states.cols()) << "\n"
+                      << "Nonzero hidden: " << nonzero_hidden << "/" 
+                      << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
+            
             hidden_states = layers[i]->forward(hidden_states, mask,
-                                               use_cache ? std::optional<KVCache>(m_kv_caches[i])
-                                                         : std::nullopt);
-            std::cout << "hidden_states dimensions after layer " << i << ": " << hidden_states.shape() << std::endl;
-            // Convert back to FP32 at the end
-            if (use_fp16 && i == layers.size() - 1) {
-                HalfPrecisionTraining::convert_to_fp32(hidden_states);
-            }
-
-            // Add dropout between layers
-            if (training && dropout && i < layers.size() - 1) {
-                hidden_states = dropout->forward(hidden_states, true);
-            }
+                                             use_cache ? std::optional<KVCache>(m_kv_caches[i])
+                                                     : std::nullopt);
         } catch (const std::exception& e) {
             std::cerr << "Error in layer " << i << ": " << e.what() << std::endl;
             throw;
         }
     }
 
-    // Store final hidden states for backward pass
-    last_hidden_states = hidden_states;
-
+    // Final normalization
+    hidden_states = final_ln->forward(hidden_states);
+    
+    // Debug final hidden states
+    float min_final = std::numeric_limits<float>::infinity();
+    float max_final = -std::numeric_limits<float>::infinity();
+    float sum_final = 0.0f;
+    size_t nonzero_final = 0;
+    
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < hidden_states.cols(); j++) {
+            float val = hidden_states(i, j);
+            min_final = std::min(min_final, val);
+            max_final = std::max(max_final, val);
+            sum_final += val;
+            if (std::abs(val) > 1e-6) nonzero_final++;
+        }
+    }
+    
+    std::cout << "Final Hidden States Statistics:\n"
+              << "Min final: " << min_final << "\n"
+              << "Max final: " << max_final << "\n"
+              << "Mean final: " << sum_final / (hidden_states.rows() * hidden_states.cols()) << "\n"
+              << "Nonzero final: " << nonzero_final << "/" 
+              << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
+    
+    // Single sync point at the end
+    CUDA_CHECK(cudaGetLastError());
+    cudaDeviceSynchronize();
+    
     return hidden_states;
 }
 
@@ -299,11 +525,12 @@ void Transformer::backward(std::vector<Matrix>& outputs, const Matrix& target_di
 }
 
 void Transformer::train_step(const std::vector<std::vector<int>>& input_tokens,
-                           const Matrix& target_distribution) {
+                           const Matrix& target_distribution,
+                           const Tokenizer& tokenizer) {
     // Forward pass
     std::vector<Matrix> batch_outputs;
     for (const auto& tokens : input_tokens) {
-        batch_outputs.push_back(forward(tokens));
+        batch_outputs.push_back(forward(tokens, "", tokenizer));
     }
     
     // Debug weight updates

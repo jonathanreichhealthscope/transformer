@@ -11,9 +11,21 @@
 #include "layer_norm.hpp"
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
+#include "../include/tokenizer.hpp"
 #include <functional>
 #include <memory>
 #include <vector>
+
+// Forward declarations
+class TransformerLayer;
+class TokenEmbedding;
+class PositionalEncoding;
+class LayerNorm;
+class LanguageModelHead;
+class Dropout;
+class KVCache;
+class Matrix;
+class Tokenizer;
 
 /**
  * @brief A single layer of the Transformer model implementing the standard Transformer architecture.
@@ -181,6 +193,8 @@ class Transformer {
     std::unique_ptr<LanguageModelHead> lm_head;       ///< Output layer for token prediction
     std::unique_ptr<Dropout> dropout;                 ///< Dropout layer
     bool cuda_initialized = false;                    ///< Whether CUDA has been initialized
+    std::vector<int> last_input_tokens_;             ///< Store the last input tokens
+    std::string last_input_query_;                   ///< Store the original input query
 
     // Cached states for backward pass
     Matrix hidden_states;
@@ -231,10 +245,12 @@ class Transformer {
     /**
      * @brief Performs the forward pass through the transformer.
      * @param input_tokens Input token sequence
+     * @param original_query The original input query string
+     * @param tokenizer The tokenizer instance to use for decoding
      * @param use_cache Whether to use key-value caching for inference
      * @return Output logits for each position
      */
-    Matrix forward(const std::vector<int>& input_tokens, bool use_cache = false);
+    Matrix forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer, bool use_cache = false);
 
     /**
      * @brief Trains the transformer on the given dataset.
@@ -336,6 +352,17 @@ class Transformer {
     void train_step(const std::vector<std::vector<int>>& input_tokens, 
                     const Matrix& target_distribution);
 
+    void train_step(const std::vector<std::vector<int>>& input_tokens, 
+                    const Matrix& target_distribution,
+                    const Tokenizer& tokenizer);
+
     void save_checkpoint(const std::string& path);
-    void load_checkpoint(const std::string& path);
+
+    const std::vector<int>& get_last_input() const {
+        return last_input_tokens_;
+    }
+
+    const std::string& get_last_query() const {
+        return last_input_query_;
+    }
 };

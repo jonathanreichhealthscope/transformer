@@ -201,14 +201,14 @@ extern "C" {
             // Allocate scores in shared memory
             extern __shared__ float scores[];
             
+            // Compute attention scores for this head
             for (int j = 0; j < seq_len; j++) {
                 float score = 0.0f;
                 for (int d = 0; d < head_dim; d++) {
-                    // Correct indexing for multi-head attention
                     int q_idx = batch_offset + head_offset + d;
-                    int k_idx = batch_offset + head_offset + j * head_dim + d;
+                    int k_idx = j * hidden_dim + head_offset + d;  // Fixed K indexing
                     
-                    if (q_idx < batch_size * hidden_dim && k_idx < batch_size * hidden_dim) {
+                    if (q_idx < batch_size * hidden_dim && k_idx < seq_len * hidden_dim) {
                         score += Q[q_idx] * K[k_idx];
                     }
                 }
@@ -231,13 +231,20 @@ extern "C" {
                 scores[j] /= sum;
             }
 
-            // Compute weighted sum
+            // Compute weighted sum with correct output indexing
             for (int d = 0; d < head_dim; d++) {
                 float weighted_sum = 0.0f;
                 for (int j = 0; j < seq_len; j++) {
-                    weighted_sum += scores[j] * V[batch_offset + j * head_dim + d];
+                    int v_idx = j * hidden_dim + head_offset + d;  // Fixed V indexing
+                    if (v_idx < seq_len * hidden_dim) {
+                        weighted_sum += scores[j] * V[v_idx];
+                    }
                 }
-                output[batch_offset + head_offset + d] = weighted_sum;
+                // Write to the correct output position
+                int out_idx = batch_offset + head_offset + d;
+                if (out_idx < batch_size * hidden_dim) {
+                    output[out_idx] = weighted_sum;
+                }
             }
         }
     }

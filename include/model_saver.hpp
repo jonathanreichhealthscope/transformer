@@ -1,10 +1,11 @@
-#ifndef MODEL_SAVER_HPP
-#define MODEL_SAVER_HPP
+#pragma once
 
 #include "logger.hpp"
 #include "transformer.hpp"
+#include "vocabulary.hpp"
 #include <memory>
 #include <string>
+#include <nlohmann/json.hpp>
 
 /**
  * @brief Manages model checkpointing and persistence.
@@ -104,8 +105,16 @@ class ModelSaver {
      */
     bool loadCheckpoint(Transformer& transformer, const std::string& checkpoint_path);
 
+    /**
+     * @brief Saves vocabulary to a file
+     * @param path Path to save the vocabulary
+     * @param vocab The vocabulary to save
+     */
+    void save_vocabulary(const std::string& path, const Vocabulary& vocab);
+
   private:
     Logger& logger;  ///< Logger for error and status messages
+    nlohmann::json special_tokens_json;  // Add this member
 
     /**
      * @brief Creates directory structure for model storage.
@@ -145,5 +154,3 @@ class ModelSaver {
     bool readMetadata(const std::string& directory, const std::string& model_name,
                       TransformerConfig& config) const;
 };
-
-#endif // MODEL_SAVER_HPP

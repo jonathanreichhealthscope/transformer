@@ -28,6 +28,8 @@ Matrix LayerNorm::forward(const Matrix& input) {
 #endif
             // CPU implementation
             Matrix output(input.rows(), input.cols());
+            const float MIN_VAR = 1e-6f;  // Minimum variance threshold
+            
             for (size_t i = 0; i < input.rows(); ++i) {
                 float mean = 0.0f;
                 float var = 0.0f;
@@ -43,7 +45,7 @@ Matrix LayerNorm::forward(const Matrix& input) {
                     float diff = input(i, j) - mean;
                     var += diff * diff;
                 }
-                var /= input.cols();
+                var = std::max(var / input.cols(), MIN_VAR);  // Apply minimum variance threshold
                 
                 // Normalize
                 float std = std::sqrt(var + eps_);
