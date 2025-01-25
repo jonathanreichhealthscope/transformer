@@ -391,9 +391,13 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 }
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
-    // Initialize beam search with parameters tuned for diversity and short sequences
+    // Calculate beam width to ensure enough diverse candidates
+    size_t total_beam_width = std::max(transformer.getConfig().beam_search.beam_size, static_cast<size_t>(k * 3));
+    size_t num_groups = 3;  // Split beams into 3 groups for more diversity
+    size_t beams_per_group = total_beam_width / num_groups;
+    
     BeamSearch beam_search(
-        std::max(transformer.getConfig().beam_search.beam_size, static_cast<size_t>(k * 2)),  // Ensure enough candidates
+        beams_per_group,  // Use smaller beam width per group
         transformer.getConfig().beam_search.length_penalty,
         transformer.getConfig().beam_search.temperature,
         transformer.getConfig().beam_search.diversity_strength,
@@ -401,123 +405,127 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         transformer.getConfig().beam_search.top_p
     );
 
-    // Convert logits matrix to vector for beam search
+    // Store predictions from each group
+    std::vector<std::vector<BeamSearch::Hypothesis>> group_hypotheses;
     std::vector<float> initial_logits;
     initial_logits.reserve(logits.cols());
-    for (int j = 0; j < logits.cols(); j++) {
-        initial_logits.push_back(logits(logits.rows() - 1, j) / transformer.getConfig().beam_search.initial_temperature);
-    }
     
-    // Add stronger noise to initial logits to increase diversity
-    for (float& logit : initial_logits) {
-        float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * transformer.getConfig().beam_search.initial_noise_scale;
-        logit += noise;
-    }
-    
-    // Store original input tokens before we start generating
+    // Get original input
     std::vector<int> original_input = transformer.get_last_input();
     std::string original_query = transformer.get_last_query();
     size_t input_length = original_input.size();
-    
-    // Create next token function that uses the transformer with caching
-    auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) -> std::vector<float> {
-        try {
-            // Get next token logits from transformer
-            Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
-            Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
-            
-            // Convert to vector and add noise for diversity
-            std::vector<float> logits_vec;
-            logits_vec.reserve(next_logits.cols());
-            for (int j = 0; j < next_logits.cols(); j++) {
-                float logit = next_logits(next_logits.rows() - 1, j);
-                float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f;
-                logits_vec.push_back(logit + noise);
-            }
-            return logits_vec;
-        } catch (const std::exception& e) {
-            std::cerr << "Error in next_token_fn: " << e.what() << std::endl;
-            return std::vector<float>();
+
+    // Run beam search for each group with different initial conditions
+    for (size_t group = 0; group < num_groups; group++) {
+        // Reset and prepare initial logits with group-specific noise
+        initial_logits.clear();
+        for (int j = 0; j < logits.cols(); j++) {
+            float base_logit = logits(logits.rows() - 1, j) / transformer.getConfig().beam_search.initial_temperature;
+            // Add group-specific noise to encourage diversity between groups
+            float group_noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
+                              transformer.getConfig().beam_search.initial_noise_scale * 
+                              (1.0f + group * 0.5f);  // Increase noise for later groups
+            initial_logits.push_back(base_logit + group_noise);
         }
-    };
-    
-    // Initialize the cache with the input sequence
-    if (!original_input.empty()) {
-        Matrix initial_hidden = transformer.forward(original_input, original_query, tokenizer, true);
+        
+        // Create next token function with group-specific noise
+        auto next_token_fn = [&transformer, &tokenizer, group](const std::vector<int>& tokens) -> std::vector<float> {
+            try {
+                Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
+                Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
+                
+                std::vector<float> logits_vec;
+                logits_vec.reserve(next_logits.cols());
+                for (int j = 0; j < next_logits.cols(); j++) {
+                    float logit = next_logits(next_logits.rows() - 1, j);
+                    // Add group-specific noise
+                    float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
+                                transformer.getConfig().beam_search.token_noise_scale * 
+                                (1.0f + group * 0.3f);  // Increase noise for later groups
+                    logits_vec.push_back(logit + noise);
+                }
+                return logits_vec;
+            } catch (const std::exception& e) {
+                std::cerr << "Error in next_token_fn: " << e.what() << std::endl;
+                return std::vector<float>();
+            }
+        };
+
+        // Run beam search for this group
+        const size_t MAX_LENGTH = input_length + 4;
+        auto group_results = beam_search.search(
+            initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
+        group_hypotheses.push_back(group_results);
     }
-    
-    // Generate hypotheses with a very short max length to ensure we get at most 2 words
-    const size_t MAX_LENGTH = input_length + 4;  // Allow for up to 4 tokens (usually 2 words)
-    std::vector<BeamSearch::Hypothesis> hypotheses = beam_search.search(
-        initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
-    
-    // Clear the cache after we're done
+
+    // Clear cache after all groups are done
     transformer.clear_kv_cache();
-    
+
+    // Merge and process results from all groups
+    std::vector<std::pair<std::string, float>> valid_predictions;
+    std::unordered_set<std::string> used_first_tokens;
+
+    // Process hypotheses from each group
+    for (const auto& group_results : group_hypotheses) {
+        for (const auto& hyp : group_results) {
+            try {
+                if (hyp.tokens.size() <= input_length) continue;
+                
+                // Get generated tokens (excluding input)
+                std::vector<int> generated_tokens(
+                    hyp.tokens.begin() + input_length,
+                    hyp.tokens.end()
+                );
+                
+                // Decode tokens individually and join with spaces
+                std::string decoded;
+                for (size_t i = 0; i < generated_tokens.size(); i++) {
+                    std::string token = tokenizer.decode({generated_tokens[i]});
+                    if (!token.empty()) {
+                        if (!decoded.empty() && token[0] != ' ') {
+                            decoded += " ";
+                        }
+                        decoded += token;
+                    }
+                }
+                
+                if (decoded.empty()) continue;
+                
+                // Add initial space if needed
+                if (decoded[0] != ' ') {
+                    decoded = " " + decoded;
+                }
+                
+                // Get first token for diversity check
+                size_t space_pos = decoded.find(' ', 1);
+                std::string first_token = space_pos == std::string::npos ? 
+                                        decoded.substr(1) : decoded.substr(1, space_pos - 1);
+                
+                // Only add if we haven't seen this first token
+                if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
+                    used_first_tokens.insert(first_token);
+                    valid_predictions.push_back({decoded, hyp.score});
+                    
+                    if (valid_predictions.size() >= k) break;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
+                continue;
+            }
+        }
+        if (valid_predictions.size() >= k) break;
+    }
+
     // Print predictions
     std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
     std::cout << "Top " << k << " predicted sequences:" << std::endl;
     
-    // Process all hypotheses to find valid ones with different first tokens
-    std::vector<std::pair<std::string, float>> valid_predictions;
-    std::unordered_set<std::string> used_first_tokens;
-    
-    for (const auto& hyp : hypotheses) {
-        try {
-            if (hyp.tokens.size() <= input_length) continue;
-            
-            // Get generated tokens (excluding input)
-            std::vector<int> generated_tokens(
-                hyp.tokens.begin() + input_length,
-                hyp.tokens.end()
-            );
-            
-            // Decode tokens individually and join with spaces
-            std::string decoded;
-            for (size_t i = 0; i < generated_tokens.size(); i++) {
-                std::string token = tokenizer.decode({generated_tokens[i]});
-                if (!token.empty()) {
-                    // Add space between tokens, but not at the start
-                    if (!decoded.empty() && token[0] != ' ') {
-                        decoded += " ";
-                    }
-                    decoded += token;
-                }
-            }
-            
-            if (decoded.empty()) continue;
-            
-            // Add initial space if needed
-            if (decoded[0] != ' ') {
-                decoded = " " + decoded;
-            }
-            
-            // Get first token for diversity check (after initial space)
-            size_t space_pos = decoded.find(' ', 1);
-            std::string first_token = space_pos == std::string::npos ? 
-                                    decoded.substr(1) : decoded.substr(1, space_pos - 1);
-            
-            // Only add if we haven't seen this first token
-            if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
-                used_first_tokens.insert(first_token);
-                valid_predictions.push_back({decoded, hyp.score});
-                
-                if (valid_predictions.size() >= k) break;
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
-            continue;
-        }
-    }
-    
-    // Print valid predictions
     for (size_t i = 0; i < valid_predictions.size(); i++) {
         const auto& [prediction, score] = valid_predictions[i];
         std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
                  << std::fixed << std::setprecision(4) << score << ")" << std::endl;
     }
-    
-    // If we didn't get enough predictions, print a warning
+
     if (valid_predictions.size() < k) {
         std::cout << "\nWarning: Only found " << valid_predictions.size() 
                  << " unique predictions." << std::endl;
