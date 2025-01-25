@@ -344,15 +344,28 @@ void Utils::print_matrix(const Matrix& m, const std::string& name, size_t max_ro
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, size_t k) {
     if (logits.empty()) return;
 
+    // Verify tokenizer is working
+    std::cout << "\nTokenizer check:\n";
+    std::vector<std::string> test_tokens = {"the", "to", "and", "a", "in"};
+    for (const auto& word : test_tokens) {
+        std::vector<int> ids = tokenizer.encode(word);
+        std::string decoded = tokenizer.decode(ids);
+        std::cout << "Test word: \"" << word << "\" -> encoded: ";
+        for (int id : ids) std::cout << id << " ";
+        std::cout << " -> decoded: \"" << decoded << "\"\n";
+    }
+    std::cout << "Vocab size: " << tokenizer.vocab_size() << "\n\n";
+
     const size_t last_pos = logits.rows() - 1;
     const size_t vocab_size = logits.cols();
-    const float temperature = 0.7f;  // Temperature < 1.0 makes distribution more peaked
+    const float temperature = 0.7f;
 
     // Find max logit for numerical stability
     float max_logit = -std::numeric_limits<float>::infinity();
     for (size_t j = 0; j < vocab_size; ++j) {
         max_logit = std::max(max_logit, logits(last_pos, j));
     }
+    std::cout << "Max logit found: " << max_logit << "\n";
 
     // First pass: compute sum for softmax with temperature scaling
     float sum_exp = 0.0f;
@@ -361,21 +374,37 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         exp_values[j] = std::exp((logits(last_pos, j) - max_logit) / temperature);
         sum_exp += exp_values[j];
     }
+    std::cout << "Sum of exponentials: " << sum_exp << "\n";
 
     // Use max heap to get top k probabilities
     std::priority_queue<std::pair<float, int>> max_heap;
+    size_t valid_tokens = 0;
+    size_t total_tokens = 0;
     
     // Second pass: compute probabilities and filter tokens
     for (size_t j = 0; j < vocab_size; ++j) {
         float prob = exp_values[j] / sum_exp;
-        if (prob < 1e-4f) continue;  // Skip very low probability tokens
+        total_tokens++;
         
         std::string token = tokenizer.decode({static_cast<int>(j)});
-        if (!token.empty() && !starts_with(token, "<") && 
-            !std::all_of(token.begin(), token.end(), ::isspace)) {
-            max_heap.push({prob, j});
+        bool is_valid = !token.empty() && !starts_with(token, "<") && 
+                       !std::all_of(token.begin(), token.end(), ::isspace);
+        
+        if (is_valid) {
+            valid_tokens++;
+            if (prob >= 1e-4f) {  // Only add if probability is above threshold
+                max_heap.push({prob, j});
+                if (max_heap.size() <= 5) {  // Debug print first 5 tokens considered
+                    std::cout << "Considered token: \"" << token << "\" with prob: " 
+                             << prob << "\n";
+                }
+            }
         }
     }
+    
+    std::cout << "Total tokens processed: " << total_tokens << "\n";
+    std::cout << "Valid tokens found: " << valid_tokens << "\n";
+    std::cout << "Tokens above threshold: " << max_heap.size() << "\n";
     
     // Extract top k results
     std::cout << "\nTop " << k << " predictions:\n";

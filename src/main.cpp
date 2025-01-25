@@ -48,7 +48,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Loaded " << training_pairs.size() << " training pairs" << std::endl;
 
         // Initialize tokenizer with config
-        tokenizer = std::make_unique<Tokenizer>();
+        std::cout << "Initializing tiktoken with encoding: gpt2" << std::endl;
+        tokenizer = std::make_unique<Tokenizer>("gpt2");
         
         try {
             tokenizer->initialize();  // Initialize with default encoding

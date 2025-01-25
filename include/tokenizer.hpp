@@ -8,7 +8,12 @@
 
 class Tokenizer {
 public:
-    Tokenizer();
+    // Default constructor
+    Tokenizer() : encoding_name_("gpt2") {}
+    
+    // Constructor with encoding type
+    explicit Tokenizer(const std::string& encoding) : encoding_name_(encoding) {}
+    
     ~Tokenizer() = default;
 
     // Core tokenization methods
@@ -26,10 +31,8 @@ public:
     
     size_t vocab_size() const { return tokenizer_->vocab_size(); }
 
-    // Initialize with specific encoding
-    void initialize(const std::string& encoding_name = "cl100k_base") {
-        tokenizer_->initialize(encoding_name);
-    }
+    // Initialize tokenizer
+    void initialize();
 
     bool is_initialized() const { return tokenizer_ && tokenizer_->is_initialized(); }
 
@@ -59,6 +62,7 @@ public:
 
 private:
     std::unique_ptr<TiktokenTokenizer> tokenizer_;
+    std::string encoding_name_;
     
     // Vocabulary loading/saving helpers
     static std::unique_ptr<TiktokenTokenizer> load_vocabulary(std::istream& is);
