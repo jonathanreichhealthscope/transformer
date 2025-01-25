@@ -1,14 +1,17 @@
 #include "../include/utils.hpp"
+#include "../include/beam_search.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <set>
 #include <queue>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <sstream>
 #include <set>
+#include <unordered_set>
 #include "../include/data_augmentation.hpp"
 
 bool starts_with(const std::string& str, const std::string& prefix) {
@@ -341,82 +344,96 @@ void Utils::print_matrix(const Matrix& m, const std::string& name, size_t max_ro
     }
 }
 
-void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, size_t k) {
-    if (logits.empty()) return;
-
-    // Verify tokenizer is working
-    std::cout << "\nTokenizer check:\n";
-    std::vector<std::string> test_tokens = {"the", "to", "and", "a", "in"};
-    for (const auto& word : test_tokens) {
-        std::vector<int> ids = tokenizer.encode(word);
-        std::string decoded = tokenizer.decode(ids);
-        std::cout << "Test word: \"" << word << "\" -> encoded: ";
-        for (int id : ids) std::cout << id << " ";
-        std::cout << " -> decoded: \"" << decoded << "\"\n";
-    }
-    std::cout << "Vocab size: " << tokenizer.vocab_size() << "\n\n";
-
-    const size_t last_pos = logits.rows() - 1;
-    const size_t vocab_size = logits.cols();
-    const float temperature = 0.7f;
-
-    // Find max logit for numerical stability
-    float max_logit = -std::numeric_limits<float>::infinity();
-    for (size_t j = 0; j < vocab_size; ++j) {
-        max_logit = std::max(max_logit, logits(last_pos, j));
-    }
-    std::cout << "Max logit found: " << max_logit << "\n";
-
-    // First pass: compute sum for softmax with temperature scaling
-    float sum_exp = 0.0f;
-    std::vector<float> exp_values(vocab_size);
-    for (size_t j = 0; j < vocab_size; ++j) {
-        exp_values[j] = std::exp((logits(last_pos, j) - max_logit) / temperature);
-        sum_exp += exp_values[j];
-    }
-    std::cout << "Sum of exponentials: " << sum_exp << "\n";
-
-    // Use max heap to get top k probabilities
-    std::priority_queue<std::pair<float, int>> max_heap;
-    size_t valid_tokens = 0;
-    size_t total_tokens = 0;
+// Helper function to get multi-token predictions
+std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
+    const Matrix& logits, const Tokenizer& tokenizer, int beam_width) {
     
-    // Second pass: compute probabilities and filter tokens
-    for (size_t j = 0; j < vocab_size; ++j) {
-        float prob = exp_values[j] / sum_exp;
-        total_tokens++;
+    const int last_pos = logits.rows() - 1;
+    std::vector<std::pair<std::string, float>> predictions;
+    
+    // Get top tokens and their probabilities
+    std::vector<std::pair<float, int>> token_probs;
+    for (int j = 0; j < logits.cols(); j++) {
+        token_probs.push_back({logits(last_pos, j), j});
+    }
+    
+    // Sort by probability
+    std::sort(token_probs.begin(), token_probs.end(), std::greater<>());
+    
+    // Take top beam_width tokens
+    for (int i = 0; i < std::min(beam_width, static_cast<int>(token_probs.size())); i++) {
+        int token_id = token_probs[i].second;
+        float prob = token_probs[i].first;
         
-        std::string token = tokenizer.decode({static_cast<int>(j)});
-        bool is_valid = !token.empty() && !starts_with(token, "<") && 
-                       !std::all_of(token.begin(), token.end(), ::isspace);
+        // Skip special tokens
+        if (tokenizer.is_special_token(token_id)) continue;
         
-        if (is_valid) {
-            valid_tokens++;
-            if (prob >= 1e-4f) {  // Only add if probability is above threshold
-                max_heap.push({prob, j});
-                if (max_heap.size() <= 5) {  // Debug print first 5 tokens considered
-                    std::cout << "Considered token: \"" << token << "\" with prob: " 
-                             << prob << "\n";
-                }
-            }
+        // Decode token
+        std::vector<int> token_seq = {token_id};
+        std::string decoded = tokenizer.decode(token_seq);
+        
+        if (!decoded.empty()) {
+            predictions.push_back({decoded, prob});
         }
     }
     
-    std::cout << "Total tokens processed: " << total_tokens << "\n";
-    std::cout << "Valid tokens found: " << valid_tokens << "\n";
-    std::cout << "Tokens above threshold: " << max_heap.size() << "\n";
+    return predictions;
+}
+
+void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
+    // Initialize beam search with reasonable parameters
+    BeamSearch beam_search(k, 0.6f, 0.7f, 0.5f, 40, 0.9f);
     
-    // Extract top k results
-    std::cout << "\nTop " << k << " predictions:\n";
-    size_t count = 0;
-    while (!max_heap.empty() && count < k) {
-        auto [prob, token_id] = max_heap.top();
-        max_heap.pop();
+    // Convert logits matrix to vector for beam search
+    std::vector<float> initial_logits;
+    for (int j = 0; j < logits.cols(); j++) {
+        initial_logits.push_back(logits(logits.rows() - 1, j));
+    }
+    
+    // Create next token function that uses the transformer
+    auto next_token_fn = [&transformer](const std::vector<int>& tokens) -> std::vector<float> {
+        Matrix next_hidden = transformer.forward(tokens);
+        Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
         
-        std::string token = tokenizer.decode({token_id});
-        std::cout << count + 1 << ". \"" << token << "\" (probability: " 
-                 << std::fixed << std::setprecision(4) << prob << ")\n";
-        count++;
+        // Convert last row of logits to vector
+        std::vector<float> logits_vec;
+        for (int j = 0; j < next_logits.cols(); j++) {
+            logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
+        }
+        return logits_vec;
+    };
+    
+    // Perform beam search
+    std::vector<BeamSearch::Hypothesis> hypotheses = beam_search.search(
+        initial_logits, next_token_fn, 10, tokenizer.get_eos_token_id());
+    
+    // Print predictions
+    std::cout << "\nTop " << k << " predicted sequences:" << std::endl;
+    int predictions_shown = 0;
+    
+    for (const auto& hyp : hypotheses) {
+        if (predictions_shown >= k) break;
+        
+        // Decode the token sequence
+        std::string decoded = tokenizer.decode(hyp.tokens);
+        
+        // Skip empty sequences
+        if (decoded.empty()) continue;
+        
+        // Handle GPT-2's word boundary token (Ġ)
+        if (decoded.find("Ġ") == 0) {
+            decoded = decoded.substr(1);  // Remove the Ġ prefix
+            decoded = " " + decoded;      // Replace with actual space
+        }
+        
+        // Print the prediction with its score
+        std::cout << predictions_shown + 1 << ". \"" << decoded << "\" (score=" 
+                  << hyp.score << ")" << std::endl;
+        predictions_shown++;
+    }
+    
+    if (predictions_shown < k) {
+        std::cout << "(Not enough valid predictions found)" << std::endl;
     }
 }
 

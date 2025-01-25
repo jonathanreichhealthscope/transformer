@@ -146,6 +146,35 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
         Matrix K = key_proj.forward(input);
         Matrix V = value_proj.forward(input);
         
+        // Debug Q, K, V projections
+        auto debug_matrix = [](const std::string& name, const Matrix& mat) {
+            float min_val = std::numeric_limits<float>::infinity();
+            float max_val = -std::numeric_limits<float>::infinity();
+            float sum_val = 0.0f;
+            size_t nonzero_val = 0;
+            
+            for (size_t i = 0; i < mat.rows(); i++) {
+                for (size_t j = 0; j < mat.cols(); j++) {
+                    float val = mat(i, j);
+                    min_val = std::min(min_val, val);
+                    max_val = std::max(max_val, val);
+                    sum_val += val;
+                    if (std::abs(val) > 1e-6) nonzero_val++;
+                }
+            }
+            
+            std::cout << name << " Statistics:\n"
+                      << "Min: " << min_val << "\n"
+                      << "Max: " << max_val << "\n"
+                      << "Mean: " << sum_val / (mat.rows() * mat.cols()) << "\n"
+                      << "Nonzero: " << nonzero_val << "/" 
+                      << (mat.rows() * mat.cols()) << "\n\n";
+        };
+        
+        debug_matrix("Query Projection", Q);
+        debug_matrix("Key Projection", K);
+        debug_matrix("Value Projection", V);
+        
         // Get dimensions
         size_t batch_size = input.rows();
         size_t hidden_size = input.cols();  // This should be the model's hidden_size
@@ -158,19 +187,28 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
             
             // Batch compute attention scores and softmax
             cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
+            debug_matrix("Raw Attention Scores", scores);
+            
             if (mask) {
                 scores += mask.value();
+                debug_matrix("Masked Attention Scores", scores);
             }
             cuda::apply_softmax(scores);
+            debug_matrix("Softmax Attention Scores", scores);
             
             // Single synchronization point after main computation
             Matrix output(batch_size, hidden_size);
             cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
+            debug_matrix("Attention Output", output);
+            
             CUDA_CHECK(cudaGetLastError());
             cudaDeviceSynchronize();  // Single sync point
             
             // Final projection
-            return output_proj.forward(output);
+            Matrix final_output = output_proj.forward(output);
+            debug_matrix("Final Output", final_output);
+            
+            return final_output;
             
         } catch (const std::runtime_error& e) {
             std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
@@ -178,20 +216,29 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
             // CPU fallback implementation
             Matrix scores = matmul(Q, K.transpose());
             scores *= (1.0f / std::sqrt(head_dim));
+            debug_matrix("Raw Attention Scores", scores);
 
             if (mask) {
                 scores += mask.value();
+                debug_matrix("Masked Attention Scores", scores);
             }
 
             scores.apply_softmax();
+            debug_matrix("Softmax Attention Scores", scores);
+            
             Matrix output = matmul(scores, V);
+            debug_matrix("Attention Output", output);
             
             // Ensure output has correct dimensions before projection
             if (output.cols() != hidden_size) {
                 throw std::runtime_error("Attention output has wrong dimensions: " + 
                     std::to_string(output.cols()) + " vs expected " + std::to_string(hidden_size));
             }
-            return output_proj.forward(output);
+            
+            Matrix final_output = output_proj.forward(output);
+            debug_matrix("Final Output", final_output);
+            
+            return final_output;
 #ifdef USE_CUDA
         }
 #endif
@@ -338,21 +385,21 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
     std::cout << "\nInitializing weights..." << std::endl;
     float scale = std::sqrt(2.0f / (hidden_size + hidden_size));
 
-    query_proj.randomize(-scale, scale);
-    key_proj.randomize(-scale, scale);
-    value_proj.randomize(-scale, scale);
-    output_proj.randomize(-scale, scale);
+    query_proj.initialize_random(scale);
+    key_proj.initialize_random(scale);
+    value_proj.initialize_random(scale);
+    output_proj.initialize_random(scale);
 
-    // Initialize biases with zero
+    // Initialize biases to small non-zero values
     std::cout << "\nInitializing biases..." << std::endl;
     for (size_t i = 0; i < query_bias.size(); i++)
-        query_bias[i] = 0.0f;
+        query_bias[i] = 0.01f;
     for (size_t i = 0; i < key_bias.size(); i++)
-        key_bias[i] = 0.0f;
+        key_bias[i] = 0.01f;
     for (size_t i = 0; i < value_bias.size(); i++)
-        value_bias[i] = 0.0f;
+        value_bias[i] = 0.01f;
     for (size_t i = 0; i < output_bias.size(); i++)
-        output_bias[i] = 0.0f;
+        output_bias[i] = 0.01f;
 
     // Initialize gradients to zero
     for (size_t i = 0; i < query_proj_grad.rows(); i++) {
@@ -1037,4 +1084,20 @@ Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix
     std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
     
     return combined;
+}
+
+void MultiHeadAttention::initialize_weights() {
+    // Initialize with small random values instead of zeros
+    float scale = sqrt(2.0f / (3 * hidden_size));
+    
+    query_proj.initialize_random(scale);
+    key_proj.initialize_random(scale);
+    value_proj.initialize_random(scale);
+    output_proj.initialize_random(scale);
+    
+    // Initialize biases to small non-zero values
+    query_bias.initialize_constant(0.01f);
+    key_bias.initialize_constant(0.01f);
+    value_bias.initialize_constant(0.01f);
+    output_bias.initialize_constant(0.01f);
 }

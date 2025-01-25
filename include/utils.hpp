@@ -13,8 +13,8 @@ class Utils {
                                         size_t max_seq_length = 512);
     static void print_matrix(const Matrix& m, const std::string& name, size_t max_rows = 5,
                              size_t max_cols = 5);
-    static void print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer,
-                                      size_t k = 5);
+    static void print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, 
+                                    Transformer& transformer, int k);
     static std::vector<std::pair<std::string, std::string>> create_training_data();
     static void
     analyze_token_mappings(const std::vector<std::pair<std::string, std::string>>& training_data,
@@ -32,4 +32,6 @@ class Utils {
     static void apply_sampling_parameters(std::vector<float>& logits, float temperature,
                                           float top_p);
     static std::vector<std::string>& get_vocabulary(const Tokenizer& tokenizer);
+    static std::vector<std::pair<std::string, float>> get_multi_token_predictions(
+        const Matrix& logits, const Tokenizer& tokenizer, int beam_width);
 };

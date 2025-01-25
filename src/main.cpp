@@ -408,7 +408,7 @@ int main(int argc, char* argv[]) {
                 
                 // Show the top predictions
                 std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << test_input << "' ===\n";
-                Utils::print_top_predictions(pred_logits, *tokenizer, 5);
+                Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
                 std::cout << "================================================\n";
 
                 // Print progress and metrics every 10 batches
@@ -476,7 +476,7 @@ int main(int argc, char* argv[]) {
                 // For single token prediction, we don't need beam search
                 // Just show the top predictions
                 std::cout << "\nTop Predictions:\n";
-                Utils::print_top_predictions(logits, *tokenizer, 5);
+                Utils::print_top_predictions(logits, *tokenizer, transformer, 5);
             }
 
             if ((epoch + 1) % 5 == 0) { 
@@ -518,7 +518,7 @@ int main(int argc, char* argv[]) {
         
         // Show the top predictions
         std::cout << "\nTop Predictions:\n";
-        Utils::print_top_predictions(logits, *tokenizer, 5);
+        Utils::print_top_predictions(logits, *tokenizer, transformer, 5);
 
         // Create directories if they don't exist
         std::filesystem::create_directories(save_directory);

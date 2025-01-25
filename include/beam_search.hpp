@@ -189,4 +189,16 @@ class BeamSearch {
      */
     std::vector<std::pair<float, size_t>> nucleusSampling(
         const std::vector<float>& probabilities, float p);
+
+    std::vector<Hypothesis> search_cuda(
+        const std::vector<float>& initial_logits,
+        std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
+        size_t max_length,
+        int eos_token_id);
+
+    std::vector<Hypothesis> search_cpu(
+        const std::vector<float>& initial_logits,
+        std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
+        size_t max_length,
+        int eos_token_id);
 };

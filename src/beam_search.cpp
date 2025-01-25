@@ -263,60 +263,10 @@ BeamSearch::search(const std::vector<float>& initial_logits,
                    std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
                    size_t max_length, int eos_token_id) {
     try {
-#ifdef USE_CUDA
-        try {
-            auto& memory_mgr = cuda::MemoryManager::instance();
-            
-            // Initialize beam scores and sequences
-            Matrix beam_scores(beam_width_, 1);
-            std::vector<std::vector<int>> sequences(beam_width_);
-            
-            // Get initial top-k candidates
-            Matrix top_k_logits(beam_width_, 1);
-            std::vector<int> top_k_indices(beam_width_);
-            cuda::topk(initial_logits, top_k_logits, top_k_indices, beam_width_);
-            
-            // Initialize sequences with top-k tokens
-            for (size_t i = 0; i < beam_width_; i++) {
-                sequences[i].push_back(top_k_indices[i]);
-                beam_scores(i, 0) = top_k_logits(i, 0);
-            }
-            
-            // Main beam search loop
-            for (size_t step = 1; step < max_length; step++) {
-                Matrix next_scores;
-                std::vector<int> next_tokens;
-                
-                // Get next token predictions
-                Matrix model_output = Matrix::from_vector(next_token_fn(sequences[0]));
-                cuda::beam_search_step(model_output, beam_scores, 
-                                     next_scores, next_tokens, beam_width_);
-                
-                // Update sequences and scores
-                update_beams(sequences, beam_scores, next_scores, next_tokens);
-                
-                // Check for completion
-                if (is_search_complete(sequences)) break;
-            }
-            
-            // Return best sequence
-            std::vector<Hypothesis> hypotheses;
-            hypotheses.push_back(Hypothesis{sequences[0], beam_scores(0, 0)});
-            return hypotheses;
-            
-        } catch (const std::runtime_error& e) {
-            std::cerr << "CUDA beam search failed, falling back to CPU: " << e.what() << std::endl;
-#endif
-            // CPU fallback implementation
-            auto result = cpu_beam_search(initial_logits, next_token_fn, max_length);
-            std::vector<Hypothesis> hypotheses;
-            hypotheses.push_back(Hypothesis(result, 0.0f));
-            return hypotheses;
-#ifdef USE_CUDA
-        }
-#endif
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Beam search failed: " + std::string(e.what()));
+        return search_cuda(initial_logits, next_token_fn, max_length, eos_token_id);
+    } catch (const std::runtime_error& e) {
+        std::cerr << "CUDA beam search failed: " << e.what() << "\nFalling back to CPU implementation" << std::endl;
+        return search_cpu(initial_logits, next_token_fn, max_length, eos_token_id);
     }
 }
 
@@ -422,4 +372,141 @@ std::vector<std::pair<float, size_t>> BeamSearch::nucleusSampling(
         sorted_probs.begin(),
         sorted_probs.begin() + cutoff_idx
     );
+}
+
+std::vector<BeamSearch::Hypothesis> BeamSearch::search_cuda(
+    const std::vector<float>& initial_logits,
+    std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
+    size_t max_length,
+    int eos_token_id) {
+#ifdef USE_CUDA
+    try {
+        auto& memory_mgr = cuda::MemoryManager::instance();
+        
+        // Initialize beam scores and sequences
+        Matrix beam_scores(beam_width_, 1);
+        std::vector<std::vector<int>> sequences(beam_width_);
+        
+        // Get initial top-k candidates
+        Matrix top_k_logits(beam_width_, 1);
+        std::vector<int> top_k_indices(beam_width_);
+        cuda::topk(initial_logits, top_k_logits, top_k_indices, beam_width_);
+        
+        // Initialize sequences with top-k tokens
+        for (size_t i = 0; i < beam_width_; i++) {
+            sequences[i].push_back(top_k_indices[i]);
+            beam_scores(i, 0) = top_k_logits(i, 0);
+        }
+        
+        // Main beam search loop
+        for (size_t step = 1; step < max_length; step++) {
+            Matrix next_scores;
+            std::vector<int> next_tokens;
+            
+            // Get next token predictions
+            Matrix model_output = Matrix::from_vector(next_token_fn(sequences[0]));
+            cuda::beam_search_step(model_output, beam_scores, 
+                                 next_scores, next_tokens, beam_width_);
+            
+            // Update sequences and scores
+            update_beams(sequences, beam_scores, next_scores, next_tokens);
+            
+            // Check for completion
+            if (is_search_complete(sequences)) break;
+        }
+        
+        // Return best sequence
+        std::vector<Hypothesis> hypotheses;
+        hypotheses.push_back(Hypothesis{sequences[0], beam_scores(0, 0)});
+        return hypotheses;
+    } catch (const std::runtime_error& e) {
+        throw;
+    }
+#else
+    throw std::runtime_error("CUDA support not enabled");
+#endif
+}
+
+std::vector<BeamSearch::Hypothesis> BeamSearch::search_cpu(
+    const std::vector<float>& initial_logits,
+    std::function<std::vector<float>(const std::vector<int>&)> next_token_fn,
+    size_t max_length,
+    int eos_token_id) {
+    
+    // Initialize with top beam_width_ tokens
+    std::vector<std::pair<std::vector<int>, float>> beams;
+    std::vector<std::pair<float, int>> top_tokens;
+    
+    // Get initial top tokens
+    for (size_t i = 0; i < initial_logits.size(); i++) {
+        top_tokens.push_back({initial_logits[i], static_cast<int>(i)});
+    }
+    
+    std::partial_sort(top_tokens.begin(), 
+                      top_tokens.begin() + beam_width_,
+                      top_tokens.end(),
+                      [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Initialize beams
+    for (size_t i = 0; i < beam_width_; i++) {
+        beams.push_back({{top_tokens[i].second}, top_tokens[i].first});
+    }
+    
+    // Main search loop
+    for (size_t step = 1; step < max_length; step++) {
+        std::vector<std::pair<std::vector<int>, float>> new_beams;
+        
+        // Expand each beam
+        for (const auto& [sequence, score] : beams) {
+            if (!sequence.empty() && sequence.back() == eos_token_id) {
+                new_beams.push_back({sequence, score});
+                continue;
+            }
+            
+            // Get next token logits from the model
+            std::vector<float> next_logits = next_token_fn(sequence);
+            
+            // Apply temperature scaling and sampling
+            std::vector<float> scaled_probs = calculateScores(next_logits);
+            
+            // Get top-k candidates
+            auto candidates = topKSampling(scaled_probs, beam_width_);
+            
+            // Add candidates to new beams
+            for (const auto& [prob, token_id] : candidates) {
+                std::vector<int> new_sequence = sequence;
+                new_sequence.push_back(token_id);
+                new_beams.push_back({new_sequence, score + std::log(prob)});
+            }
+        }
+        
+        // Sort and prune beams
+        std::partial_sort(new_beams.begin(),
+                         new_beams.begin() + beam_width_,
+                         new_beams.end(),
+                         [](const auto& a, const auto& b) { 
+                             return a.second > b.second; 
+                         });
+        
+        beams.clear();
+        beams.insert(beams.end(), 
+                    new_beams.begin(),
+                    new_beams.begin() + std::min(beam_width_, new_beams.size()));
+    }
+    
+    // Convert to hypotheses
+    std::vector<Hypothesis> hypotheses;
+    for (const auto& [sequence, score] : beams) {
+        hypotheses.push_back(Hypothesis{sequence, score});
+    }
+    
+    // Sort hypotheses by score
+    std::sort(hypotheses.begin(), hypotheses.end(),
+              [this](const auto& a, const auto& b) {
+                  float score_a = apply_length_penalty(a.score, a.tokens.size());
+                  float score_b = apply_length_penalty(b.score, b.tokens.size());
+                  return score_a > score_b;
+              });
+    
+    return hypotheses;
 }

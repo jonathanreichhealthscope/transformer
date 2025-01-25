@@ -2,6 +2,7 @@
 
 #include "matrix.hpp"
 #include <vector>
+#include <string>
 
 /**
  * @brief A 4-dimensional tensor class for neural network computations.
@@ -169,6 +170,14 @@ class Tensor {
     const std::vector<unsigned long>& dims() const {
         return dims_;
     }
+
+    /**
+     * @brief Validates matrix dimensions for operations
+     * @param other Other tensor to validate against
+     * @param operation Name of operation being validated ("multiplication" or "addition")
+     * @throws std::runtime_error if dimensions are invalid for the operation
+     */
+    void validate_matrix_dimensions(const Tensor& other, const std::string& operation) const;
 
   private:
     std::vector<unsigned long> dims_;  ///< Sizes of each dimension

@@ -266,3 +266,18 @@ void FeedForward::update_parameters(const Matrix& grad) {
         b2[i] -= db2_[i] * learning_rate;
     }
 }
+
+void FeedForward::initialize_weights() {
+    // Get sizes from weight matrices
+    size_t hidden_size = w1.rows();  // Input/output size
+    size_t intermediate_size = w1.cols();  // Hidden layer size
+    
+    float scale = sqrt(2.0f / (hidden_size + intermediate_size));
+    
+    w1.initialize_random(scale);
+    w2.initialize_random(scale);
+    
+    // Initialize biases to small non-zero values
+    b1.initialize_constant(0.01f);
+    b2.initialize_constant(0.01f);
+}

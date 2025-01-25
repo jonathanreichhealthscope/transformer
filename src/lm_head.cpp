@@ -41,6 +41,29 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
                                " != " + std::to_string(hidden_size_));
     }
     
+    // Debug hidden states
+    float min_hidden = std::numeric_limits<float>::infinity();
+    float max_hidden = -std::numeric_limits<float>::infinity();
+    float sum_hidden = 0.0f;
+    size_t nonzero_hidden = 0;
+    
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < hidden_states.cols(); j++) {
+            float val = hidden_states(i, j);
+            min_hidden = std::min(min_hidden, val);
+            max_hidden = std::max(max_hidden, val);
+            sum_hidden += val;
+            if (std::abs(val) > 1e-6) nonzero_hidden++;
+        }
+    }
+    
+    std::cout << "\nHidden States Statistics in forward_impl:\n"
+              << "Min hidden: " << min_hidden << "\n"
+              << "Max hidden: " << max_hidden << "\n"
+              << "Mean hidden: " << sum_hidden / (hidden_states.rows() * hidden_states.cols()) << "\n"
+              << "Nonzero hidden: " << nonzero_hidden << "/" 
+              << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
+    
     // Scale hidden states for better gradient flow
     Matrix scaled_hidden = hidden_states;
     float scale_factor = std::sqrt(2.0f / hidden_dim);
@@ -50,6 +73,29 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
             scaled_hidden(i, j) *= scale_factor;
         }
     }
+    
+    // Debug projection matrix
+    float min_proj = std::numeric_limits<float>::infinity();
+    float max_proj = -std::numeric_limits<float>::infinity();
+    float sum_proj = 0.0f;
+    size_t nonzero_proj = 0;
+    
+    for (size_t i = 0; i < projection.rows(); i++) {
+        for (size_t j = 0; j < projection.cols(); j++) {
+            float val = projection(i, j);
+            min_proj = std::min(min_proj, val);
+            max_proj = std::max(max_proj, val);
+            sum_proj += val;
+            if (std::abs(val) > 1e-6) nonzero_proj++;
+        }
+    }
+    
+    std::cout << "Projection Matrix Statistics:\n"
+              << "Min proj: " << min_proj << "\n"
+              << "Max proj: " << max_proj << "\n"
+              << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n"
+              << "Nonzero proj: " << nonzero_proj << "/" 
+              << (projection.rows() * projection.cols()) << "\n\n";
     
     // Compute logits with scaled hidden states
     Matrix logits = matmul(scaled_hidden, projection);

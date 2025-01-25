@@ -128,6 +128,12 @@ set(HEADERS
     include/tensor.hpp
 )
 
+# Add CUDA compilation flags
+if(CUDAToolkit_FOUND)
+    set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} -O3 -arch=sm_60)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+endif()
+
 # Create library
 add_library(transformer_lib
     ${CORE_SOURCES}
@@ -137,6 +143,7 @@ add_library(transformer_lib
     ${LM_SOURCES}
     ${OPTIMIZER_SOURCES}
     src/data_augmentation.cpp
+    src/matrix.cpp
 )
 
 # Set CUDA specific properties for the library
@@ -234,20 +241,20 @@ if(CUDAToolkit_FOUND)
         LANGUAGE CUDA
     )
 
+    # Add CUDA include directories
+    target_include_directories(cuda_kernels
+        PRIVATE
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+
     # Link CUDA libraries to cuda_kernels
     target_link_libraries(cuda_kernels
         PUBLIC
         CUDA::cudart
         CUDA::cublas
         CUDA::curand
-    )
-
-    # Add CUDA include directories
-    target_include_directories(cuda_kernels
-        PRIVATE
-        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRS}
-        ${CMAKE_SOURCE_DIR}/include/cuda
-        ${CMAKE_SOURCE_DIR}/third_party
     )
 
     # Link cuda_kernels to transformer_lib
@@ -257,9 +264,10 @@ if(CUDAToolkit_FOUND)
     )
 endif()
 
-# Add to your sources list:
-target_sources(transformer_lib PRIVATE
-    src/tensor.cpp
+# Add SOURCES to the library instead
+target_sources(transformer_lib 
+    PRIVATE 
+    ${SOURCES}
 )
 
 find_package(nlohmann_json 3.2.0 REQUIRED)

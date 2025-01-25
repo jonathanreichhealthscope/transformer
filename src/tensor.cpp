@@ -147,3 +147,23 @@ Tensor Tensor::safe_tensormul(const Tensor& a, const Tensor& b) {
         throw std::runtime_error(std::string("Safe tensor multiplication failed: ") + e.what());
     }
 }
+
+void Tensor::validate_matrix_dimensions(const Tensor& other, const std::string& operation) const {
+    if (rows() <= 0 || cols() <= 0 || other.rows() <= 0 || other.cols() <= 0) {
+        throw std::runtime_error("Matrix dimensions cannot be zero for " + operation);
+    }
+    
+    if (operation == "multiplication") {
+        if (cols() != other.rows()) {
+            throw std::runtime_error("Invalid matrix dimensions for multiplication: " + 
+                std::to_string(rows()) + "x" + std::to_string(cols()) + " * " +
+                std::to_string(other.rows()) + "x" + std::to_string(other.cols()));
+        }
+    } else if (operation == "addition") {
+        if (rows() != other.rows() || cols() != other.cols()) {
+            throw std::runtime_error("Invalid matrix dimensions for addition: " +
+                std::to_string(rows()) + "x" + std::to_string(cols()) + " + " +
+                std::to_string(other.rows()) + "x" + std::to_string(other.cols()));
+        }
+    }
+}
