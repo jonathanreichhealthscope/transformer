@@ -393,7 +393,7 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
     // Initialize beam search with parameters tuned for diversity and short sequences
     BeamSearch beam_search(
-        transformer.getConfig().beam_search.beam_size,
+        std::max(transformer.getConfig().beam_search.beam_size, static_cast<size_t>(k * 2)),  // Ensure enough candidates
         transformer.getConfig().beam_search.length_penalty,
         transformer.getConfig().beam_search.temperature,
         transformer.getConfig().beam_search.diversity_strength,
@@ -472,19 +472,30 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                 hyp.tokens.end()
             );
             
-            // Decode the sequence and ensure proper spacing
-            std::string decoded = tokenizer.decode(generated_tokens);
+            // Decode tokens individually and join with spaces
+            std::string decoded;
+            for (size_t i = 0; i < generated_tokens.size(); i++) {
+                std::string token = tokenizer.decode({generated_tokens[i]});
+                if (!token.empty()) {
+                    // Add space between tokens, but not at the start
+                    if (!decoded.empty() && token[0] != ' ') {
+                        decoded += " ";
+                    }
+                    decoded += token;
+                }
+            }
+            
             if (decoded.empty()) continue;
             
-            // Add space at the beginning if it doesn't start with one
-            if (!decoded.empty() && decoded[0] != ' ') {
+            // Add initial space if needed
+            if (decoded[0] != ' ') {
                 decoded = " " + decoded;
             }
             
-            // Get first token of prediction (for diversity)
-            size_t space_pos = decoded.find(' ', 1);  // Start search after initial space
+            // Get first token for diversity check (after initial space)
+            size_t space_pos = decoded.find(' ', 1);
             std::string first_token = space_pos == std::string::npos ? 
-                                    decoded : decoded.substr(0, space_pos);
+                                    decoded.substr(1) : decoded.substr(1, space_pos - 1);
             
             // Only add if we haven't seen this first token
             if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
