@@ -32,9 +32,6 @@ BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperatur
 
 float BeamSearch::apply_length_penalty(float score, size_t length) const {
     float penalized_score = score / std::pow(length, length_penalty_);
-    std::cout << "Applied length penalty: original_score=" << std::fixed << std::setprecision(4)
-              << score << ", length=" << length << ", penalized_score=" << penalized_score
-              << std::endl;
     return penalized_score;
 }
 

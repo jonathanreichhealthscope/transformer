@@ -381,14 +381,13 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 }
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
-    // Initialize beam search with parameters tuned for diversity
-    const size_t EXTRA_BEAMS = 3;  // Generate extra beams to account for filtered ones
-    BeamSearch beam_search(k * EXTRA_BEAMS,  // Wider beam width to ensure enough valid candidates
+    // Initialize beam search with parameters tuned for diversity and short sequences
+    BeamSearch beam_search(k * 3,  // Wider beam width to ensure enough valid candidates
                           1.0f,     // length penalty
                           1.2f,     // temperature 
                           2.0f,     // diversity strength
-                          100,      // increased top_k for more candidates
-                          0.95f);   // increased top_p for more variety
+                          50,       // top_k
+                          0.95f);   // top_p
     
     // Convert logits matrix to vector for beam search
     std::vector<float> initial_logits;
@@ -434,8 +433,8 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         Matrix initial_hidden = transformer.forward(original_input, original_query, tokenizer, true);
     }
     
-    // Generate more hypotheses than needed to ensure enough valid ones
-    const size_t MAX_LENGTH = 20;  // Reasonable max length for continuation
+    // Generate hypotheses with a very short max length to ensure we get at most 2 words
+    const size_t MAX_LENGTH = input_length + 4;  // Allow for up to 4 tokens (usually 2 words)
     std::vector<BeamSearch::Hypothesis> hypotheses = beam_search.search(
         initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
     
@@ -462,19 +461,61 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                 generated_tokens.push_back(hyp.tokens[i]);
             }
             
-            // Decode and validate the sequence
-            std::string decoded = tokenizer.decode(generated_tokens);
-            if (decoded.empty()) continue;
+            // Decode tokens one by one and handle word boundaries
+            std::string decoded;
+            int word_count = 0;
+            bool should_continue = true;
             
-            // Skip sequences with only special tokens or whitespace
-            bool has_content = false;
-            for (char c : decoded) {
-                if (!std::isspace(c) && c != '<' && c != '>') {
-                    has_content = true;
-                    break;
+            for (size_t i = 0; i < generated_tokens.size() && should_continue; i++) {
+                std::string token_str = tokenizer.decode({generated_tokens[i]});
+                
+                // Skip special tokens
+                if (tokenizer.is_special_token(generated_tokens[i])) {
+                    continue;
                 }
+                
+                // Check if this token should have a space before it
+                bool add_space = true;
+                if (i == 0) {
+                    // First token after input - check if it needs a space
+                    std::string last_input_token = tokenizer.decode({original_input.back()});
+                    add_space = !last_input_token.empty() && 
+                               last_input_token.back() != ' ' &&
+                               !token_str.empty() && token_str[0] != ' ';
+                } else if (i > 0) {
+                    // Check previous token
+                    std::string prev_token = tokenizer.decode({generated_tokens[i-1]});
+                    add_space = !prev_token.empty() && 
+                               prev_token.back() != ' ' &&
+                               !token_str.empty() && token_str[0] != ' ';
+                }
+                
+                // Add space if needed
+                if (add_space && !decoded.empty() && decoded.back() != ' ') {
+                    decoded += ' ';
+                    // Count this as a word boundary
+                    word_count++;
+                    if (word_count >= 2) {
+                        should_continue = false;
+                        continue;
+                    }
+                }
+                
+                // Add the token
+                decoded += token_str;
             }
-            if (!has_content) continue;
+            
+            // Skip empty or whitespace-only sequences
+            if (decoded.empty() || std::all_of(decoded.begin(), decoded.end(), ::isspace)) {
+                continue;
+            }
+            
+            // Trim any leading/trailing whitespace
+            size_t start = decoded.find_first_not_of(" \t\n\r");
+            size_t end = decoded.find_last_not_of(" \t\n\r");
+            if (start != std::string::npos && end != std::string::npos) {
+                decoded = decoded.substr(start, end - start + 1);
+            }
             
             // Add to valid predictions
             valid_predictions.push_back({decoded, hyp.score});
