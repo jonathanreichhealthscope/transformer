@@ -181,6 +181,8 @@ class Transformer {
     std::unique_ptr<LanguageModelHead> lm_head;       ///< Output layer for token prediction
     std::unique_ptr<Dropout> dropout;                 ///< Dropout layer
     bool cuda_initialized = false;                    ///< Whether CUDA has been initialized
+    std::vector<int> last_input_tokens_;             ///< Store the last input tokens
+    std::string last_input_query_;                   ///< Store the original input query
 
     // Cached states for backward pass
     Matrix hidden_states;
@@ -338,4 +340,12 @@ class Transformer {
 
     void save_checkpoint(const std::string& path);
     void load_checkpoint(const std::string& path);
+
+    const std::vector<int>& get_last_input() const {
+        return last_input_tokens_;
+    }
+
+    const std::string& get_last_query() const {
+        return last_input_query_;
+    }
 };

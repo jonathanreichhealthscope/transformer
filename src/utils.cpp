@@ -408,7 +408,8 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         initial_logits, next_token_fn, 10, tokenizer.get_eos_token_id());
     
     // Print predictions
-    std::cout << "\nTop " << k << " predicted sequences:" << std::endl;
+    std::cout << "\nQuery: \"" << transformer.get_last_query() << "\"" << std::endl;
+    std::cout << "Top " << k << " predicted sequences:" << std::endl;
     int predictions_shown = 0;
     
     for (const auto& hyp : hypotheses) {

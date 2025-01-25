@@ -345,6 +345,10 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
 Matrix Transformer::forward(const std::vector<int>& input_tokens, bool use_cache) {
     static const bool use_fp16 = config.use_fp16;
 
+    // Store the input tokens and query
+    last_input_tokens_ = input_tokens;
+    last_input_query_ = "I go to";  // Store the original query
+
     // Get embeddings and add positional encodings
     Matrix embeddings = token_embedding->forward(input_tokens);
     
