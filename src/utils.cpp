@@ -381,8 +381,13 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 }
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
-    // Initialize beam search with reasonable parameters
-    BeamSearch beam_search(k, 0.6f, 0.7f, 0.5f, 40, 0.9f);
+    // Initialize beam search with parameters tuned for diversity
+    BeamSearch beam_search(k,       // beam width
+                          0.8f,     // length penalty (higher favors longer sequences)
+                          0.9f,     // temperature (higher = more diversity)
+                          0.8f,     // diversity strength (higher = more diversity)
+                          100,      // top_k (higher = more options to choose from)
+                          0.95f);   // top_p (higher = more options to choose from)
     
     // Convert logits matrix to vector for beam search
     std::vector<float> initial_logits;
@@ -390,12 +395,14 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         initial_logits.push_back(logits(logits.rows() - 1, j));
     }
     
-    // Create next token function that uses the transformer
-    auto next_token_fn = [&transformer](const std::vector<int>& tokens) -> std::vector<float> {
-        Matrix next_hidden = transformer.forward(tokens);
+    // Create next token function that uses the transformer with caching
+    auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) -> std::vector<float> {
+        // Only forward the last token, using the cached key-value pairs
+        std::vector<int> last_token = {tokens.back()};
+        Matrix next_hidden = transformer.forward(last_token, "", tokenizer, true);  // Use caching
         Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
         
-        // Convert last row of logits to vector
+        // Convert logits to vector
         std::vector<float> logits_vec;
         for (int j = 0; j < next_logits.cols(); j++) {
             logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
@@ -403,9 +410,18 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         return logits_vec;
     };
     
+    // Clear the transformer's key-value cache before starting
+    transformer.clear_kv_cache();
+    
+    // Initialize the cache with the input sequence
+    Matrix initial_hidden = transformer.forward(transformer.get_last_input(), "", tokenizer, true);
+    
     // Perform beam search
     std::vector<BeamSearch::Hypothesis> hypotheses = beam_search.search(
-        initial_logits, next_token_fn, 10, tokenizer.get_eos_token_id());
+        initial_logits, next_token_fn, 20, tokenizer.get_eos_token_id());  // Increased max_length
+    
+    // Clear the cache after we're done
+    transformer.clear_kv_cache();
     
     // Print predictions
     std::cout << "\nQuery: \"" << transformer.get_last_query() << "\"" << std::endl;
@@ -484,7 +500,7 @@ float Utils::evaluate_validation(
         try {
             // Get model prediction
             std::cout << "Calling transformer.forward with " << input_tokens.size() << " tokens\n";
-            Matrix output = transformer.forward(input_tokens);
+            Matrix output = transformer.forward(input_tokens, "", tokenizer);
             std::cout << "Forward pass output shape: " << output.rows() << "x" << output.cols()
                       << "\n";
 

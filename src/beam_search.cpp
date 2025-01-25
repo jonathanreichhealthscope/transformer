@@ -415,9 +415,17 @@ std::vector<BeamSearch::Hypothesis> BeamSearch::search_cuda(
             if (is_search_complete(sequences)) break;
         }
         
-        // Return best sequence
+        // Return all sequences as hypotheses
         std::vector<Hypothesis> hypotheses;
-        hypotheses.push_back(Hypothesis{sequences[0], beam_scores(0, 0)});
+        for (size_t i = 0; i < sequences.size(); i++) {
+            float penalized_score = apply_length_penalty(beam_scores(i, 0), sequences[i].size());
+            hypotheses.push_back(Hypothesis{sequences[i], penalized_score});
+        }
+        
+        // Sort hypotheses by score
+        std::sort(hypotheses.begin(), hypotheses.end(),
+                 [](const auto& a, const auto& b) { return a.score > b.score; });
+        
         return hypotheses;
     } catch (const std::runtime_error& e) {
         throw;

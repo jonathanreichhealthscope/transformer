@@ -261,7 +261,7 @@ int main(int argc, char* argv[]) {
                 // Forward pass with the flattened batch
                 transformer.set_training(true);
                 metrics.start_timer("forward_pass");
-                Matrix hidden_states = transformer.forward(flattened_batch);
+                Matrix hidden_states = transformer.forward(flattened_batch, "", *tokenizer);
                 metrics.stop_timer("forward_pass");
 
                 metrics.record_memory_usage(hidden_states.bytes());
@@ -402,7 +402,7 @@ int main(int argc, char* argv[]) {
                 
                 // Get model prediction (in evaluation mode)
                 transformer.set_training(false);
-                Matrix test_hidden = transformer.forward(test_tokens);
+                Matrix test_hidden = transformer.forward(test_tokens, test_input, *tokenizer);
                 Matrix pred_logits = lm_head->project_to_vocab(test_hidden);
                 transformer.set_training(true);  // Set back to training mode
                 
@@ -410,6 +410,29 @@ int main(int argc, char* argv[]) {
                 std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << test_input << "' ===\n";
                 Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
                 std::cout << "================================================\n";
+
+                // Test additional queries
+                std::vector<std::string> additional_queries = {
+                    "The weather is",
+                    "I want to",
+                    "The cat",
+                    "She likes to"
+                };
+
+                for (const auto& query : additional_queries) {
+                    processed_input = query;
+                    tokenizer->preprocess_text(processed_input);
+                    test_tokens = tokenizer->encode(processed_input);
+                    
+                    transformer.set_training(false);
+                    test_hidden = transformer.forward(test_tokens, query, *tokenizer);
+                    pred_logits = lm_head->project_to_vocab(test_hidden);
+                    transformer.set_training(true);
+                    
+                    std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << query << "' ===\n";
+                    Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
+                    std::cout << "================================================\n";
+                }
 
                 // Print progress and metrics every 10 batches
                 if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
@@ -470,7 +493,7 @@ int main(int argc, char* argv[]) {
                 std::vector<int> test_tokens = tokenizer->encode(processed_input);
                 
                 // Get model prediction
-                Matrix test_hidden = transformer.forward(test_tokens);
+                Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
                 Matrix logits = lm_head->project_to_vocab(test_hidden);
                 
                 // For single token prediction, we don't need beam search
@@ -513,7 +536,7 @@ int main(int argc, char* argv[]) {
         
         // Get model prediction
         transformer.set_training(false);  // Set to evaluation mode
-        Matrix test_hidden = transformer.forward(test_tokens);
+        Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
         Matrix logits = lm_head->project_to_vocab(test_hidden);
         
         // Show the top predictions
