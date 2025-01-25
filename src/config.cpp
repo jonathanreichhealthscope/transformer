@@ -17,19 +17,20 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length, s
           "transformer_model", // model_name
           2                    // checkpoint_frequency
       },
-      // Initialize beam search parameters with defaults
       beam_search{
-          true,  // use_beam_search
-          5,     // beam_size
-          0.6f,  // length_penalty
-          1.0f,  // temperature
-          3.0f,  // initial_temperature
-          4.0f,  // diversity_strength
-          100,   // top_k
-          0.9f,  // top_p
-          20,    // max_length
-          0.8f,  // initial_noise_scale
-          0.1f   // token_noise_scale
+          true,   // use_beam_search
+          5,      // beam_size
+          4,      // beams_per_group
+          3,      // num_groups
+          1.5f,   // length_penalty
+          1.0f,   // temperature
+          0.9f,   // top_p
+          20,     // max_length
+          3.0f,   // initial_temperature
+          0.8f,   // initial_noise_scale
+          4.0f,   // diversity_strength
+          100,    // top_k
+          0.1f    // token_noise_scale
       } {
     std::cout << "entering TransformerConfig constructor" << std::endl;
     if (hidden_size % num_heads != 0) {

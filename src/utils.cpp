@@ -181,8 +181,10 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
         // Parse beam search settings
         if (j.contains("beam_search")) {
             auto& beam = j["beam_search"];
-            config.beam_search.use_beam_search = beam.value("use_beam_search", true);  // Default to true for backward compatibility
+            config.beam_search.use_beam_search = beam.value("use_beam_search", true);
             config.beam_search.beam_size = beam["beam_size"];
+            config.beam_search.beams_per_group = beam.value("beams_per_group", 4);
+            config.beam_search.num_groups = beam.value("num_groups", 3);
             config.beam_search.length_penalty = beam["length_penalty"];
             config.beam_search.temperature = beam["temperature"];
             config.beam_search.top_p = beam["top_p"];
@@ -194,8 +196,10 @@ TransformerConfig Utils::load_config(const std::string& config_path) {
             config.beam_search.token_noise_scale = beam.value("token_noise_scale", 0.1f);
         } else {
             // Default values if not specified
-            config.beam_search.use_beam_search = true;  // Default to true for backward compatibility
+            config.beam_search.use_beam_search = true;
             config.beam_search.beam_size = 5;
+            config.beam_search.beams_per_group = 4;
+            config.beam_search.num_groups = 3;
             config.beam_search.length_penalty = 0.6f;
             config.beam_search.temperature = 1.0f;
             config.beam_search.top_p = 0.9f;
@@ -391,18 +395,18 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
 }
 
 void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
-    // Calculate beam width to ensure enough diverse candidates
-    size_t total_beam_width = std::max(transformer.getConfig().beam_search.beam_size, static_cast<size_t>(k * 3));
-    size_t num_groups = 3;  // Split beams into 3 groups for more diversity
-    size_t beams_per_group = total_beam_width / num_groups;
+    const auto& config = transformer.getConfig();
+    size_t total_beam_width = std::max(config.beam_search.beam_size, static_cast<size_t>(k * 3));
+    size_t num_groups = config.beam_search.num_groups;
+    size_t beams_per_group = config.beam_search.beams_per_group;
     
     BeamSearch beam_search(
-        beams_per_group,  // Use smaller beam width per group
-        transformer.getConfig().beam_search.length_penalty,
-        transformer.getConfig().beam_search.temperature,
-        transformer.getConfig().beam_search.diversity_strength,
-        transformer.getConfig().beam_search.top_k,
-        transformer.getConfig().beam_search.top_p
+        beams_per_group,
+        config.beam_search.length_penalty,
+        config.beam_search.temperature,
+        config.beam_search.diversity_strength,
+        config.beam_search.top_k,
+        config.beam_search.top_p
     );
 
     // Store predictions from each group
@@ -420,16 +424,16 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         // Reset and prepare initial logits with group-specific noise
         initial_logits.clear();
         for (int j = 0; j < logits.cols(); j++) {
-            float base_logit = logits(logits.rows() - 1, j) / transformer.getConfig().beam_search.initial_temperature;
+            float base_logit = logits(logits.rows() - 1, j) / config.beam_search.initial_temperature;
             // Add group-specific noise to encourage diversity between groups
             float group_noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
-                              transformer.getConfig().beam_search.initial_noise_scale * 
+                              config.beam_search.initial_noise_scale * 
                               (1.0f + group * 0.5f);  // Increase noise for later groups
             initial_logits.push_back(base_logit + group_noise);
         }
         
-        // Create next token function with group-specific noise
-        auto next_token_fn = [&transformer, &tokenizer, group](const std::vector<int>& tokens) -> std::vector<float> {
+        // Create next token function with group-specific noise - add config to capture list
+        auto next_token_fn = [&transformer, &tokenizer, group, &config](const std::vector<int>& tokens) -> std::vector<float> {
             try {
                 Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
                 Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
@@ -440,7 +444,7 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                     float logit = next_logits(next_logits.rows() - 1, j);
                     // Add group-specific noise
                     float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
-                                transformer.getConfig().beam_search.token_noise_scale * 
+                                config.beam_search.token_noise_scale * 
                                 (1.0f + group * 0.3f);  // Increase noise for later groups
                     logits_vec.push_back(logit + noise);
                 }

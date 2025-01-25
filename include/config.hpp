@@ -58,15 +58,17 @@ class TransformerConfig {
     // Beam search parameters
     struct BeamSearchConfig {
         bool use_beam_search = true;
-        size_t beam_size = 10;
+        size_t beam_size = 5;
+        size_t beams_per_group = 4;
+        size_t num_groups = 3;
         float length_penalty = 1.5f;
-        float temperature = 2.5f;
+        float temperature = 1.0f;
+        float top_p = 0.9f;
+        size_t max_length = 20;
         float initial_temperature = 3.0f;
+        float initial_noise_scale = 0.8f;
         float diversity_strength = 4.0f;
         size_t top_k = 100;
-        float top_p = 0.98f;
-        size_t max_length = 4;
-        float initial_noise_scale = 0.8f;
         float token_noise_scale = 0.1f;
     } beam_search;
 

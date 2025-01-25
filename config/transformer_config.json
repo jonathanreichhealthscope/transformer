@@ -1,8 +1,8 @@
 {
     "model": {
         "vocab_size": 1665,
-        "hidden_size": 64,
-        "num_heads": 2,
+        "hidden_size": 128,
+        "num_heads": 8,
         "num_layers": 4,
         "head_dim": 32,
         "intermediate_size": 256,
@@ -35,6 +35,8 @@
     "beam_search": {
         "use_beam_search": true,
         "beam_size": 10,
+        "beams_per_group": 4,
+        "num_groups": 3,
         "length_penalty": 1.5,
         "temperature": 2.5,
         "initial_temperature": 3.0,
