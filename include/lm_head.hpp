@@ -252,14 +252,7 @@ class LanguageModelHead {
      * @brief Updates token frequencies based on observed tokens.
      * @param tokens Vector of token indices observed in the current batch
      */
-    void update_token_frequencies(const std::vector<int>& tokens) {
-        for (int token : tokens) {
-            if (token >= 0 && static_cast<size_t>(token) < vocab_size_) {
-                token_frequencies[token] += 1.0f;
-            }
-        }
-        training_steps++;
-    }
+    void update_token_frequencies(const std::vector<int>& tokens);
 
     /**
      * @brief Prunes vocabulary by removing infrequently used tokens.

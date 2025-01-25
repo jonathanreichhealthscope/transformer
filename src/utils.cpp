@@ -384,16 +384,22 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     // Initialize beam search with parameters tuned for diversity and short sequences
     BeamSearch beam_search(k * 3,  // Wider beam width to ensure enough valid candidates
                           1.0f,     // length penalty
-                          1.2f,     // temperature 
-                          2.0f,     // diversity strength
-                          50,       // top_k
-                          0.95f);   // top_p
-    
+                          1.5f,     // Increased temperature for more diversity
+                          4.0f,     // Increased diversity strength
+                          100,      // Increased top_k
+                          0.98f);   // Increased top_p
+
     // Convert logits matrix to vector for beam search
     std::vector<float> initial_logits;
     initial_logits.reserve(logits.cols());
     for (int j = 0; j < logits.cols(); j++) {
         initial_logits.push_back(logits(logits.rows() - 1, j));
+    }
+    
+    // Add noise to initial logits to break ties and increase diversity
+    for (float& logit : initial_logits) {
+        float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f;
+        logit += noise;
     }
     
     // Store original input tokens before we start generating
@@ -404,19 +410,17 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     // Create next token function that uses the transformer with caching
     auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) -> std::vector<float> {
         try {
-            if (tokens.empty()) return std::vector<float>();
-            std::vector<int> last_token = {tokens.back()};
-            
-            Matrix next_hidden = transformer.forward(last_token, "", tokenizer, true);
-            if (next_hidden.empty()) return std::vector<float>();
-            
+            // Get next token logits from transformer
+            Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
             Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
-            if (next_logits.empty()) return std::vector<float>();
             
+            // Convert to vector and add noise for diversity
             std::vector<float> logits_vec;
             logits_vec.reserve(next_logits.cols());
             for (int j = 0; j < next_logits.cols(); j++) {
-                logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
+                float logit = next_logits(next_logits.rows() - 1, j);
+                float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f;
+                logits_vec.push_back(logit + noise);
             }
             return logits_vec;
         } catch (const std::exception& e) {
@@ -424,9 +428,6 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
             return std::vector<float>();
         }
     };
-    
-    // Clear the transformer's key-value cache before starting
-    transformer.clear_kv_cache();
     
     // Initialize the cache with the input sequence
     if (!original_input.empty()) {
@@ -444,100 +445,54 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     // Print predictions
     std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
     std::cout << "Top " << k << " predicted sequences:" << std::endl;
-    int predictions_shown = 0;
     
-    // Process all hypotheses to find valid ones
+    // Process all hypotheses to find valid ones with different first tokens
     std::vector<std::pair<std::string, float>> valid_predictions;
-    valid_predictions.reserve(hypotheses.size());
+    std::unordered_set<std::string> used_first_tokens;
     
     for (const auto& hyp : hypotheses) {
         try {
             if (hyp.tokens.size() <= input_length) continue;
             
-            // Get generated tokens
-            std::vector<int> generated_tokens;
-            generated_tokens.reserve(hyp.tokens.size() - input_length);
-            for (size_t i = input_length; i < hyp.tokens.size(); i++) {
-                generated_tokens.push_back(hyp.tokens[i]);
-            }
+            // Get generated tokens (excluding input)
+            std::vector<int> generated_tokens(
+                hyp.tokens.begin() + input_length,
+                hyp.tokens.end()
+            );
             
-            // Decode tokens one by one and handle word boundaries
-            std::string decoded;
-            int word_count = 0;
-            bool should_continue = true;
+            // Decode the sequence
+            std::string decoded = tokenizer.decode(generated_tokens);
+            if (decoded.empty()) continue;
             
-            for (size_t i = 0; i < generated_tokens.size() && should_continue; i++) {
-                std::string token_str = tokenizer.decode({generated_tokens[i]});
+            // Get first token of prediction
+            size_t space_pos = decoded.find(' ');
+            std::string first_token = space_pos == std::string::npos ? 
+                                    decoded : decoded.substr(0, space_pos);
+            
+            // Only add if we haven't seen this first token
+            if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
+                used_first_tokens.insert(first_token);
+                valid_predictions.push_back({decoded, hyp.score});
                 
-                // Skip special tokens
-                if (tokenizer.is_special_token(generated_tokens[i])) {
-                    continue;
-                }
-                
-                // Check if this token should have a space before it
-                bool add_space = true;
-                if (i == 0) {
-                    // First token after input - check if it needs a space
-                    std::string last_input_token = tokenizer.decode({original_input.back()});
-                    add_space = !last_input_token.empty() && 
-                               last_input_token.back() != ' ' &&
-                               !token_str.empty() && token_str[0] != ' ';
-                } else if (i > 0) {
-                    // Check previous token
-                    std::string prev_token = tokenizer.decode({generated_tokens[i-1]});
-                    add_space = !prev_token.empty() && 
-                               prev_token.back() != ' ' &&
-                               !token_str.empty() && token_str[0] != ' ';
-                }
-                
-                // Add space if needed
-                if (add_space && !decoded.empty() && decoded.back() != ' ') {
-                    decoded += ' ';
-                    // Count this as a word boundary
-                    word_count++;
-                    if (word_count >= 2) {
-                        should_continue = false;
-                        continue;
-                    }
-                }
-                
-                // Add the token
-                decoded += token_str;
+                if (valid_predictions.size() >= k) break;
             }
-            
-            // Skip empty or whitespace-only sequences
-            if (decoded.empty() || std::all_of(decoded.begin(), decoded.end(), ::isspace)) {
-                continue;
-            }
-            
-            // Trim any leading/trailing whitespace
-            size_t start = decoded.find_first_not_of(" \t\n\r");
-            size_t end = decoded.find_last_not_of(" \t\n\r");
-            if (start != std::string::npos && end != std::string::npos) {
-                decoded = decoded.substr(start, end - start + 1);
-            }
-            
-            // Add to valid predictions
-            valid_predictions.push_back({decoded, hyp.score});
         } catch (const std::exception& e) {
             std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
             continue;
         }
     }
     
-    // Sort valid predictions by score
-    std::sort(valid_predictions.begin(), valid_predictions.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-    
-    // Print top k valid predictions
-    for (size_t i = 0; i < std::min(static_cast<size_t>(k), valid_predictions.size()); i++) {
-        std::cout << i + 1 << ". \"" << valid_predictions[i].first << "\" (score="
-                  << valid_predictions[i].second << ")" << std::endl;
-        predictions_shown++;
+    // Print valid predictions
+    for (size_t i = 0; i < valid_predictions.size(); i++) {
+        const auto& [prediction, score] = valid_predictions[i];
+        std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
+                 << std::fixed << std::setprecision(4) << score << ")" << std::endl;
     }
     
-    if (predictions_shown < k) {
-        std::cout << "(Not enough valid predictions found)" << std::endl;
+    // If we didn't get enough predictions, print a warning
+    if (valid_predictions.size() < k) {
+        std::cout << "\nWarning: Only found " << valid_predictions.size() 
+                 << " unique predictions." << std::endl;
     }
 }
 

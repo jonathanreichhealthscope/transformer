@@ -65,11 +65,11 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
               << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
     
     // Scale hidden states for better gradient flow
+    float scale_factor = std::sqrt(2.0f / hidden_size_);
     Matrix scaled_hidden = hidden_states;
-    float scale_factor = std::sqrt(2.0f / hidden_dim);
     #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < scaled_hidden.rows(); ++i) {
-        for (size_t j = 0; j < scaled_hidden.cols(); ++j) {
+    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
+        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
             scaled_hidden(i, j) *= scale_factor;
         }
     }
@@ -97,20 +97,18 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
               << "Nonzero proj: " << nonzero_proj << "/" 
               << (projection.rows() * projection.cols()) << "\n\n";
     
-    // Compute logits with scaled hidden states
+    // Compute logits
     Matrix logits = matmul(scaled_hidden, projection);
     
-    // Add bias and apply activation
-    float temperature = 2.0f;  // Higher temperature for more exploration
+    // Add bias
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
-            // Add bias and scale by temperature
-            logits(i, j) = (logits(i, j) + bias[j]) / temperature;
+            logits(i, j) += bias[j];
             
-            // Apply small penalty to rarely seen tokens
-            if (token_frequencies[j] < pruning_threshold) {
-                logits(i, j) -= 0.1f;  // Penalty for rare tokens
+            // Apply a very small penalty to extremely rare tokens
+            if (token_frequencies[j] < 1e-6) {
+                logits(i, j) -= 0.01f;  // Much smaller penalty
             }
         }
     }
@@ -298,6 +296,30 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
     #pragma omp parallel for
     for (size_t i = 0; i < bias.size(); i++) {
         bias[i] -= effective_lr * grad_bias[i];
+    }
+}
+
+void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens) {
+    // Reset frequencies periodically to prevent over-accumulation
+    if (training_steps % 1000 == 0) {  // Reset every 1000 steps
+        std::fill(token_frequencies.begin(), token_frequencies.end(), 0.0f);
+    }
+    
+    for (int token : tokens) {
+        if (token >= 0 && static_cast<size_t>(token) < vocab_size_) {
+            token_frequencies[token] += 1.0f;
+        }
+    }
+    training_steps++;
+    
+    // Normalize frequencies to prevent extreme values
+    if (!token_frequencies.empty()) {
+        float max_freq = *std::max_element(token_frequencies.begin(), token_frequencies.end());
+        if (max_freq > 0) {
+            for (float& freq : token_frequencies) {
+                freq /= max_freq;  // Normalize to [0,1] range
+            }
+        }
     }
 }
 
