@@ -72,7 +72,7 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         new_to_old_id_.clear();
         
         // Keep only the most frequent tokens up to target_vocab_size
-        const size_t target_vocab_size = 7000;
+        const size_t target_vocab_size = 3000;  // Reduced from 7000 to be closer to actual vocab size
         if (vocab_pairs.size() > target_vocab_size) {
             // Mark which tokens we're keeping in filtered_tokens_
             for (size_t i = 0; i < target_vocab_size; i++) {
@@ -140,6 +140,14 @@ std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
         // Use tiktoken's encode method to get original token IDs
         auto old_tokens = tiktoken_->encode(text);
         
+        // Debug logging
+        std::cout << "Encoding text: '" << text << "'" << std::endl;
+        std::cout << "Original tokens: ";
+        for (int t : old_tokens) {
+            std::cout << t << "(" << tiktoken_->decode({t}) << ") ";
+        }
+        std::cout << std::endl;
+        
         // Convert to our new token IDs
         std::vector<int> new_tokens;
         new_tokens.reserve(old_tokens.size() + 2);
@@ -150,6 +158,7 @@ std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
             int new_id = convert_to_new_id(old_id);
             if (new_id == tokens::UNK_ID) {
                 unk_count++;
+                std::cout << "Token " << old_id << "(" << tiktoken_->decode({old_id}) << ") mapped to UNK" << std::endl;
             }
             new_tokens.push_back(new_id);
         }

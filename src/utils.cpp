@@ -296,14 +296,34 @@ std::vector<std::pair<std::string, std::string>> Utils::create_training_data() {
     }
 
     std::string line;
+    std::unordered_map<std::string, int> token_frequency;
+    size_t total_tokens = 0;
+    size_t unique_tokens = 0;
+    
     while (std::getline(file, line)) {
         size_t delimiter_pos = line.find('|');
         if (delimiter_pos != std::string::npos) {
             std::string input = line.substr(0, delimiter_pos);
             std::string output = line.substr(delimiter_pos + 1);
             training_pairs.emplace_back(input, output);
+            
+            // Count tokens in both input and output
+            for (const auto& text : {input, output}) {
+                std::istringstream iss(text);
+                std::string word;
+                while (iss >> word) {
+                    token_frequency[word]++;
+                    total_tokens++;
+                }
+            }
         }
     }
+    
+    unique_tokens = token_frequency.size();
+    std::cout << "\nTraining Data Statistics:" << std::endl;
+    std::cout << "Total tokens: " << total_tokens << std::endl;
+    std::cout << "Unique tokens: " << unique_tokens << std::endl;
+    std::cout << "Token/sample ratio: " << (float)total_tokens / training_pairs.size() << std::endl;
 
     // Apply data augmentation
     DataAugmentation augmenter(0.3f, 0.3f);
