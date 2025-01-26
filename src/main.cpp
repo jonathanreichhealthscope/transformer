@@ -269,7 +269,7 @@ int main(int argc, char* argv[]) {
                 Matrix logits = lm_head->project_to_vocab(hidden_states);
 
                 // Compute loss and its gradients for all tokens in sequence
-                float batch_loss = Utils::compute_batch_loss(logits, target_distribution);
+                float batch_loss = Utils::compute_batch_loss(logits, target_distribution, *tokenizer);
 
                 // Compute softmax gradients for each token in the sequence
                 Matrix loss_gradients = Matrix(logits.rows(), logits.cols(), 0.0f);

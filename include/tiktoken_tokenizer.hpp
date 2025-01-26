@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <unordered_map>
 #include "tiktoken/tiktoken/tiktoken.hpp"
 #include "token_constants.hpp"
 
@@ -29,9 +30,22 @@ public:
 
     bool is_initialized() const { return tiktoken_ != nullptr; }
 
+    void set_vocab_size(size_t size) {
+        target_vocab_size = size;
+    }
+
 private:
     std::unique_ptr<tiktoken::Encoding> tiktoken_;
+    std::vector<bool> filtered_tokens_;  // Tracks which tokens we keep
+    std::unordered_map<int, int> old_to_new_id_;  // Maps original token IDs to our new consecutive IDs
+    std::unordered_map<int, int> new_to_old_id_;  // Maps our new consecutive IDs back to original token IDs
     
     // Map between our special token IDs and tiktoken's vocabulary
     void setup_special_tokens();
+    
+    // Helper to convert between old and new token IDs
+    int convert_to_new_id(int old_id) const;
+    int convert_to_old_id(int new_id) const;
+
+    size_t target_vocab_size = 7000;
 }; 

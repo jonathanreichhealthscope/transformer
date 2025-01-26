@@ -8,6 +8,7 @@
 #include <iostream>
 #include <omp.h>
 #include <stdexcept>
+#include <nlohmann/json.hpp>
 
 extern cublasHandle_t cublas_handle;
 
@@ -722,5 +723,95 @@ void Transformer::load(std::istream& is) {
 
     } catch (const std::exception& e) {
         throw std::runtime_error("Error loading transformer: " + std::string(e.what()));
+    }
+}
+
+void TransformerConfig::load_from_json(const std::string& config_path) {
+    try {
+        // Read and parse JSON file
+        std::ifstream file(config_path);
+        if (!file.is_open()) {
+            throw std::runtime_error("Could not open config file: " + config_path);
+        }
+        
+        nlohmann::json json_config;
+        file >> json_config;
+        
+        // Load model parameters
+        if (json_config.contains("model")) {
+            const auto& model = json_config["model"];
+            if (model.contains("vocab_size")) {
+                vocab_size = model["vocab_size"];
+            }
+            if (model.contains("hidden_size")) {
+                hidden_size = model["hidden_size"];
+            }
+            if (model.contains("num_heads")) {
+                num_heads = model["num_heads"];
+            }
+            if (model.contains("num_layers")) {
+                num_layers = model["num_layers"];
+            }
+            if (model.contains("head_dim")) {
+                head_dim = model["head_dim"];
+            }
+            if (model.contains("intermediate_size")) {
+                intermediate_size = model["intermediate_size"];
+            }
+            if (model.contains("max_seq_length")) {
+                max_seq_length = model["max_seq_length"];
+            }
+        }
+
+        // Load attention parameters
+        if (json_config.contains("attention")) {
+            const auto& attention = json_config["attention"];
+            if (attention.contains("use_flash_attention")) {
+                use_flash_attention = attention["use_flash_attention"];
+            }
+            if (attention.contains("use_rope")) {
+                use_rope = attention["use_rope"];
+            }
+            if (attention.contains("use_sliding_window")) {
+                use_sliding_window = attention["use_sliding_window"];
+            }
+            if (attention.contains("window_size")) {
+                window_size = attention["window_size"];
+            }
+            if (attention.contains("use_gqa")) {
+                use_gqa = attention["use_gqa"];
+            }
+            if (attention.contains("num_kv_heads")) {
+                num_kv_heads = attention["num_kv_heads"];
+            }
+        }
+
+        // Load optimization parameters
+        if (json_config.contains("optimization")) {
+            const auto& optimization = json_config["optimization"];
+            if (optimization.contains("use_fp16")) {
+                use_fp16 = optimization["use_fp16"];
+            }
+        }
+
+        // Load tokenizer configuration
+        if (json_config.contains("tokenizer")) {
+            const auto& tok_config = json_config["tokenizer"];
+            if (tok_config.contains("vocab_size")) {
+                tokenizer.vocab_size = tok_config["vocab_size"];
+            }
+            if (tok_config.contains("model_path")) {
+                tokenizer.model_path = tok_config["model_path"];
+            }
+            if (tok_config.contains("use_subword")) {
+                tokenizer.use_subword = tok_config["use_subword"];
+            }
+            if (tok_config.contains("special_tokens")) {
+                tokenizer.special_tokens = tok_config["special_tokens"].get<std::vector<std::string>>();
+            }
+        }
+
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error loading config from JSON: " + std::string(e.what()));
     }
 }

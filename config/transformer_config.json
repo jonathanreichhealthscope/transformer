@@ -1,6 +1,6 @@
 {
     "model": {
-        "vocab_size": 1665,
+        "vocab_size": 7000,
         "hidden_size": 128,
         "num_heads": 8,
         "num_layers": 4,

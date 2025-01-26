@@ -102,4 +102,7 @@ class TransformerConfig {
      * @return true if configurations differ, false otherwise
      */
     bool operator!=(const TransformerConfig& other) const;
+
+    // Add the declaration for load_from_json
+    void load_from_json(const std::string& config_path);
 };

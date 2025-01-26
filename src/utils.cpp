@@ -56,17 +56,42 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
     // Set target distribution for each token in each sequence
     size_t current_pos = 0;
     for (size_t seq = 0; seq < target_tokens.size(); seq++) {
+        const auto& sequence = target_tokens[seq];
         
-        // Set actual tokens
-        for (size_t i = 0; i < target_tokens[seq].size(); i++) {
-            target_distribution(current_pos, target_tokens[seq][i]) = 1.0f;
+        // Find the start of the noun phrase at the end
+        size_t noun_phrase_start = sequence.size();
+        for (size_t i = sequence.size(); i > 0; --i) {
+            std::string token = tokenizer.decode({sequence[i-1]});
+            if (!tokenizer.is_noun(token)) {
+                break;
+            }
+            noun_phrase_start = i-1;
+        }
+        
+        // Set actual tokens with higher weight for noun phrase tokens
+        for (size_t i = 0; i < sequence.size(); i++) {
+            float weight = (i >= noun_phrase_start) ? 1.0f : 0.5f;  // Higher weight for noun phrase tokens
+            target_distribution(current_pos, sequence[i]) = weight;
             current_pos++;
         }
         
         // Pad remaining positions with pad token
-        for (size_t i = target_tokens[seq].size(); i < input_max_seq_len; i++) {
+        for (size_t i = sequence.size(); i < input_max_seq_len; i++) {
             target_distribution(current_pos, tokenizer.get_pad_token_id()) = 1.0f;
             current_pos++;
+        }
+    }
+    
+    // Normalize the target distributions
+    for (size_t i = 0; i < total_tokens; i++) {
+        float row_sum = 0.0f;
+        for (size_t j = 0; j < vocab_size; j++) {
+            row_sum += target_distribution(i, j);
+        }
+        if (row_sum > 0.0f) {
+            for (size_t j = 0; j < vocab_size; j++) {
+                target_distribution(i, j) /= row_sum;
+            }
         }
     }
     
@@ -78,7 +103,7 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
     return target_distribution;
 }
 
-float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution) {
+float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution, const Tokenizer& tokenizer) {
     if (logits.empty() || target_distribution.empty()) {
         return 0.0f;
     }
@@ -87,27 +112,49 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
     const size_t batch_size = logits.rows();
     const size_t vocab_size = logits.cols();
 
+    // Pre-compute which tokens are nouns - do this once for the whole vocabulary
+    static std::vector<bool> is_noun_cache;
+    static bool cache_initialized = false;
+    
+    if (!cache_initialized) {
+        is_noun_cache.resize(vocab_size);
+        for (size_t j = 0; j < vocab_size; ++j) {
+            std::string token = tokenizer.decode({static_cast<int>(j)});
+            is_noun_cache[j] = tokenizer.is_noun(token);
+        }
+        cache_initialized = true;
+    }
+
     // Pre-compute max logits and sums for numerical stability
     std::vector<float> max_logits(batch_size, -std::numeric_limits<float>::infinity());
     std::vector<float> sums(batch_size, 0.0f);
 
     #pragma omp parallel for reduction(+:total_loss)
     for (size_t i = 0; i < batch_size; ++i) {
-        // Find max logit for numerical stability
+        // Find max logit for numerical stability, but only consider noun tokens
         for (size_t j = 0; j < vocab_size; ++j) {
-            max_logits[i] = std::max(max_logits[i], logits(i, j));
+            if (is_noun_cache[j]) {
+                max_logits[i] = std::max(max_logits[i], logits(i, j));
+            }
         }
 
-        // Compute sum of exp(logits - max_logit)
+        // Compute sum of exp(logits - max_logit) only for noun tokens
         for (size_t j = 0; j < vocab_size; ++j) {
-            sums[i] += std::exp(logits(i, j) - max_logits[i]);
+            if (is_noun_cache[j]) {
+                sums[i] += std::exp(logits(i, j) - max_logits[i]);
+            }
         }
 
         // Compute cross entropy loss only for non-zero target probabilities
         for (size_t j = 0; j < vocab_size; ++j) {
             if (target_distribution(i, j) > 0.0f) {
-                float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
-                total_loss -= target_distribution(i, j) * log_prob;
+                if (is_noun_cache[j]) {
+                    float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
+                    total_loss -= target_distribution(i, j) * log_prob;
+                } else {
+                    // Add a small penalty for non-noun predictions when they should be nouns
+                    total_loss += 0.1f * target_distribution(i, j);
+                }
             }
         }
     }
@@ -425,14 +472,12 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         initial_logits.clear();
         for (int j = 0; j < logits.cols(); j++) {
             float base_logit = logits(logits.rows() - 1, j) / config.beam_search.initial_temperature;
-            // Add group-specific noise to encourage diversity between groups
             float group_noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
                               config.beam_search.initial_noise_scale * 
-                              (1.0f + group * 0.5f);  // Increase noise for later groups
+                              (1.0f + group * 0.5f);
             initial_logits.push_back(base_logit + group_noise);
         }
         
-        // Create next token function with group-specific noise - add config to capture list
         auto next_token_fn = [&transformer, &tokenizer, group, &config](const std::vector<int>& tokens) -> std::vector<float> {
             try {
                 Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
@@ -442,10 +487,9 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                 logits_vec.reserve(next_logits.cols());
                 for (int j = 0; j < next_logits.cols(); j++) {
                     float logit = next_logits(next_logits.rows() - 1, j);
-                    // Add group-specific noise
                     float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
                                 config.beam_search.token_noise_scale * 
-                                (1.0f + group * 0.3f);  // Increase noise for later groups
+                                (1.0f + group * 0.3f);
                     logits_vec.push_back(logit + noise);
                 }
                 return logits_vec;
@@ -455,14 +499,12 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
             }
         };
 
-        // Run beam search for this group
         const size_t MAX_LENGTH = input_length + 4;
         auto group_results = beam_search.search(
             initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
         group_hypotheses.push_back(group_results);
     }
 
-    // Clear cache after all groups are done
     transformer.clear_kv_cache();
 
     // Merge and process results from all groups
@@ -475,37 +517,42 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
             try {
                 if (hyp.tokens.size() <= input_length) continue;
                 
-                // Get generated tokens (excluding input)
                 std::vector<int> generated_tokens(
                     hyp.tokens.begin() + input_length,
                     hyp.tokens.end()
                 );
                 
-                // Decode tokens individually and join with spaces
+                // Decode tokens and check if they form a valid noun phrase
                 std::string decoded;
+                bool is_valid_noun_phrase = false;
+                std::string first_token;
+                
                 for (size_t i = 0; i < generated_tokens.size(); i++) {
                     std::string token = tokenizer.decode({generated_tokens[i]});
                     if (!token.empty()) {
                         if (!decoded.empty() && token[0] != ' ') {
                             decoded += " ";
                         }
+                        
+                        // Store first non-empty token
+                        if (first_token.empty() && !token.empty() && token != " ") {
+                            first_token = token;
+                            // Check if first token is a noun
+                            is_valid_noun_phrase = tokenizer.is_noun(first_token);
+                        }
+                        
                         decoded += token;
                     }
                 }
                 
-                if (decoded.empty()) continue;
+                if (decoded.empty() || !is_valid_noun_phrase) continue;
                 
                 // Add initial space if needed
                 if (decoded[0] != ' ') {
                     decoded = " " + decoded;
                 }
                 
-                // Get first token for diversity check
-                size_t space_pos = decoded.find(' ', 1);
-                std::string first_token = space_pos == std::string::npos ? 
-                                        decoded.substr(1) : decoded.substr(1, space_pos - 1);
-                
-                // Only add if we haven't seen this first token
+                // Only add if we haven't seen this first token and it's a valid noun phrase
                 if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
                     used_first_tokens.insert(first_token);
                     valid_predictions.push_back({decoded, hyp.score});
@@ -522,7 +569,7 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
 
     // Print predictions
     std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
-    std::cout << "Top " << k << " predicted sequences:" << std::endl;
+    std::cout << "Top " << k << " predicted noun phrases:" << std::endl;
     
     for (size_t i = 0; i < valid_predictions.size(); i++) {
         const auto& [prediction, score] = valid_predictions[i];
@@ -531,8 +578,8 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     }
 
     if (valid_predictions.size() < k) {
-        std::cout << "\nWarning: Only found " << valid_predictions.size() 
-                 << " unique predictions." << std::endl;
+        std::cout << "\nNote: Only found " << valid_predictions.size() 
+                 << " valid noun phrases." << std::endl;
     }
 }
 
@@ -631,7 +678,7 @@ float Utils::evaluate_validation(
                 last_token_logits(0, i) = logits(logits.rows() - 1, i);
             }
 
-            float loss = compute_batch_loss(last_token_logits, target_distribution);
+            float loss = compute_batch_loss(last_token_logits, target_distribution, tokenizer);
             total_loss += loss;
 
             // Check if prediction matches target
