@@ -2,6 +2,9 @@
 #include "../../include/cuda/cuda_check.cuh"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
 
 namespace cuda {
 
@@ -81,6 +84,21 @@ __global__ void bpe_tokenize_kernel(const char* text,
 void parallel_tokenize(const std::string& text,
                       const tiktoken::Encoding& tokenizer,
                       std::vector<int>& output) {
+    // Log input text tokenization
+    std::cout << "\n=== Tokenization Details ===" << std::endl;
+    std::cout << "Input text: '" << text << "'" << std::endl;
+    
+    // Get CPU tokenization for comparison
+    auto cpu_tokens = tokenizer.encode(text);
+    std::cout << "CPU Tokenization:" << std::endl;
+    for (size_t i = 0; i < cpu_tokens.size(); ++i) {
+        std::string token_text = tokenizer.decode({cpu_tokens[i]});
+        std::cout << std::setw(5) << cpu_tokens[i] << "(" 
+                  << (token_text.empty() ? "<empty>" : token_text) << ")";
+        if (i < cpu_tokens.size() - 1) std::cout << " + ";
+    }
+    std::cout << std::endl;
+
     // Allocate device memory
     char* d_text;
     int* d_output;
@@ -165,6 +183,26 @@ void parallel_tokenize(const std::string& text,
     CUDA_CHECK(cudaFree(d_text));
     CUDA_CHECK(cudaFree(d_output));
     CUDA_CHECK(cudaFree(d_output_length));
+
+    // After getting results back, log GPU tokenization
+    std::cout << "GPU Tokenization:" << std::endl;
+    for (size_t i = 0; i < output.size(); ++i) {
+        std::string token_text = tokenizer.decode({output[i]});
+        std::cout << std::setw(5) << output[i] << "(" 
+                  << (token_text.empty() ? "<empty>" : token_text) << ")";
+        if (i < output.size() - 1) std::cout << " + ";
+    }
+    std::cout << "\n=== End Tokenization Details ===\n" << std::endl;
+
+    // Compare CPU and GPU results
+    if (cpu_tokens != output) {
+        std::cout << "WARNING: CPU and GPU tokenization differ!" << std::endl;
+        std::cout << "CPU tokens: ";
+        for (auto t : cpu_tokens) std::cout << t << " ";
+        std::cout << "\nGPU tokens: ";
+        for (auto t : output) std::cout << t << " ";
+        std::cout << std::endl;
+    }
 }
 
 } // namespace cuda 
