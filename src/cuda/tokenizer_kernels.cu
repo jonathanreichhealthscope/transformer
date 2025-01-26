@@ -9,23 +9,39 @@ namespace cuda {
 __device__ VocabEntry* g_vocab = nullptr;
 __device__ int g_vocab_size = 0;
 
+__device__ bool is_byte_boundary(const char* text, int pos) {
+    return (text[pos] & 0xC0) != 0x80;  // Check if it's not a UTF-8 continuation byte
+}
+
 __device__ bool find_longest_token(const char* text, int start_pos, int text_length, int* token_id, int* token_length) {
     *token_length = 0;
     *token_id = -1;
     
+    // First try multi-byte tokens
     for (int i = 0; i < g_vocab_size; i++) {
-        const char* vocab_token = g_vocab[i].token;
+        const unsigned char* vocab_token = reinterpret_cast<const unsigned char*>(g_vocab[i].token);
         int j = 0;
-        while (start_pos + j < text_length && 
-               vocab_token[j] != '\0' && 
-               text[start_pos + j] == vocab_token[j]) {
+        bool match = true;
+        
+        while (start_pos + j < text_length && vocab_token[j] != 0) {
+            if (static_cast<unsigned char>(text[start_pos + j]) != vocab_token[j]) {
+                match = false;
+                break;
+            }
             j++;
         }
         
-        if (vocab_token[j] == '\0' && j > *token_length) {
+        if (match && vocab_token[j] == 0 && j > *token_length) {
             *token_length = j;
             *token_id = g_vocab[i].id;
         }
+    }
+    
+    // If no multi-byte token found, fall back to single byte
+    if (*token_id == -1 && is_byte_boundary(text, start_pos)) {
+        unsigned char byte = static_cast<unsigned char>(text[start_pos]);
+        *token_length = 1;
+        *token_id = byte;  // Use byte value as token ID for single bytes
     }
     
     return *token_id != -1;
@@ -45,12 +61,14 @@ __global__ void bpe_tokenize_kernel(const char* text,
     __syncthreads();
     
     for (int pos = start_idx; pos < text_length; pos += stride) {
+        if (!is_byte_boundary(text, pos)) continue;  // Skip UTF-8 continuation bytes
+        
         int token_id, token_length;
         if (find_longest_token(text, pos, text_length, &token_id, &token_length)) {
             int output_pos = atomicAdd(&shared_output_pos, 1);
             if (output_pos < text_length) {
                 output_ids[output_pos] = token_id;
-                pos += token_length - 1;  // Skip processed characters
+                pos += token_length - 1;  // Skip processed bytes
             }
         }
     }
@@ -67,8 +85,6 @@ void parallel_tokenize(const std::string& text,
     char* d_text;
     int* d_output;
     int* d_output_length;
-    static VocabEntry* d_vocab = nullptr;
-    static int d_vocab_size = 0;
     
     CUDA_CHECK(cudaMalloc(&d_text, text.length()));
     CUDA_CHECK(cudaMalloc(&d_output, text.length() * sizeof(int)));
@@ -80,37 +96,49 @@ void parallel_tokenize(const std::string& text,
     // Initialize vocabulary in global memory (if not already done)
     static bool vocab_initialized = false;
     if (!vocab_initialized) {
-        // Create temporary vocabulary entries
         std::vector<VocabEntry> h_vocab;
         h_vocab.reserve(50000);
         
-        // Process each token in the vocabulary
-        std::string token;
-        std::vector<int> single_token(1);
+        // First, add all single bytes as tokens
+        for (int i = 0; i < 256; i++) {
+            VocabEntry entry;
+            entry.token[0] = static_cast<char>(i);
+            entry.token[1] = '\0';
+            entry.id = i;
+            h_vocab.push_back(entry);
+        }
         
-        // Iterate through possible token IDs
-        for (size_t i = 0; i < 50000; i++) {
-            single_token[0] = static_cast<int>(i);
-            token = tokenizer.decode(single_token);
+        // Then add multi-byte tokens by encoding and decoding test strings
+        std::vector<int> encoded;
+        std::string decoded;
+        for (int i = 0; i < 50000; i++) {
+            // Try to decode the token ID to get its bytes
+            std::vector<int> token_ids = {i};
+            decoded = tokenizer.decode(token_ids);
             
-            if (!token.empty() && token.length() < 32) {
-                VocabEntry entry;
-                strncpy(entry.token, token.c_str(), 31);
-                entry.token[31] = '\0';  // Ensure null termination
-                entry.id = i;
-                h_vocab.push_back(entry);
+            if (!decoded.empty() && decoded.length() < 32) {
+                // Verify this is a valid token by encoding it back
+                encoded = tokenizer.encode(decoded);
+                if (encoded.size() == 1 && encoded[0] == i) {
+                    VocabEntry entry;
+                    memcpy(entry.token, decoded.data(), decoded.length());
+                    entry.token[decoded.length()] = '\0';
+                    entry.id = i;
+                    h_vocab.push_back(entry);
+                }
             }
         }
         
         // Allocate and copy vocabulary to device global memory
-        CUDA_CHECK(cudaMalloc(&d_vocab, h_vocab.size() * sizeof(VocabEntry)));
-        CUDA_CHECK(cudaMemcpy(d_vocab, h_vocab.data(), h_vocab.size() * sizeof(VocabEntry), cudaMemcpyHostToDevice));
-        d_vocab_size = static_cast<int>(h_vocab.size());
+        size_t vocab_size = h_vocab.size();
+        VocabEntry* d_vocab;
+        CUDA_CHECK(cudaMalloc(&d_vocab, vocab_size * sizeof(VocabEntry)));
+        CUDA_CHECK(cudaMemcpy(d_vocab, h_vocab.data(), vocab_size * sizeof(VocabEntry), cudaMemcpyHostToDevice));
         
         // Copy pointers to device globals
-        void* d_vocab_ptr = static_cast<void*>(d_vocab);
-        CUDA_CHECK(cudaMemcpyToSymbol(g_vocab, &d_vocab_ptr, sizeof(void*)));
-        CUDA_CHECK(cudaMemcpyToSymbol(g_vocab_size, &d_vocab_size, sizeof(int)));
+        int size = static_cast<int>(vocab_size);
+        CUDA_CHECK(cudaMemcpyToSymbol(g_vocab, &d_vocab, sizeof(VocabEntry*)));
+        CUDA_CHECK(cudaMemcpyToSymbol(g_vocab_size, &size, sizeof(int)));
         
         vocab_initialized = true;
     }
