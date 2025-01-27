@@ -82,6 +82,9 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
 
 Matrix FeedForward::forward(const Matrix& input) {
     try {
+        // Add eps constant declaration
+        const float eps = 1e-5f;  // Small constant for numerical stability
+        
         std::cout << "\n=== FeedForward Dimensions Debug ===" << std::endl;
         std::cout << "Input: " << input.rows() << "x" << input.cols() << std::endl;
         std::cout << "W1: " << w1.rows() << "x" << w1.cols() << std::endl;
@@ -141,10 +144,91 @@ Matrix FeedForward::forward(const Matrix& input) {
                     std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
             }
             
-            // Add residual connection
-            output += input;
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();
+            // Normalize output before residual connection
+            float output_mean = 0.0f;
+            float output_var = 0.0f;
+            
+            // Calculate mean
+            #pragma omp parallel for collapse(2) reduction(+:output_mean)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output_mean += output(i, j);
+                }
+            }
+            output_mean /= (output.rows() * output.cols());
+            
+            // Calculate variance
+            #pragma omp parallel for collapse(2) reduction(+:output_var)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    float diff = output(i, j) - output_mean;
+                    output_var += diff * diff;
+                }
+            }
+            output_var /= (output.rows() * output.cols());
+            
+            // Update scaling factors for better stability
+            const float ffn_scale = 0.5f;  // Increased from 0.2f to prevent collapse
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output(i, j) = ffn_scale * (output(i, j) - output_mean) / std::sqrt(output_var + eps);
+                }
+            }
+            
+            // Scale input for residual connection
+            const float residual_scale = 0.8f;  // Increased from 0.5f to maintain signal strength
+            Matrix scaled_input = input;
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < input.rows(); i++) {
+                for (size_t j = 0; j < input.cols(); j++) {
+                    scaled_input(i, j) *= residual_scale;
+                }
+            }
+            
+            // Add scaled residual connection
+            output += scaled_input;
+            
+            // Add layer normalization after residual connection with adjusted target variance
+            float final_mean = 0.0f;
+            float final_var = 0.0f;
+            
+            // Calculate mean
+            #pragma omp parallel for collapse(2) reduction(+:final_mean)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    final_mean += output(i, j);
+                }
+            }
+            final_mean /= (output.rows() * output.cols());
+            
+            // Calculate variance
+            #pragma omp parallel for collapse(2) reduction(+:final_var)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    float diff = output(i, j) - final_mean;
+                    final_var += diff * diff;
+                }
+            }
+            final_var /= (output.rows() * output.cols());
+            
+            // Apply final normalization with increased target variance
+            const float target_var = 2.0f;  // Increased from 1.0f to encourage more spread
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output(i, j) = std::sqrt(target_var) * (output(i, j) - final_mean) / std::sqrt(final_var + eps);
+                }
+            }
+            
+            // Increased clip value to allow more variation
+            const float clip_val = 2.5f;  // Increased from 1.5f
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output(i, j) = std::max(-clip_val, std::min(clip_val, output(i, j)));
+                }
+            }
             
             return output;
         } catch (const std::runtime_error& e) {
@@ -153,6 +237,40 @@ Matrix FeedForward::forward(const Matrix& input) {
             // CPU fallback implementation
             Matrix intermediate = matmul(input, w1);
             intermediate.add_bias(b1);
+
+            // Add layer normalization before GELU
+            float int_mean = 0.0f;
+            float int_var = 0.0f;
+            
+            // Calculate mean
+            #pragma omp parallel for collapse(2) reduction(+:int_mean)
+            for (size_t i = 0; i < intermediate.rows(); i++) {
+                for (size_t j = 0; j < intermediate.cols(); j++) {
+                    int_mean += intermediate(i, j);
+                }
+            }
+            int_mean /= (intermediate.rows() * intermediate.cols());
+            
+            // Calculate variance
+            #pragma omp parallel for collapse(2) reduction(+:int_var)
+            for (size_t i = 0; i < intermediate.rows(); i++) {
+                for (size_t j = 0; j < intermediate.cols(); j++) {
+                    float diff = intermediate(i, j) - int_mean;
+                    int_var += diff * diff;
+                }
+            }
+            int_var /= (intermediate.rows() * intermediate.cols());
+            
+            // Apply normalization with scaling
+            const float eps = 1e-5f;
+            const float pre_gelu_scale = 1.2f;  // Slightly larger to encourage more activations
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < intermediate.rows(); i++) {
+                for (size_t j = 0; j < intermediate.cols(); j++) {
+                    intermediate(i, j) = pre_gelu_scale * (intermediate(i, j) - int_mean) / std::sqrt(int_var + eps);
+                }
+            }
+
             intermediate.apply_gelu();
             intermediate_cache = intermediate;
             
@@ -167,8 +285,91 @@ Matrix FeedForward::forward(const Matrix& input) {
                     std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
             }
             
-            // Add residual connection
-            output += input;  // This is where the dimension mismatch occurs
+            // Normalize output before residual connection
+            float output_mean = 0.0f;
+            float output_var = 0.0f;
+            
+            // Calculate mean
+            #pragma omp parallel for collapse(2) reduction(+:output_mean)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output_mean += output(i, j);
+                }
+            }
+            output_mean /= (output.rows() * output.cols());
+            
+            // Calculate variance
+            #pragma omp parallel for collapse(2) reduction(+:output_var)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    float diff = output(i, j) - output_mean;
+                    output_var += diff * diff;
+                }
+            }
+            output_var /= (output.rows() * output.cols());
+            
+            // Update scaling factors for better stability
+            const float ffn_scale = 0.5f;  // Increased from 0.2f to prevent collapse
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output(i, j) = ffn_scale * (output(i, j) - output_mean) / std::sqrt(output_var + eps);
+                }
+            }
+            
+            // Scale input for residual connection
+            const float residual_scale = 0.8f;  // Increased from 0.5f to maintain signal strength
+            Matrix scaled_input = input;
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < input.rows(); i++) {
+                for (size_t j = 0; j < input.cols(); j++) {
+                    scaled_input(i, j) *= residual_scale;
+                }
+            }
+            
+            // Add scaled residual connection
+            output += scaled_input;
+            
+            // Add layer normalization after residual connection with adjusted target variance
+            float final_mean = 0.0f;
+            float final_var = 0.0f;
+            
+            // Calculate mean
+            #pragma omp parallel for collapse(2) reduction(+:final_mean)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    final_mean += output(i, j);
+                }
+            }
+            final_mean /= (output.rows() * output.cols());
+            
+            // Calculate variance
+            #pragma omp parallel for collapse(2) reduction(+:final_var)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    float diff = output(i, j) - final_mean;
+                    final_var += diff * diff;
+                }
+            }
+            final_var /= (output.rows() * output.cols());
+            
+            // Apply final normalization with increased target variance
+            const float target_var = 2.0f;  // Increased from 1.0f to encourage more spread
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output(i, j) = std::sqrt(target_var) * (output(i, j) - final_mean) / std::sqrt(final_var + eps);
+                }
+            }
+            
+            // Increased clip value to allow more variation
+            const float clip_val = 2.5f;  // Increased from 1.5f
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < output.rows(); i++) {
+                for (size_t j = 0; j < output.cols(); j++) {
+                    output(i, j) = std::max(-clip_val, std::min(clip_val, output(i, j)));
+                }
+            }
             
             return output;
 #ifdef USE_CUDA
@@ -289,16 +490,44 @@ void FeedForward::update_parameters(const Matrix& grad) {
 }
 
 void FeedForward::initialize_weights() {
-    // Get sizes from weight matrices
-    size_t hidden_size = w1.rows();  // Input/output size
-    size_t intermediate_size = w1.cols();  // Hidden layer size
+    size_t hidden_size = w1.rows();
+    size_t intermediate_size = w1.cols();
     
-    float scale = sqrt(2.0f / (hidden_size + intermediate_size));
+    // Use Xavier/Glorot initialization with fan_in and fan_out
+    float w1_scale = std::sqrt(2.0f / (hidden_size + intermediate_size));
+    float w2_scale = std::sqrt(2.0f / (hidden_size + intermediate_size));
     
-    w1.initialize_random(scale);
-    w2.initialize_random(scale);
+    // Initialize with normal distribution instead of uniform
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<float> w1_dist(0.0f, w1_scale);
+    std::normal_distribution<float> w2_dist(0.0f, w2_scale);
     
-    // Initialize biases to small non-zero values
-    b1.initialize_constant(0.01f);
-    b2.initialize_constant(0.01f);
+    // Initialize weights with normal distribution
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < w1.rows(); ++i) {
+        for (size_t j = 0; j < w1.cols(); ++j) {
+            w1(i, j) = w1_dist(gen);
+        }
+    }
+    
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < w2.rows(); ++i) {
+        for (size_t j = 0; j < w2.cols(); ++j) {
+            w2(i, j) = w2_dist(gen);
+        }
+    }
+    
+    // Initialize biases with small random values instead of constants
+    std::normal_distribution<float> b_dist(0.0f, 0.01f);
+    
+    #pragma omp parallel for
+    for (size_t i = 0; i < b1.size(); ++i) {
+        b1[i] = b_dist(gen);
+    }
+    
+    #pragma omp parallel for
+    for (size_t i = 0; i < b2.size(); ++i) {
+        b2[i] = b_dist(gen);
+    }
 }

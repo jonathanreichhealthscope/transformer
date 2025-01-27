@@ -420,6 +420,24 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
     // Batch process embeddings
     Matrix pos_encodings = pos_encoding->forward(position_ids);
     
+    // Center positional encodings around zero
+    float pos_mean = 0.0f;
+    #pragma omp parallel for reduction(+:pos_mean)
+    for (size_t i = 0; i < pos_encodings.rows(); i++) {
+        for (size_t j = 0; j < pos_encodings.cols(); j++) {
+            pos_mean += pos_encodings(i, j);
+        }
+    }
+    pos_mean /= (pos_encodings.rows() * pos_encodings.cols());
+
+    // Subtract mean to center around zero
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < pos_encodings.rows(); i++) {
+        for (size_t j = 0; j < pos_encodings.cols(); j++) {
+            pos_encodings(i, j) -= pos_mean;
+        }
+    }
+    
     // Debug positional encodings
     float min_pos = std::numeric_limits<float>::infinity();
     float max_pos = -std::numeric_limits<float>::infinity();
@@ -461,6 +479,49 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
         hidden_states = dropout->forward(hidden_states, true);
     }
 
+    // Normalize hidden states before processing
+    float hidden_mean = 0.0f;
+    float hidden_var = 0.0f;
+    
+    // Calculate mean
+    #pragma omp parallel for reduction(+:hidden_mean)
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < hidden_states.cols(); j++) {
+            hidden_mean += hidden_states(i, j);
+        }
+    }
+    hidden_mean /= (hidden_states.rows() * hidden_states.cols());
+    
+    // Calculate variance
+    #pragma omp parallel for reduction(+:hidden_var)
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < hidden_states.cols(); j++) {
+            float diff = hidden_states(i, j) - hidden_mean;
+            hidden_var += diff * diff;
+        }
+    }
+    hidden_var /= (hidden_states.rows() * hidden_states.cols());
+    
+    // Normalize with scaling factor to keep values in reasonable range
+    const float eps = 1e-5f;
+    const float scale = std::sqrt(2.0f);  // Scale to get variance closer to 1
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < hidden_states.cols(); j++) {
+            hidden_states(i, j) = scale * (hidden_states(i, j) - hidden_mean) / std::sqrt(hidden_var + eps);
+        }
+    }
+
+    // Add gradient clipping for stability
+    const float clip_threshold = 1.0f;
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < hidden_states.rows(); i++) {
+        for (size_t j = 0; j < hidden_states.cols(); j++) {
+            hidden_states(i, j) = std::max(-clip_threshold, 
+                                         std::min(clip_threshold, hidden_states(i, j)));
+        }
+    }
+
     // Process layers with minimal synchronization
     for (size_t i = 0; i < layers.size(); ++i) {
         try {
@@ -472,6 +533,8 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
             float sum_hidden = 0.0f;
             size_t nonzero_hidden = 0;
             
+            #pragma omp parallel for collapse(2) reduction(min:min_hidden) reduction(max:max_hidden) \
+                                 reduction(+:sum_hidden,nonzero_hidden)
             for (size_t r = 0; r < hidden_states.rows(); r++) {
                 for (size_t c = 0; c < hidden_states.cols(); c++) {
                     float val = hidden_states(r, c);
@@ -482,13 +545,15 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
                 }
             }
             
-            std::cout << "Hidden States Statistics before layer " << i << ":\n"
-                      << "Min hidden: " << min_hidden << "\n"
-                      << "Max hidden: " << max_hidden << "\n"
-                      << "Mean hidden: " << sum_hidden / (hidden_states.rows() * hidden_states.cols()) << "\n"
-                      << "Nonzero hidden: " << nonzero_hidden << "/" 
-                      << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
-            
+            // Apply residual scaling to prevent value explosion
+            const float residual_scale = 0.7071f; // 1/√2
+            #pragma omp parallel for collapse(2)
+            for (size_t r = 0; r < hidden_states.rows(); r++) {
+                for (size_t c = 0; c < hidden_states.cols(); c++) {
+                    hidden_states(r, c) *= residual_scale;
+                }
+            }
+
             hidden_states = layers[i]->forward(hidden_states, mask,
                                              use_cache ? std::optional<KVCache>(m_kv_caches[i])
                                                      : std::nullopt);
