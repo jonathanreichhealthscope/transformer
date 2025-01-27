@@ -45,11 +45,21 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         
         // First, collect token frequency statistics from the training data
         std::unordered_map<int, size_t> token_frequencies;
+        std::unordered_map<std::string, size_t> word_frequencies;
         
         std::string line;
         size_t total_tokens = 0;
         while (std::getline(train_file, line)) {
             if (line.empty()) continue;
+            
+            // Count raw words
+            std::istringstream iss(line);
+            std::string word;
+            while (iss >> word) {
+                word_frequencies[word]++;
+            }
+            
+            // Count BPE tokens
             auto tokens = tiktoken_->encode(line);
             total_tokens += tokens.size();
             for (int token : tokens) {
@@ -57,8 +67,10 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
             }
         }
         
-        std::cout << "Analyzed " << total_tokens << " total tokens in training data" << std::endl;
-        std::cout << "Found " << token_frequencies.size() << " unique tokens in training data" << std::endl;
+        std::cout << "\nToken Analysis:" << std::endl;
+        std::cout << "Raw word count: " << word_frequencies.size() << " unique words" << std::endl;
+        std::cout << "BPE token count: " << token_frequencies.size() << " unique tokens" << std::endl;
+        std::cout << "Analyzed " << total_tokens << " total BPE tokens in training data" << std::endl;
         
         // Initialize ID mappings
         // First add special tokens (they keep their original IDs 0-4)
@@ -67,29 +79,50 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
             new_to_old_id_[i] = i;
         }
         
-        // For all other tokens in the training data, keep their original GPT-2 IDs
-        // This preserves the BPE structure while only using tokens we actually need
+        // For all other tokens in the training data, map them to consecutive IDs
+        size_t next_id = 5;  // Start after special tokens
         for (const auto& [token_id, freq] : token_frequencies) {
             if (token_id >= 5) {  // Skip special tokens
-                old_to_new_id_[token_id] = token_id;
-                new_to_old_id_[token_id] = token_id;
+                old_to_new_id_[token_id] = next_id;
+                new_to_old_id_[next_id] = token_id;
+                next_id++;
             }
         }
         
-        target_vocab_size = token_frequencies.size();
+        target_vocab_size = next_id;  // Set the actual vocabulary size
         
-        std::cout << "Using " << token_frequencies.size() << " tokens from training data" << std::endl;
+        std::cout << "\nVocabulary Statistics:" << std::endl;
+        std::cout << "Using " << next_id << " tokens from training data" << std::endl;
+        std::cout << "Token ID range: [0, " << next_id << ")" << std::endl;
         
-        // Print frequency distribution
+        // Print frequency distribution and example tokens
         if (!token_frequencies.empty()) {
-            std::cout << "Top 10 most frequent tokens:" << std::endl;
+            std::cout << "\nTop 10 most frequent BPE tokens:" << std::endl;
             std::vector<std::pair<int, size_t>> freq_vec(token_frequencies.begin(), token_frequencies.end());
             std::sort(freq_vec.begin(), freq_vec.end(),
                      [](const auto& a, const auto& b) { return a.second > b.second; });
             
             for (size_t i = 0; i < std::min(size_t(10), freq_vec.size()); i++) {
                 std::string token_text = tiktoken_->decode({freq_vec[i].first});
-                std::cout << "  " << token_text << ": " << freq_vec[i].second << " occurrences" << std::endl;
+                std::cout << "  " << freq_vec[i].first << " -> " << next_id 
+                         << " ('" << token_text << "'): " 
+                         << freq_vec[i].second << " occurrences" << std::endl;
+            }
+            
+            // Show some example word tokenizations
+            std::cout << "\nExample word tokenizations:" << std::endl;
+            size_t examples = 0;
+            for (const auto& [word, _] : word_frequencies) {
+                if (examples >= 5) break;
+                auto word_tokens = tiktoken_->encode(word);
+                std::cout << "'" << word << "' -> ";
+                for (size_t i = 0; i < word_tokens.size(); i++) {
+                    std::string token_text = tiktoken_->decode({word_tokens[i]});
+                    std::cout << "'" << token_text << "'(" << word_tokens[i] << ")";
+                    if (i < word_tokens.size() - 1) std::cout << " + ";
+                }
+                std::cout << std::endl;
+                examples++;
             }
         }
         
