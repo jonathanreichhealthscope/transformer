@@ -1,8 +1,14 @@
 #include "../include/tokenizer.hpp"
-#include <algorithm>
-#include <regex>
-#include <sstream>
 #include <stdexcept>
+#include <iostream>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
+#include <fstream>
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#include <regex>
 
 // Define the special character map
 const std::unordered_map<char, std::string> Tokenizer::SPECIAL_CHAR_MAP = {
@@ -184,4 +190,64 @@ void Tokenizer::initialize() {
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to initialize tokenizer: " + std::string(e.what()));
     }
+}
+
+bool Tokenizer::is_noun(const std::string& token) const {
+    // Simple heuristic: consider capitalized words or special tokens as nouns
+    return !token.empty() && (
+        std::isupper(token[0]) ||
+        token.find("<") == 0  // Special tokens
+    );
+}
+
+bool Tokenizer::is_adjective(const std::string& token) const {
+    // Common adjectives
+    static const std::unordered_set<std::string> adjectives = {
+        "big", "small", "large", "tiny", "huge", "little",
+        "good", "bad", "great", "awful", "terrible", "wonderful",
+        "beautiful", "ugly", "pretty", "handsome",
+        "old", "new", "young", "ancient", "modern",
+        "happy", "sad", "angry", "excited", "nervous",
+        "red", "blue", "green", "yellow", "black", "white",
+        "hot", "cold", "warm", "cool",
+        "fast", "slow", "quick", "rapid",
+        "hard", "soft", "rough", "smooth",
+        "bright", "dark", "dim", "shiny",
+        "loud", "quiet", "noisy", "silent",
+        "clean", "dirty", "neat", "messy",
+        "rich", "poor", "wealthy", "expensive",
+        "strong", "weak", "powerful", "feeble",
+        "smart", "clever", "intelligent", "wise",
+        "brave", "cowardly", "fearless", "timid",
+        "kind", "mean", "gentle", "cruel",
+        "tall", "short", "high", "low",
+        "wide", "narrow", "broad", "thin",
+        "deep", "shallow", "thick", "slim"
+    };
+    
+    // Convert token to lowercase for comparison
+    std::string lower_token = token;
+    std::transform(lower_token.begin(), lower_token.end(), lower_token.begin(), ::tolower);
+    
+    return adjectives.find(lower_token) != adjectives.end();
+}
+
+bool Tokenizer::is_determiner(const std::string& token) const {
+    // Common determiners
+    static const std::unordered_set<std::string> determiners = {
+        "the", "a", "an",                     // Articles
+        "this", "that", "these", "those",     // Demonstratives
+        "my", "your", "his", "her", "its",    // Possessives
+        "our", "their",
+        "any", "many", "much", "few",         // Quantifiers
+        "several", "some", "all", "both",
+        "each", "every", "either", "neither",
+        "no", "other", "another"
+    };
+    
+    // Convert token to lowercase for comparison
+    std::string lower_token = token;
+    std::transform(lower_token.begin(), lower_token.end(), lower_token.begin(), ::tolower);
+    
+    return determiners.find(lower_token) != determiners.end();
 }

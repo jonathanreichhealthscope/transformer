@@ -34,6 +34,8 @@ public:
         target_vocab_size = size;
     }
 
+    static void set_debug_logging(bool enable);  // Add static method to control logging
+
 private:
     std::unique_ptr<tiktoken::Encoding> tiktoken_;
     std::vector<bool> filtered_tokens_;  // Tracks which tokens we keep
@@ -48,4 +50,5 @@ private:
     int convert_to_old_id(int new_id) const;
 
     size_t target_vocab_size = 7000;
+    static bool debug_logging_;  // Add static debug flag
 }; 

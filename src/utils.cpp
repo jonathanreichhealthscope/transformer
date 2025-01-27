@@ -527,9 +527,10 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
 
     transformer.clear_kv_cache();
 
-    // Merge and process results from all groups
-    std::vector<std::pair<std::string, float>> valid_predictions;
+    // Store both noun and noun phrase predictions
     std::unordered_set<std::string> used_first_tokens;
+    std::vector<std::pair<std::string, float>> valid_noun_phrases;
+    std::vector<std::pair<std::string, float>> valid_nouns;
 
     // Process hypotheses from each group
     for (const auto& group_results : group_hypotheses) {
@@ -542,11 +543,13 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                     hyp.tokens.end()
                 );
                 
-                // Decode tokens and check if they form a valid noun phrase
+                // Decode tokens and check if they form a valid noun or noun phrase
                 std::string decoded;
-                bool is_valid_noun_phrase = false;
+                bool is_valid = false;
                 std::string first_token;
+                std::vector<std::string> words;
                 
+                // First pass: collect all words
                 for (size_t i = 0; i < generated_tokens.size(); i++) {
                     std::string token = tokenizer.decode({generated_tokens[i]});
                     if (!token.empty()) {
@@ -554,52 +557,103 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                             decoded += " ";
                         }
                         
+                        // Skip tokens that start with 'Ġ' or other special characters
+                        if (token[0] == 'Ġ' || !std::isalpha(token[0])) continue;
+                        
                         // Store first non-empty token
                         if (first_token.empty() && !token.empty() && token != " ") {
                             first_token = token;
-                            // Check if first token is a noun
-                            is_valid_noun_phrase = tokenizer.is_noun(first_token);
+                            words.push_back(token);
+                        } else if (!token.empty() && token != " ") {
+                            words.push_back(token);
                         }
                         
                         decoded += token;
                     }
                 }
                 
-                if (decoded.empty() || !is_valid_noun_phrase) continue;
+                // Validate the sequence
+                if (words.size() == 1) {
+                    // Single word - check if it's a noun
+                    is_valid = tokenizer.is_noun(words[0]);
+                } else if (words.size() > 1) {
+                    // Multiple words - check if it's a noun phrase
+                    bool all_valid = true;
+                    bool has_noun = false;
+                    
+                    for (const auto& word : words) {
+                        // Skip non-English or invalid words
+                        if (word.empty() || !std::isalpha(word[0])) {
+                            all_valid = false;
+                            break;
+                        }
+                        
+                        if (tokenizer.is_noun(word)) {
+                            has_noun = true;
+                        } else if (!tokenizer.is_adjective(word) && !tokenizer.is_determiner(word)) {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                    is_valid = all_valid && has_noun;
+                }
+                
+                if (decoded.empty() || !is_valid) continue;
+                
+                // Filter out predictions with very low scores
+                if (hyp.score < -10.0f) continue;
                 
                 // Add initial space if needed
                 if (decoded[0] != ' ') {
                     decoded = " " + decoded;
                 }
                 
-                // Only add if we haven't seen this first token and it's a valid noun phrase
+                // Only add if we haven't seen this first token
                 if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
                     used_first_tokens.insert(first_token);
-                    valid_predictions.push_back({decoded, hyp.score});
                     
-                    if (valid_predictions.size() >= k) break;
+                    // If it's a single token, it's a noun
+                    // Otherwise, it's a noun phrase
+                    if (words.size() == 1) {
+                        valid_nouns.push_back({decoded, hyp.score});
+                    } else {
+                        valid_noun_phrases.push_back({decoded, hyp.score});
+                    }
+                    
+                    // Break if we have enough predictions of both types
+                    if (valid_nouns.size() >= k && valid_noun_phrases.size() >= k) break;
                 }
             } catch (const std::exception& e) {
                 std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
                 continue;
             }
         }
-        if (valid_predictions.size() >= k) break;
+        if (valid_nouns.size() >= k && valid_noun_phrases.size() >= k) break;
     }
 
     // Print predictions
     std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
-    std::cout << "Top " << k << " predicted noun phrases:" << std::endl;
     
-    for (size_t i = 0; i < valid_predictions.size(); i++) {
-        const auto& [prediction, score] = valid_predictions[i];
+    // Print noun predictions
+    std::cout << "\nTop " << k << " predicted nouns:" << std::endl;
+    for (size_t i = 0; i < std::min(valid_nouns.size(), static_cast<size_t>(k)); i++) {
+        const auto& [prediction, score] = valid_nouns[i];
         std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
                  << std::fixed << std::setprecision(4) << score << ")" << std::endl;
     }
+    if (valid_nouns.empty()) {
+        std::cout << "No valid nouns found." << std::endl;
+    }
 
-    if (valid_predictions.size() < k) {
-        std::cout << "\nNote: Only found " << valid_predictions.size() 
-                 << " valid noun phrases." << std::endl;
+    // Print noun phrase predictions
+    std::cout << "\nTop " << k << " predicted noun phrases:" << std::endl;
+    for (size_t i = 0; i < std::min(valid_noun_phrases.size(), static_cast<size_t>(k)); i++) {
+        const auto& [prediction, score] = valid_noun_phrases[i];
+        std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
+                 << std::fixed << std::setprecision(4) << score << ")" << std::endl;
+    }
+    if (valid_noun_phrases.empty()) {
+        std::cout << "No valid noun phrases found." << std::endl;
     }
 }
 

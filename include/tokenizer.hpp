@@ -40,17 +40,25 @@ public:
     void print_vocabulary_mappings() const;
 
     /**
-     * @brief Checks if a token represents a noun
+     * @brief Checks if a token is a noun
      * @param token Token string to check
      * @return True if the token is a noun
      */
-    bool is_noun(const std::string& token) const {
-        // Simple heuristic: consider capitalized words or special tokens as nouns
-        return !token.empty() && (
-            std::isupper(token[0]) ||
-            token.find("<") == 0  // Special tokens
-        );
-    }
+    bool is_noun(const std::string& token) const;
+
+    /**
+     * @brief Checks if a token is an adjective
+     * @param token Token string to check
+     * @return True if the token is an adjective
+     */
+    bool is_adjective(const std::string& token) const;
+
+    /**
+     * @brief Checks if a token is a determiner
+     * @param token Token string to check
+     * @return True if the token is a determiner
+     */
+    bool is_determiner(const std::string& token) const;
 
     // Special character mapping for preprocessing
     static const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
