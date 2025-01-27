@@ -11,6 +11,7 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <omp.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -34,12 +35,14 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
     std::uniform_real_distribution<float> w2_dis(-w2_limit, w2_limit);
 
     // Initialize weights
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < w1.rows(); ++i) {
         for (size_t j = 0; j < w1.cols(); ++j) {
             w1(i, j) = w1_dis(gen);
         }
     }
 
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < w2.rows(); ++i) {
         for (size_t j = 0; j < w2.cols(); ++j) {
             w2(i, j) = w2_dis(gen);
@@ -47,26 +50,32 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
     }
 
     // Initialize biases to zero
+    #pragma omp parallel for
     for (size_t i = 0; i < b1.size(); ++i)
         b1[i] = 0.0f;
+    #pragma omp parallel for
     for (size_t i = 0; i < b2.size(); ++i)
         b2[i] = 0.0f;
 
     // Initialize gradients to zero
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < dW1_.rows(); ++i) {
         for (size_t j = 0; j < dW1_.cols(); ++j) {
             dW1_(i, j) = 0.0f;
         }
     }
 
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < dW2_.rows(); ++i) {
         for (size_t j = 0; j < dW2_.cols(); ++j) {
             dW2_(i, j) = 0.0f;
         }
     }
 
+    #pragma omp parallel for
     for (size_t i = 0; i < db1_.size(); ++i)
         db1_[i] = 0.0f;
+    #pragma omp parallel for
     for (size_t i = 0; i < db2_.size(); ++i)
         db2_[i] = 0.0f;
 }
@@ -254,14 +263,26 @@ Matrix FeedForward::backward(const Matrix& grad_output, const Matrix& input) {
 void FeedForward::update_parameters(const Matrix& grad) {
     float learning_rate = 0.01f;  // Could be made configurable
     
-    w1 -= dW1_ * learning_rate;
-    // Scale vector elements individually
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < w1.rows(); ++i) {
+        for (size_t j = 0; j < w1.cols(); ++j) {
+            w1(i, j) -= dW1_(i, j) * learning_rate;
+        }
+    }
+    
+    #pragma omp parallel for
     for (size_t i = 0; i < b1.size(); ++i) {
         b1[i] -= db1_[i] * learning_rate;
     }
     
-    w2 -= dW2_ * learning_rate;
-    // Scale vector elements individually
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < w2.rows(); ++i) {
+        for (size_t j = 0; j < w2.cols(); ++j) {
+            w2(i, j) -= dW2_(i, j) * learning_rate;
+        }
+    }
+    
+    #pragma omp parallel for
     for (size_t i = 0; i < b2.size(); ++i) {
         b2[i] -= db2_[i] * learning_rate;
     }

@@ -24,11 +24,13 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     projection.randomize(-scale, scale);
     
     // Initialize bias to small negative values to encourage sparsity
+    #pragma omp parallel for
     for (size_t i = 0; i < vocab_size; i++) {
         bias[i] = -0.1f;  // Small negative bias
     }
     
     active_token_indices.reserve(vocab_size);
+    #pragma omp parallel for
     for (size_t i = 0; i < vocab_size; i++) {
         active_token_indices.push_back(i);
     }
@@ -424,11 +426,17 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
 void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens) {
     // Reset frequencies periodically to prevent over-accumulation
     if (training_steps % 1000 == 0) {  // Reset every 1000 steps
-        std::fill(token_frequencies.begin(), token_frequencies.end(), 0.0f);
+        #pragma omp parallel for
+        for (size_t i = 0; i < token_frequencies.size(); i++) {
+            token_frequencies[i] = 0.0f;
+        }
     }
     
-    for (int token : tokens) {
+    #pragma omp parallel for
+    for (size_t i = 0; i < tokens.size(); i++) {
+        int token = tokens[i];
         if (token >= 0 && static_cast<size_t>(token) < vocab_size_) {
+            #pragma omp atomic
             token_frequencies[token] += 1.0f;
         }
     }
@@ -438,8 +446,9 @@ void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens)
     if (!token_frequencies.empty()) {
         float max_freq = *std::max_element(token_frequencies.begin(), token_frequencies.end());
         if (max_freq > 0) {
-            for (float& freq : token_frequencies) {
-                freq /= max_freq;  // Normalize to [0,1] range
+            #pragma omp parallel for
+            for (size_t i = 0; i < token_frequencies.size(); i++) {
+                token_frequencies[i] /= max_freq;  // Normalize to [0,1] range
             }
         }
     }

@@ -391,6 +391,8 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
     float sum_emb = 0.0f;
     size_t nonzero_emb = 0;
     
+    #pragma omp parallel for collapse(2) reduction(min:min_emb) reduction(max:max_emb) \
+                             reduction(+:sum_emb,nonzero_emb)
     for (size_t i = 0; i < embeddings.rows(); i++) {
         for (size_t j = 0; j < embeddings.cols(); j++) {
             float val = embeddings(i, j);
@@ -408,7 +410,9 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
               << "Nonzero emb: " << nonzero_emb << "/" 
               << (embeddings.rows() * embeddings.cols()) << "\n\n";
     
+    // Create position_ids
     Matrix position_ids(input_tokens.size(), 1);
+    #pragma omp parallel for
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
@@ -595,6 +599,7 @@ void Transformer::update_parameters(float learning_rate) {
     std::cout << "Number of matrix parameters: " << params.size() << std::endl;
     std::cout << "Number of matrix gradients: " << grads.size() << std::endl;
 
+    #pragma omp parallel for
     for (size_t i = 0; i < params.size(); ++i) {
         Matrix& param = params[i];
         const Matrix& grad = grads[i];
@@ -610,13 +615,16 @@ void Transformer::update_parameters(float learning_rate) {
                 std::to_string(grad.cols()) + ")");
         }
 
-        // Update rule: param = param - learning_rate * grad
-        for (size_t j = 0; j < param.size(); ++j) {
-            param.data()[j] -= learning_rate * grad.data()[j];
+        #pragma omp parallel for collapse(2)
+        for (size_t j = 0; j < param.rows(); ++j) {
+            for (size_t k = 0; k < param.cols(); ++k) {
+                param(j, k) -= learning_rate * grad(j, k);
+            }
         }
     }
 
     // Update Vector parameters for each layer
+    #pragma omp parallel for
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
         std::cout << "\nProcessing layer " << layer_idx << std::endl;
         auto& layer = layers[layer_idx];
@@ -629,6 +637,7 @@ void Transformer::update_parameters(float learning_rate) {
                   << attn_grads.vectors.size() << " gradients" << std::endl;
 
         // Update attention biases using computed gradients
+        #pragma omp parallel for
         for (size_t i = 0; i < attn_params.vectors.size(); ++i) {
             auto& bias = attn_params.vectors[i];
             const auto& bias_grad = attn_grads.vectors[i];
@@ -640,6 +649,7 @@ void Transformer::update_parameters(float learning_rate) {
                 throw std::runtime_error("Dimension mismatch in attention bias update");
             }
 
+            #pragma omp parallel for
             for (size_t j = 0; j < bias.get().size(); ++j) {
                 bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
             }
@@ -652,6 +662,7 @@ void Transformer::update_parameters(float learning_rate) {
         std::cout << "Layer norm vectors: " << ln_params.size() << " parameters, "
                   << ln_grads.size() << " gradients" << std::endl;
 
+        #pragma omp parallel for
         for (size_t i = 0; i < ln_params.size(); ++i) {
             auto& param = ln_params[i];
             const auto& grad = ln_grads[i];
@@ -663,6 +674,7 @@ void Transformer::update_parameters(float learning_rate) {
                 throw std::runtime_error("Dimension mismatch in layer norm update");
             }
 
+            #pragma omp parallel for
             for (size_t j = 0; j < param.get().size(); ++j) {
                 param.get().data()[j] -= learning_rate * grad.get().data()[j];
             }
@@ -675,6 +687,7 @@ void Transformer::update_parameters(float learning_rate) {
         std::cout << "Feed forward vectors: " << ffn_params.vectors.size() << " parameters, "
                   << ffn_grads.vectors.size() << " gradients" << std::endl;
 
+        #pragma omp parallel for
         for (size_t i = 0; i < ffn_params.vectors.size(); ++i) {
             auto& bias = ffn_params.vectors[i];
             const auto& bias_grad = ffn_grads.vectors[i];
@@ -686,6 +699,7 @@ void Transformer::update_parameters(float learning_rate) {
                 throw std::runtime_error("Dimension mismatch in feed forward bias update");
             }
 
+            #pragma omp parallel for
             for (size_t j = 0; j < bias.get().size(); ++j) {
                 bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
             }
