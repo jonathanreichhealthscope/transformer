@@ -108,16 +108,46 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
         for (size_t j = 0; j < logits.cols(); ++j) {
             logits(i, j) += bias[j];
             
-            // Apply stronger penalties for rare and UNK tokens
+            // Apply more balanced penalties for special tokens
             if (j == static_cast<size_t>(tokens::UNK_ID)) {
-                // Heavily penalize UNK token
-                logits(i, j) -= 15.0f;  // Increased penalty
+                // Reduced penalty for UNK token
+                logits(i, j) -= 8.0f;
             } else if (token_frequencies[j] < 1e-6) {
-                // Stronger penalty for rare tokens
-                logits(i, j) -= 8.0f;  // Increased penalty
+                // Reduced penalty for rare tokens
+                logits(i, j) -= 4.0f;
             } else if (token_frequencies[j] < 1e-4) {
-                // Moderate penalty for uncommon tokens
-                logits(i, j) -= 4.0f;  // Increased penalty
+                // Minimal penalty for uncommon tokens
+                logits(i, j) -= 2.0f;
+            }
+            
+            // Add small bonus for common tokens
+            if (token_frequencies[j] > 1e-2) {
+                logits(i, j) += 1.0f;
+            }
+        }
+    }
+    
+    // Apply softmax with improved temperature scaling
+    const float temperature = 0.8f;  // More moderate temperature
+    #pragma omp parallel for
+    for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max for numerical stability
+        float max_val = logits(i, 0);
+        for (size_t j = 1; j < logits.cols(); j++) {
+            max_val = std::max(max_val, logits(i, j));
+        }
+        
+        // Apply temperature and compute sum
+        float sum = 0.0f;
+        for (size_t j = 0; j < logits.cols(); j++) {
+            logits(i, j) = std::exp((logits(i, j) - max_val) / temperature);
+            sum += logits(i, j);
+        }
+        
+        // Normalize
+        if (sum > 1e-6f) {
+            for (size_t j = 0; j < logits.cols(); j++) {
+                logits(i, j) /= sum;
             }
         }
     }
@@ -140,7 +170,7 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
             min_logit = std::min(min_logit, val);
             max_logit = std::max(max_logit, val);
             sum_logits += val;
-            if (std::abs(val) > 0.1f) active_logits++;
+            if (val > 1e-6) active_logits++;
             
             processed_elements++;
             
