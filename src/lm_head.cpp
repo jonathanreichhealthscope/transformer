@@ -1,5 +1,7 @@
 #include "../include/lm_head.hpp"
+#include "../include/token_constants.hpp"
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <algorithm>
 #include <random>
@@ -106,9 +108,16 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
         for (size_t j = 0; j < logits.cols(); ++j) {
             logits(i, j) += bias[j];
             
-            // Apply a very small penalty to extremely rare tokens
-            if (token_frequencies[j] < 1e-6) {
-                logits(i, j) -= 0.001f;  // Much smaller penalty
+            // Apply stronger penalties for rare and UNK tokens
+            if (j == static_cast<size_t>(tokens::UNK_ID)) {
+                // Heavily penalize UNK token
+                logits(i, j) -= 15.0f;  // Increased penalty
+            } else if (token_frequencies[j] < 1e-6) {
+                // Stronger penalty for rare tokens
+                logits(i, j) -= 8.0f;  // Increased penalty
+            } else if (token_frequencies[j] < 1e-4) {
+                // Moderate penalty for uncommon tokens
+                logits(i, j) -= 4.0f;  // Increased penalty
             }
         }
     }
@@ -119,6 +128,12 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     float sum_logits = 0.0f;
     size_t active_logits = 0;
     
+    const int bar_width = 50;
+    const size_t total_elements = logits.rows() * logits.cols();
+    size_t processed_elements = 0;
+    
+    std::cout << "\nCounting active logits:\n" << std::flush;
+    
     for (size_t i = 0; i < logits.rows(); i++) {
         for (size_t j = 0; j < logits.cols(); j++) {
             float val = logits(i, j);
@@ -126,16 +141,38 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
             max_logit = std::max(max_logit, val);
             sum_logits += val;
             if (std::abs(val) > 0.1f) active_logits++;
+            
+            processed_elements++;
+            
+            // Update progress bar every 1000 elements for smoother display
+            if (processed_elements % 1000 == 0 || processed_elements == total_elements) {
+                float progress = float(processed_elements) / total_elements;
+                int pos = bar_width * progress;
+                
+                std::cout << "\r[";
+                for (int k = 0; k < bar_width; ++k) {
+                    if (k < pos) std::cout << "=";
+                    else if (k == pos) std::cout << ">";
+                    else std::cout << " ";
+                }
+                std::cout << "] " << std::fixed << std::setprecision(1) 
+                         << (progress * 100.0) << "% "
+                         << "(" << processed_elements << "/" << total_elements << ")" 
+                         << std::flush;
+            }
         }
     }
+    std::cout << std::endl << std::endl;  // Add extra newline for spacing
     
-    std::cout << "\nLogit Statistics in forward_impl:\n"
-              << "Min logit: " << min_logit << "\n"
+    float mean_logit = sum_logits / total_elements;
+    float range = max_logit - min_logit;
+    
+    std::cout << "Logit Statistics in forward_impl:\n"
+              << "Min logit: " << std::fixed << std::setprecision(1) << min_logit << "\n"
               << "Max logit: " << max_logit << "\n"
-              << "Mean logit: " << sum_logits / (logits.rows() * logits.cols()) << "\n"
-              << "Range: " << (max_logit - min_logit) << "\n"
-              << "Active logits: " << active_logits << "/" 
-              << (logits.rows() * logits.cols()) << "\n\n";
+              << "Mean logit: " << mean_logit << "\n"
+              << "Range: " << range << "\n"
+              << "Active logits: " << active_logits << "/" << total_elements << "\n\n";
     
     return logits;
 }

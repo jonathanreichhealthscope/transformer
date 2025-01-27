@@ -8,20 +8,48 @@
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), weights_grad_(vocab_size, embedding_dim),
       vocab_size_(vocab_size), embedding_dim_(embedding_dim) {
-    // Initialize weights with scaled random values
-    float scale = std::sqrt(0.2f / embedding_dim_);
-    weights_.randomize(-scale, scale);
-    weights_grad_.fill(0.0f);
-
-    // Add validation
-    bool all_zero = true;
-    for (size_t i = 0; i < std::min(size_t(10), weights_.size()); i++) {
-        if (weights_.data()[i] != 0.0f) {
-            all_zero = false;
-            break;
+    // Initialize weights with Xavier/Glorot initialization
+    // For embeddings, fan_in is 1 (each token maps to one row)
+    // and fan_out is embedding_dim (each embedding influences embedding_dim outputs)
+    float scale = std::sqrt(2.0f / (1 + embedding_dim_));
+    
+    // Use normal distribution instead of uniform for better properties
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<float> dist(0.0f, scale);
+    
+    // Initialize weights
+    for (size_t i = 0; i < weights_.rows(); i++) {
+        for (size_t j = 0; j < weights_.cols(); j++) {
+            weights_(i, j) = dist(gen);
         }
     }
-    if (all_zero) {
+    weights_grad_.fill(0.0f);
+
+    // Validate initialization
+    float min_val = std::numeric_limits<float>::infinity();
+    float max_val = -std::numeric_limits<float>::infinity();
+    float mean_val = 0.0f;
+    size_t nonzero = 0;
+    
+    for (size_t i = 0; i < weights_.rows(); i++) {
+        for (size_t j = 0; j < weights_.cols(); j++) {
+            float val = weights_(i, j);
+            min_val = std::min(min_val, val);
+            max_val = std::max(max_val, val);
+            mean_val += val;
+            if (std::abs(val) > 1e-6) nonzero++;
+        }
+    }
+    mean_val /= (weights_.rows() * weights_.cols());
+    
+    std::cout << "Embedding initialization statistics:\n"
+              << "- Scale factor: " << scale << "\n"
+              << "- Range: [" << min_val << ", " << max_val << "]\n"
+              << "- Mean: " << mean_val << "\n"
+              << "- Nonzero: " << nonzero << "/" << (weights_.rows() * weights_.cols()) << "\n";
+
+    if (nonzero == 0) {
         throw std::runtime_error("Embedding weights initialization failed - all values are zero");
     }
 }

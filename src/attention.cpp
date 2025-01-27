@@ -989,44 +989,56 @@ Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matri
 }
 
 void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
-    const float EPSILON = 1e-8f;
-    const float TEMPERATURE = 0.7f;
-    const float MIN_SCORE = -1e4f;
-
-    for (size_t i = 0; i < x.rows(); i++) {
-        // Find max for numerical stability
-        float max_val = MIN_SCORE;
-        for (size_t j = 0; j < x.cols(); j++) {
-            if (x(i, j) > MIN_SCORE) {
-                max_val = std::max(max_val, x(i, j));
-            }
+    // Process each row separately for proper attention distribution
+    for (size_t row = 0; row < x.rows(); row++) {
+        // Find max value in this row for numerical stability
+        float max_val = -std::numeric_limits<float>::infinity();
+        for (size_t col = 0; col < x.cols(); col++) {
+            max_val = std::max(max_val, x(row, col));
         }
 
-        // Apply temperature scaling and compute sum
-        float sum_exp = 0.0f;
-        for (size_t j = 0; j < x.cols(); j++) {
-            if (x(i, j) > MIN_SCORE) {
-                x(i, j) = std::exp((x(i, j) - max_val) / TEMPERATURE);
-                sum_exp += x(i, j);
-            } else {
-                x(i, j) = 0.0f;
-            }
+        // Subtract max value and compute exp for this row
+        float row_sum = 0.0f;
+        for (size_t col = 0; col < x.cols(); col++) {
+            x(row, col) = std::exp(x(row, col) - max_val);
+            row_sum += x(row, col);
         }
 
-        // Normalize
-        if (sum_exp < EPSILON) {
-            // If sum is too small, use uniform distribution
+        // Check for numerical instability in this row
+        if (row_sum < 1e-10) {
+            std::cerr << "WARNING: Row " << row << " has near-zero softmax sum\n";
+            // Fall back to uniform attention for this row only
             float uniform_val = 1.0f / x.cols();
-            for (size_t j = 0; j < x.cols(); j++) {
-                x(i, j) = uniform_val;
+            for (size_t col = 0; col < x.cols(); col++) {
+                x(row, col) = uniform_val;
             }
-        } else {
-            // Normal normalization
-            for (size_t j = 0; j < x.cols(); j++) {
-                x(i, j) /= sum_exp;
-            }
+            continue;
+        }
+
+        // Normalize this row
+        for (size_t col = 0; col < x.cols(); col++) {
+            x(row, col) /= row_sum;
         }
     }
+
+    // Validate results
+    float min_val = std::numeric_limits<float>::infinity();
+    float max_val = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < x.rows(); i++) {
+        float row_sum = 0.0f;
+        for (size_t j = 0; j < x.cols(); j++) {
+            min_val = std::min(min_val, x(i, j));
+            max_val = std::max(max_val, x(i, j));
+            row_sum += x(i, j);
+        }
+        if (std::abs(row_sum - 1.0f) > 1e-6) {
+            std::cerr << "WARNING: Row " << i << " softmax sum = " << row_sum << "\n";
+        }
+    }
+    
+    std::cout << "Softmax output statistics:\n"
+              << "Min: " << min_val << "\n"
+              << "Max: " << max_val << "\n";
 }
 
 Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
@@ -1087,17 +1099,45 @@ Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix
 }
 
 void MultiHeadAttention::initialize_weights() {
-    // Initialize with small random values instead of zeros
-    float scale = sqrt(2.0f / (3 * hidden_size));
+    // Xavier/Glorot initialization
+    // For attention, we want to consider both input and output connections
+    // fan_in = hidden_size, fan_out = hidden_size
+    float scale = std::sqrt(2.0f / (hidden_size + hidden_size));
+    
+    std::cout << "Initializing attention weights with scale: " << scale << std::endl;
     
     query_proj.initialize_random(scale);
     key_proj.initialize_random(scale);
     value_proj.initialize_random(scale);
     output_proj.initialize_random(scale);
     
-    // Initialize biases to small non-zero values
-    query_bias.initialize_constant(0.01f);
-    key_bias.initialize_constant(0.01f);
-    value_bias.initialize_constant(0.01f);
-    output_bias.initialize_constant(0.01f);
+    // Initialize biases to small positive values to encourage
+    // initially looking at all positions slightly
+    float bias_init = 0.01f;
+    query_bias.initialize_constant(bias_init);
+    key_bias.initialize_constant(bias_init);
+    value_bias.initialize_constant(bias_init);
+    output_bias.initialize_constant(bias_init);
+    
+    // Log initialization statistics
+    auto log_stats = [](const Matrix& m, const std::string& name) {
+        float min_val = m.min();
+        float max_val = m.max();
+        float mean_val = 0.0f;
+        for (size_t i = 0; i < m.rows(); i++) {
+            for (size_t j = 0; j < m.cols(); j++) {
+                mean_val += m(i,j);
+            }
+        }
+        mean_val /= (m.rows() * m.cols());
+        
+        std::cout << name << " initialization stats:\n"
+                  << "- Range: [" << min_val << ", " << max_val << "]\n"
+                  << "- Mean: " << mean_val << "\n";
+    };
+    
+    log_stats(query_proj, "Query projection");
+    log_stats(key_proj, "Key projection");
+    log_stats(value_proj, "Value projection");
+    log_stats(output_proj, "Output projection");
 }

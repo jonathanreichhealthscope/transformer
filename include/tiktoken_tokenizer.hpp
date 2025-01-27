@@ -41,6 +41,7 @@ private:
     std::vector<bool> filtered_tokens_;  // Tracks which tokens we keep
     std::unordered_map<int, int> old_to_new_id_;  // Maps original token IDs to our new consecutive IDs
     std::unordered_map<int, int> new_to_old_id_;  // Maps our new consecutive IDs back to original token IDs
+    std::unordered_map<std::string, size_t> token_frequencies_;  // Track token frequencies for vocabulary selection
     
     // Map between our special token IDs and tiktoken's vocabulary
     void setup_special_tokens();
@@ -49,6 +50,9 @@ private:
     int convert_to_new_id(int old_id) const;
     int convert_to_old_id(int new_id) const;
 
-    size_t target_vocab_size = 7000;
+    // Helper to build frequency-based vocabulary
+    void build_vocabulary_from_frequencies();
+
+    size_t target_vocab_size = 7000;  // Keep the reduced vocabulary size
     static bool debug_logging_;  // Add static debug flag
 }; 

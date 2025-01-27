@@ -406,6 +406,7 @@ class MultiHeadAttention {
         }
     }
 
+    // Move implementation to source file
     void apply_stable_softmax(Matrix& x) const;
 
     // Add these new methods to handle Tensors directly

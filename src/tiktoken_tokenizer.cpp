@@ -8,134 +8,189 @@
 #include <nlohmann/json.hpp>
 #include <random>
 #include <algorithm>
+#include <iomanip>
 
 TiktokenTokenizer::TiktokenTokenizer() = default;
 
 void TiktokenTokenizer::initialize(const std::string& encoding_name) {
     try {
+        std::cout << "Initializing tokenizer..." << std::endl;
+        
         // Initialize the base tiktoken encoder with GPT-2 encoding
         tiktoken_ = std::make_unique<tiktoken::Encoding>("gpt2");
+        std::cout << "Loaded base GPT-2 vocabulary" << std::endl;
         
         // Get the executable's directory
         std::filesystem::path exe_path = std::filesystem::current_path();
+        std::unordered_map<int, size_t> id_freqs;
         
-        // Try to find training data file using same path resolution as vocab file
-        std::ifstream train_file;
-        std::string train_path;
-        
-        // First try data directory relative to executable
-        auto training_data_path = exe_path / "data" / "training_pairs.txt";
-        train_file.open(training_data_path);
-        if (train_file.is_open()) {
-            train_path = training_data_path.string();
-            std::cout << "Using training data from: " << train_path << std::endl;
-        } else {
-            // Try one directory up (in case running from build directory)
-            train_file.close();
-            train_file.clear();
-            auto parent_training_path = exe_path.parent_path() / "data" / "training_pairs.txt";
-            train_file.open(parent_training_path);
-            if (train_file.is_open()) {
-                train_path = parent_training_path.string();
-                std::cout << "Using training data from: " << train_path << std::endl;
+        // Function to process a data file and update frequencies
+        auto process_file = [&](const std::string& filename) -> bool {
+            std::ifstream file;
+            std::string file_path;
+            
+            // First try data directory relative to executable
+            auto data_path = exe_path / "data" / filename;
+            file.open(data_path);
+            if (file.is_open()) {
+                file_path = data_path.string();
             } else {
-                throw std::runtime_error("Could not find training_pairs.txt in data directory");
-            }
-        }
-        
-        // First, collect token frequency statistics from the training data
-        std::unordered_map<int, size_t> token_frequencies;
-        std::unordered_map<std::string, size_t> word_frequencies;
-        
-        std::string line;
-        size_t total_tokens = 0;
-        while (std::getline(train_file, line)) {
-            if (line.empty()) continue;
-            
-            // Count raw words
-            std::istringstream iss(line);
-            std::string word;
-            while (iss >> word) {
-                word_frequencies[word]++;
-            }
-            
-            // Count BPE tokens
-            auto tokens = tiktoken_->encode(line);
-            total_tokens += tokens.size();
-            for (int token : tokens) {
-                token_frequencies[token]++;
-            }
-        }
-        
-        std::cout << "\nToken Analysis:" << std::endl;
-        std::cout << "Raw word count: " << word_frequencies.size() << " unique words" << std::endl;
-        std::cout << "BPE token count: " << token_frequencies.size() << " unique tokens" << std::endl;
-        std::cout << "Analyzed " << total_tokens << " total BPE tokens in training data" << std::endl;
-        
-        // Initialize ID mappings
-        // First add special tokens (they keep their original IDs 0-4)
-        for (int i = 0; i < 5; i++) {
-            old_to_new_id_[i] = i;
-            new_to_old_id_[i] = i;
-        }
-        
-        // For all other tokens in the training data, map them to consecutive IDs
-        size_t next_id = 5;  // Start after special tokens
-        for (const auto& [token_id, freq] : token_frequencies) {
-            if (token_id >= 5) {  // Skip special tokens
-                old_to_new_id_[token_id] = next_id;
-                new_to_old_id_[next_id] = token_id;
-                next_id++;
-            }
-        }
-        
-        target_vocab_size = next_id;  // Set the actual vocabulary size
-        
-        std::cout << "\nVocabulary Statistics:" << std::endl;
-        std::cout << "Using " << next_id << " tokens from training data" << std::endl;
-        std::cout << "Token ID range: [0, " << next_id << ")" << std::endl;
-        
-        // Print frequency distribution and example tokens
-        if (!token_frequencies.empty()) {
-            std::cout << "\nTop 10 most frequent BPE tokens:" << std::endl;
-            std::vector<std::pair<int, size_t>> freq_vec(token_frequencies.begin(), token_frequencies.end());
-            std::sort(freq_vec.begin(), freq_vec.end(),
-                     [](const auto& a, const auto& b) { return a.second > b.second; });
-            
-            for (size_t i = 0; i < std::min(size_t(10), freq_vec.size()); i++) {
-                std::string token_text = tiktoken_->decode({freq_vec[i].first});
-                std::cout << "  " << freq_vec[i].first << " -> " << next_id 
-                         << " ('" << token_text << "'): " 
-                         << freq_vec[i].second << " occurrences" << std::endl;
-            }
-            
-            // Show some example word tokenizations
-            std::cout << "\nExample word tokenizations:" << std::endl;
-            size_t examples = 0;
-            for (const auto& [word, _] : word_frequencies) {
-                if (examples >= 5) break;
-                auto word_tokens = tiktoken_->encode(word);
-                std::cout << "'" << word << "' -> ";
-                for (size_t i = 0; i < word_tokens.size(); i++) {
-                    std::string token_text = tiktoken_->decode({word_tokens[i]});
-                    std::cout << "'" << token_text << "'(" << word_tokens[i] << ")";
-                    if (i < word_tokens.size() - 1) std::cout << " + ";
+                // Try parent directory
+                data_path = exe_path.parent_path() / "data" / filename;
+                file.open(data_path);
+                if (file.is_open()) {
+                    file_path = data_path.string();
+                } else {
+                    std::cerr << "ERROR: Could not find " << filename << " in either:\n";
+                    std::cerr << "  - " << (exe_path / "data" / filename).string() << "\n";
+                    std::cerr << "  - " << (exe_path.parent_path() / "data" / filename).string() << "\n";
+                    return false;
                 }
-                std::cout << std::endl;
-                examples++;
+            }
+
+            std::cout << "Processing " << filename << " from: " << file_path << std::endl;
+
+            // Count total lines for progress reporting
+            size_t total_lines = 0;
+            std::string line;
+            while (std::getline(file, line)) {
+                if (!line.empty()) total_lines++;
+            }
+            
+            // Reset file to beginning
+            file.clear();
+            file.seekg(0);
+
+            // Process data to build token frequencies
+            size_t processed_lines = 0;
+            std::string buffer;
+            
+            std::cout << "\nProcessing " << filename << ":\n";
+            const int bar_width = 50;
+            
+            // Read file in larger chunks for efficiency
+            while (std::getline(file, line)) {
+                if (line.empty()) continue;
+                
+                buffer += line + "\n";
+                processed_lines++;
+                
+                // Process buffer when it gets large enough
+                if (buffer.length() > 10000 || processed_lines == total_lines) {
+                    std::vector<int> token_ids = tiktoken_->encode(buffer);
+                    for (int id : token_ids) {
+                        id_freqs[id]++;
+                    }
+                    buffer.clear();
+                }
+                
+                // Update progress bar
+                float progress = float(processed_lines) / total_lines;
+                int pos = bar_width * progress;
+                
+                std::cout << "\r[";
+                for (int i = 0; i < bar_width; ++i) {
+                    if (i < pos) std::cout << "=";
+                    else if (i == pos) std::cout << ">";
+                    else std::cout << " ";
+                }
+                std::cout << "] " << std::fixed << std::setprecision(1) << (progress * 100.0) << "% "
+                         << "(" << processed_lines << "/" << total_lines << ")" << std::flush;
+            }
+            std::cout << std::endl;
+            return true;
+        };
+
+        // Process both training and validation data
+        if (!process_file("training_pairs.txt")) return;
+        if (!process_file("validation_pairs.txt")) return;
+        
+        // Add test queries to vocabulary
+        std::cout << "\nProcessing test queries..." << std::endl;
+        std::vector<std::string> test_queries = {
+            "I go to",
+            "The weather is",
+            "I want to",
+            "The cat",
+            "She likes to"
+        };
+        
+        for (const auto& query : test_queries) {
+            std::vector<int> token_ids = tiktoken_->encode(query);
+            for (int id : token_ids) {
+                id_freqs[id]++;
             }
         }
         
-        // Setup special tokens
+        // Convert ID frequencies to token frequencies
+        std::cout << "\nConverting token frequencies..." << std::endl;
+        for (const auto& [id, freq] : id_freqs) {
+            std::string token = tiktoken_->decode({id});
+            if (!token.empty()) {
+                token_frequencies_[token] = freq;
+            }
+        }
+        
+        std::cout << "Building vocabulary from frequencies..." << std::endl;
+        build_vocabulary_from_frequencies();
+        
+        std::cout << "Setting up special tokens..." << std::endl;
         setup_special_tokens();
         
         std::cout << "Final vocabulary breakdown:" << std::endl;
         std::cout << "- Special tokens: 5" << std::endl;
-        std::cout << "- Regular tokens: " << (token_frequencies.size() - 5) << std::endl;
+        std::cout << "- Regular tokens: " << (old_to_new_id_.size() - 5) << std::endl;
         std::cout << "Total vocabulary size: " << vocab_size() << " tokens" << std::endl;
+        
+        // Print some statistics about the vocabulary
+        size_t total_occurrences = 0;
+        for (const auto& [token, freq] : token_frequencies_) {
+            total_occurrences += freq;
+        }
+        std::cout << "Total token occurrences: " << total_occurrences << std::endl;
+        std::cout << "Unique tokens before filtering: " << token_frequencies_.size() << std::endl;
+        std::cout << "Tokenizer initialization complete!" << std::endl;
         
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to initialize tokenizer: " + std::string(e.what()));
+    }
+}
+
+void TiktokenTokenizer::build_vocabulary_from_frequencies() {
+    // Create vector of token-frequency pairs
+    std::vector<std::pair<std::string, size_t>> freq_pairs(token_frequencies_.begin(), token_frequencies_.end());
+    
+    // Sort by frequency, highest first
+    std::sort(freq_pairs.begin(), freq_pairs.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    
+    // Take top tokens up to target_vocab_size
+    size_t current_id = 5;  // Start after special tokens
+    filtered_tokens_.resize(tiktoken_->get_vocab_size(), false);
+    
+    // Debug info
+    if (debug_logging_) {
+        std::cout << "Top 10 most frequent tokens:" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), freq_pairs.size()); i++) {
+            std::cout << freq_pairs[i].first << ": " << freq_pairs[i].second << std::endl;
+        }
+    }
+    
+    for (const auto& [token, freq] : freq_pairs) {
+        if (current_id >= target_vocab_size) break;
+        
+        // Get original token ID from tiktoken
+        std::vector<int> token_ids = tiktoken_->encode(token);
+        if (token_ids.empty()) continue;
+        
+        // Only add single tokens to maintain integrity
+        if (token_ids.size() == 1) {
+            int old_id = token_ids[0];
+            filtered_tokens_[old_id] = true;
+            old_to_new_id_[old_id] = current_id;
+            new_to_old_id_[current_id] = old_id;
+            current_id++;
+        }
     }
 }
 
@@ -178,56 +233,17 @@ std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
     }
 
     try {
-        if (text.empty()) {
-            if (debug_logging_) {
-                std::cout << "Warning: Attempting to encode empty string" << std::endl;
-            }
-            return std::vector<int>();
-        }
-
-        // Use tiktoken's encode method to get original token IDs
-        auto old_tokens = tiktoken_->encode(text);
-        
-        // Debug logging - only if enabled
-        if (debug_logging_) {
-            std::cout << "Encoding text: '" << text << "'" << std::endl;
-            std::cout << "Original tokens: ";
-            // Cache decoded tokens to avoid repeated decoding
-            std::unordered_map<int, std::string> decoded_cache;
-            for (int t : old_tokens) {
-                if (decoded_cache.find(t) == decoded_cache.end()) {
-                    decoded_cache[t] = tiktoken_->decode({t});
-                }
-                std::cout << t << "(" << decoded_cache[t] << ") ";
-            }
-            std::cout << std::endl;
-        }
+        // Get original token IDs from tiktoken
+        std::vector<int> old_tokens = tiktoken_->encode(text);
+        std::vector<int> new_tokens;
+        new_tokens.reserve(old_tokens.size());
         
         // Convert to our new token IDs
-        std::vector<int> new_tokens;
-        new_tokens.reserve(old_tokens.size() + 2);
-        new_tokens.push_back(tokens::BOS_ID);
-        
-        size_t unk_count = 0;
         for (int old_id : old_tokens) {
-            int new_id = convert_to_new_id(old_id);
-            if (new_id == tokens::UNK_ID) {
-                unk_count++;
-                if (debug_logging_) {
-                    std::cout << "Token " << old_id << " mapped to UNK" << std::endl;
-                }
-            }
-            new_tokens.push_back(new_id);
-        }
-        
-        new_tokens.push_back(tokens::EOS_ID);
-        
-        if (debug_logging_ && unk_count > 0) {
-            std::cout << "Replaced " << unk_count << " tokens with <unk> token" << std::endl;
+            new_tokens.push_back(convert_to_new_id(old_id));
         }
         
         return new_tokens;
-        
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to encode text: " + std::string(e.what()));
     }
@@ -244,9 +260,7 @@ std::string TiktokenTokenizer::decode(const std::vector<int>& new_tokens) const 
         old_tokens.reserve(new_tokens.size());
         
         for (int new_id : new_tokens) {
-            if (new_id != tokens::BOS_ID && new_id != tokens::EOS_ID) {
-                old_tokens.push_back(convert_to_old_id(new_id));
-            }
+            old_tokens.push_back(convert_to_old_id(new_id));
         }
         
         // Use tiktoken's decode method with original IDs

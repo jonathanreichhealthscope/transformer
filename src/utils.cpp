@@ -486,39 +486,25 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     std::string original_query = transformer.get_last_query();
     size_t input_length = original_input.size();
 
-    // Run beam search for each group with different initial conditions
-    for (size_t group = 0; group < num_groups; group++) {
-        // Reset and prepare initial logits with group-specific noise
-        initial_logits.clear();
-        for (int j = 0; j < logits.cols(); j++) {
-            float base_logit = logits(logits.rows() - 1, j) / config.beam_search.initial_temperature;
-            float group_noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
-                              config.beam_search.initial_noise_scale * 
-                              (1.0f + group * 0.5f);
-            initial_logits.push_back(base_logit + group_noise);
-        }
-        
-        auto next_token_fn = [&transformer, &tokenizer, group, &config](const std::vector<int>& tokens) -> std::vector<float> {
-            try {
-                Matrix next_hidden = transformer.forward(tokens, "", tokenizer, true);
-                Matrix next_logits = transformer.get_lm_head()->project_to_vocab(next_hidden);
-                
-                std::vector<float> logits_vec;
-                logits_vec.reserve(next_logits.cols());
-                for (int j = 0; j < next_logits.cols(); j++) {
-                    float logit = next_logits(next_logits.rows() - 1, j);
-                    float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 
-                                config.beam_search.token_noise_scale * 
-                                (1.0f + group * 0.3f);
-                    logits_vec.push_back(logit + noise);
-                }
-                return logits_vec;
-            } catch (const std::exception& e) {
-                std::cerr << "Error in next_token_fn: " << e.what() << std::endl;
-                return std::vector<float>();
-            }
-        };
+    // Convert logits to vector for beam search
+    for (int j = 0; j < logits.cols(); j++) {
+        initial_logits.push_back(logits(logits.rows() - 1, j));
+    }
 
+    // Function to get next token predictions
+    auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) {
+        Matrix hidden = transformer.forward(tokens, "", tokenizer);
+        Matrix next_logits = transformer.get_lm_head()->project_to_vocab(hidden);
+        std::vector<float> logits_vec;
+        logits_vec.reserve(next_logits.cols());
+        for (int j = 0; j < next_logits.cols(); j++) {
+            logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
+        }
+        return logits_vec;
+    };
+
+    // Get predictions for each group
+    for (size_t group = 0; group < num_groups; group++) {
         const size_t MAX_LENGTH = input_length + 4;
         auto group_results = beam_search.search(
             initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
@@ -527,10 +513,9 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
 
     transformer.clear_kv_cache();
 
-    // Store both noun and noun phrase predictions
-    std::unordered_set<std::string> used_first_tokens;
-    std::vector<std::pair<std::string, float>> valid_noun_phrases;
-    std::vector<std::pair<std::string, float>> valid_nouns;
+    // Store all predictions
+    std::vector<std::pair<std::string, float>> predictions;
+    std::unordered_set<std::string> used_predictions;
 
     // Process hypotheses from each group
     for (const auto& group_results : group_hypotheses) {
@@ -543,112 +528,45 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                     hyp.tokens.end()
                 );
                 
-                // Decode tokens and check if they form a valid noun or noun phrase
-                std::string decoded;
-                bool is_valid = false;
-                std::string first_token;
-                std::vector<std::string> words;
-                
-                // First pass: collect all words
-                for (size_t i = 0; i < generated_tokens.size(); i++) {
-                    std::string token = tokenizer.decode({generated_tokens[i]});
-                    if (!token.empty()) {
-                        if (!decoded.empty() && token[0] != ' ') {
-                            decoded += " ";
-                        }
-                        
-                        // Skip tokens that start with 'Ġ' or other special characters
-                        if (token[0] == 'Ġ' || !std::isalpha(token[0])) continue;
-                        
-                        // Store first non-empty token
-                        if (first_token.empty() && !token.empty() && token != " ") {
-                            first_token = token;
-                            words.push_back(token);
-                        } else if (!token.empty() && token != " ") {
-                            words.push_back(token);
-                        }
-                        
-                        decoded += token;
-                    }
-                }
-                
-                // Validate the sequence
-                if (words.size() == 1) {
-                    // Single word - check if it's a noun or could be part of a noun phrase
-                    is_valid = tokenizer.is_noun(words[0]) || 
-                             tokenizer.is_adjective(words[0]) || 
-                             tokenizer.is_determiner(words[0]);
-                } else if (words.size() > 1) {
-                    // Multiple words - check if it's a noun phrase
-                    bool has_noun = false;
-                    bool has_valid_modifier = false;
-                    
-                    for (const auto& word : words) {
-                        if (tokenizer.is_noun(word)) {
-                            has_noun = true;
-                        } else if (tokenizer.is_adjective(word) || tokenizer.is_determiner(word)) {
-                            has_valid_modifier = true;
-                        }
-                    }
-                    is_valid = has_noun || (has_valid_modifier && words.size() < 3);
-                }
-                
-                if (decoded.empty() || !is_valid) continue;
-                
-                // Filter out predictions with very low scores
-                if (hyp.score < -20.0f) continue;  // Relaxed score threshold
+                // Decode tokens
+                std::string decoded = tokenizer.decode(generated_tokens);
                 
                 // Add initial space if needed
-                if (decoded[0] != ' ') {
+                if (!decoded.empty() && decoded[0] != ' ') {
                     decoded = " " + decoded;
                 }
                 
-                // Only add if we haven't seen this first token
-                if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
-                    used_first_tokens.insert(first_token);
+                // Only add unique predictions
+                if (used_predictions.find(decoded) == used_predictions.end()) {
+                    used_predictions.insert(decoded);
+                    predictions.push_back({decoded, hyp.score});
                     
-                    // If it's a single token, it's a noun
-                    // Otherwise, it's a noun phrase
-                    if (words.size() == 1) {
-                        valid_nouns.push_back({decoded, hyp.score});
-                    } else {
-                        valid_noun_phrases.push_back({decoded, hyp.score});
-                    }
-                    
-                    // Break if we have enough predictions of both types
-                    if (valid_nouns.size() >= k && valid_noun_phrases.size() >= k) break;
+                    // Break if we have enough predictions
+                    if (predictions.size() >= k) break;
                 }
             } catch (const std::exception& e) {
                 std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
                 continue;
             }
         }
-        if (valid_nouns.size() >= k && valid_noun_phrases.size() >= k) break;
+        if (predictions.size() >= k) break;
     }
+
+    // Sort predictions by score
+    std::sort(predictions.begin(), predictions.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
 
     // Print predictions
     std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
     
-    // Print noun predictions
-    std::cout << "\nTop " << k << " predicted nouns:" << std::endl;
-    for (size_t i = 0; i < std::min(valid_nouns.size(), static_cast<size_t>(k)); i++) {
-        const auto& [prediction, score] = valid_nouns[i];
+    std::cout << "\nTop " << k << " predictions:" << std::endl;
+    for (size_t i = 0; i < std::min(predictions.size(), static_cast<size_t>(k)); i++) {
+        const auto& [prediction, score] = predictions[i];
         std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
                  << std::fixed << std::setprecision(4) << score << ")" << std::endl;
     }
-    if (valid_nouns.empty()) {
-        std::cout << "No valid nouns found." << std::endl;
-    }
-
-    // Print noun phrase predictions
-    std::cout << "\nTop " << k << " predicted noun phrases:" << std::endl;
-    for (size_t i = 0; i < std::min(valid_noun_phrases.size(), static_cast<size_t>(k)); i++) {
-        const auto& [prediction, score] = valid_noun_phrases[i];
-        std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
-                 << std::fixed << std::setprecision(4) << score << ")" << std::endl;
-    }
-    if (valid_noun_phrases.empty()) {
-        std::cout << "No valid noun phrases found." << std::endl;
+    if (predictions.empty()) {
+        std::cout << "No predictions found." << std::endl;
     }
 }
 

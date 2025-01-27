@@ -43,11 +43,13 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
     // Layer norm before attention
     Matrix normalized = attention_ln->forward(input);
     
-    // Debug normalized output
+    // Debug normalized output and validate statistics
     float min_norm = std::numeric_limits<float>::infinity();
     float max_norm = -std::numeric_limits<float>::infinity();
     float sum_norm = 0.0f;
+    float sum_squared = 0.0f;
     size_t nonzero_norm = 0;
+    const size_t total_elements = normalized.rows() * normalized.cols();
     
     for (size_t i = 0; i < normalized.rows(); i++) {
         for (size_t j = 0; j < normalized.cols(); j++) {
@@ -55,16 +57,42 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
             min_norm = std::min(min_norm, val);
             max_norm = std::max(max_norm, val);
             sum_norm += val;
+            sum_squared += val * val;
             if (std::abs(val) > 1e-6) nonzero_norm++;
+        }
+    }
+    
+    float mean = sum_norm / total_elements;
+    float variance = (sum_squared / total_elements) - (mean * mean);
+    
+    // Check for layer norm instability
+    const float STABILITY_THRESHOLD = 1e3;
+    if (std::abs(mean) > 1e-2 || std::abs(variance - 1.0) > 1e-1 || 
+        std::abs(min_norm) > STABILITY_THRESHOLD || std::abs(max_norm) > STABILITY_THRESHOLD) {
+        std::cerr << "WARNING: Layer normalization statistics outside expected ranges:\n"
+                  << "Mean: " << mean << " (expected close to 0)\n"
+                  << "Variance: " << variance << " (expected close to 1)\n"
+                  << "Min: " << min_norm << "\n"
+                  << "Max: " << max_norm << "\n";
+                  
+        // Clip extreme values if needed
+        if (std::abs(min_norm) > STABILITY_THRESHOLD || std::abs(max_norm) > STABILITY_THRESHOLD) {
+            for (size_t i = 0; i < normalized.rows(); i++) {
+                for (size_t j = 0; j < normalized.cols(); j++) {
+                    normalized(i, j) = std::max(-STABILITY_THRESHOLD, 
+                                              std::min(STABILITY_THRESHOLD, normalized(i, j)));
+                }
+            }
+            std::cerr << "Applied value clipping for stability\n";
         }
     }
     
     std::cout << "After attention layer norm:\n"
               << "Min norm: " << min_norm << "\n"
               << "Max norm: " << max_norm << "\n"
-              << "Mean norm: " << sum_norm / (normalized.rows() * normalized.cols()) << "\n"
-              << "Nonzero norm: " << nonzero_norm << "/" 
-              << (normalized.rows() * normalized.cols()) << "\n\n";
+              << "Mean norm: " << mean << "\n"
+              << "Variance: " << variance << "\n"
+              << "Nonzero norm: " << nonzero_norm << "/" << total_elements << "\n\n";
 
     // Cache the normalized input for attention backward pass
     std::string attn_key = "attn_norm_" + std::to_string(layer_idx);
