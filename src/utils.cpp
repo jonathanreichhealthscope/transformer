@@ -574,34 +574,29 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
                 
                 // Validate the sequence
                 if (words.size() == 1) {
-                    // Single word - check if it's a noun
-                    is_valid = tokenizer.is_noun(words[0]);
+                    // Single word - check if it's a noun or could be part of a noun phrase
+                    is_valid = tokenizer.is_noun(words[0]) || 
+                             tokenizer.is_adjective(words[0]) || 
+                             tokenizer.is_determiner(words[0]);
                 } else if (words.size() > 1) {
                     // Multiple words - check if it's a noun phrase
-                    bool all_valid = true;
                     bool has_noun = false;
+                    bool has_valid_modifier = false;
                     
                     for (const auto& word : words) {
-                        // Skip non-English or invalid words
-                        if (word.empty() || !std::isalpha(word[0])) {
-                            all_valid = false;
-                            break;
-                        }
-                        
                         if (tokenizer.is_noun(word)) {
                             has_noun = true;
-                        } else if (!tokenizer.is_adjective(word) && !tokenizer.is_determiner(word)) {
-                            all_valid = false;
-                            break;
+                        } else if (tokenizer.is_adjective(word) || tokenizer.is_determiner(word)) {
+                            has_valid_modifier = true;
                         }
                     }
-                    is_valid = all_valid && has_noun;
+                    is_valid = has_noun || (has_valid_modifier && words.size() < 3);
                 }
                 
                 if (decoded.empty() || !is_valid) continue;
                 
                 // Filter out predictions with very low scores
-                if (hyp.score < -10.0f) continue;
+                if (hyp.score < -20.0f) continue;  // Relaxed score threshold
                 
                 // Add initial space if needed
                 if (decoded[0] != ' ') {

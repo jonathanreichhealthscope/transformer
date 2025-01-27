@@ -100,7 +100,7 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     // Compute logits
     Matrix logits = matmul(scaled_hidden, projection);
     
-    // Add bias
+    // Add bias and compute logits
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
@@ -108,7 +108,7 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
             
             // Apply a very small penalty to extremely rare tokens
             if (token_frequencies[j] < 1e-6) {
-                logits(i, j) -= 0.01f;  // Much smaller penalty
+                logits(i, j) -= 0.001f;  // Much smaller penalty
             }
         }
     }
