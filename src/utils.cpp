@@ -131,32 +131,32 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
 
     #pragma omp parallel for reduction(+:total_loss)
     for (size_t i = 0; i < batch_size; ++i) {
-        // Find max logit for numerical stability, but only consider noun tokens
+        // Find max logit for numerical stability over ALL tokens
         for (size_t j = 0; j < vocab_size; ++j) {
-            if (is_noun_cache[j]) {
-                max_logits[i] = std::max(max_logits[i], logits(i, j));
-            }
+            max_logits[i] = std::max(max_logits[i], logits(i, j));
         }
 
-        // Compute sum of exp(logits - max_logit) only for noun tokens
+        // Compute sum of exp(logits - max_logit) over ALL tokens
         for (size_t j = 0; j < vocab_size; ++j) {
-            if (is_noun_cache[j]) {
-                sums[i] += std::exp(logits(i, j) - max_logits[i]);
-            }
+            sums[i] += std::exp(logits(i, j) - max_logits[i]);
         }
 
-        // Compute cross entropy loss only for non-zero target probabilities
+        // Compute cross entropy loss
+        float sequence_loss = 0.0f;
         for (size_t j = 0; j < vocab_size; ++j) {
             if (target_distribution(i, j) > 0.0f) {
+                float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
+                sequence_loss -= target_distribution(i, j) * log_prob;
+                
+                // Add noun prediction bonus/penalty
                 if (is_noun_cache[j]) {
-                    float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
-                    total_loss -= target_distribution(i, j) * log_prob;
-                } else {
-                    // Add a small penalty for non-noun predictions when they should be nouns
-                    total_loss += 0.1f * target_distribution(i, j);
+                    float pred_prob = std::exp(logits(i, j) - max_logits[i]) / sums[i];
+                    sequence_loss -= 0.1f * target_distribution(i, j) * pred_prob; // Bonus for correct noun predictions
                 }
             }
         }
+        
+        total_loss += sequence_loss;
     }
 
     return total_loss / batch_size;
@@ -486,20 +486,54 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
     std::string original_query = transformer.get_last_query();
     size_t input_length = original_input.size();
 
-    // Convert logits to vector for beam search
+    // Convert logits to probabilities with temperature scaling and normalization
+    float temperature = config.beam_search.temperature;
+    float max_logit = -std::numeric_limits<float>::infinity();
+    
+    // Find max logit for numerical stability
     for (int j = 0; j < logits.cols(); j++) {
-        initial_logits.push_back(logits(logits.rows() - 1, j));
+        max_logit = std::max(max_logit, logits(logits.rows() - 1, j));
+    }
+    
+    // Compute softmax with temperature scaling
+    float sum_exp = 0.0f;
+    for (int j = 0; j < logits.cols(); j++) {
+        float scaled_logit = (logits(logits.rows() - 1, j) - max_logit) / temperature;
+        initial_logits.push_back(scaled_logit);
+        sum_exp += std::exp(scaled_logit);
+    }
+    
+    // Normalize to get proper probabilities
+    for (float& logit : initial_logits) {
+        logit = std::exp(logit) / sum_exp;
+        logit = std::log(std::max(logit, 1e-10f));  // Convert back to log space for beam search
     }
 
-    // Function to get next token predictions
-    auto next_token_fn = [&transformer, &tokenizer](const std::vector<int>& tokens) {
+    // Function to get next token predictions with proper scaling
+    auto next_token_fn = [&transformer, &tokenizer, temperature](const std::vector<int>& tokens) {
         Matrix hidden = transformer.forward(tokens, "", tokenizer);
         Matrix next_logits = transformer.get_lm_head()->project_to_vocab(hidden);
         std::vector<float> logits_vec;
         logits_vec.reserve(next_logits.cols());
+        
+        // Apply same temperature scaling and normalization
+        float max_val = -std::numeric_limits<float>::infinity();
         for (int j = 0; j < next_logits.cols(); j++) {
-            logits_vec.push_back(next_logits(next_logits.rows() - 1, j));
+            max_val = std::max(max_val, next_logits(next_logits.rows() - 1, j));
         }
+        
+        float sum = 0.0f;
+        for (int j = 0; j < next_logits.cols(); j++) {
+            float scaled_logit = (next_logits(next_logits.rows() - 1, j) - max_val) / temperature;
+            logits_vec.push_back(scaled_logit);
+            sum += std::exp(scaled_logit);
+        }
+        
+        for (float& logit : logits_vec) {
+            logit = std::exp(logit) / sum;
+            logit = std::log(std::max(logit, 1e-10f));
+        }
+        
         return logits_vec;
     };
 

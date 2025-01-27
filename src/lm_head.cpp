@@ -5,6 +5,8 @@
 #include <iostream>
 #include <algorithm>
 #include <random>
+#include <deque>
+#include <cassert>
 
 // Add minimum active tokens constant
 constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Reasonable default value
@@ -17,11 +19,52 @@ constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Reasonable default value
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     : hidden_size_(hidden_size), vocab_size_(vocab_size), projection(hidden_size, vocab_size),
       bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f), pruning_threshold(1e-6f),
-      active_tokens(vocab_size, 1), training_steps(0), is_training_(false)
+      active_tokens(vocab_size, 1), training_steps(0), is_training_(false),
+      // Initialize Adam optimizer state
+      m_proj(hidden_size, vocab_size, 0.0f),
+      v_proj(hidden_size, vocab_size, 0.0f),
+      m_bias(vocab_size, 0.0f),
+      v_bias(vocab_size, 0.0f),
+      t(0),
+      beta1(0.9f),
+      beta2(0.999f),
+      eps(1e-8f),
+      // Initialize learning rate parameters
+      current_lr(0.001f),
+      min_lr(0.0001f),
+      max_lr(0.01f),
+      lr_decay(0.99f),
+      lr_growth(1.1f)
 {
-    // Initialize with Xavier/Glorot initialization
-    float scale = std::sqrt(6.0f / (hidden_size + vocab_size));
+    // Initialize with larger scale for projection matrix
+    float scale = std::sqrt(6.0f / hidden_size);  // Increased initialization scale
+    std::cout << "Initializing projection matrix with scale: " << scale << std::endl;
     projection.randomize(-scale, scale);
+    
+    // Verify initialization
+    float min_proj = std::numeric_limits<float>::infinity();
+    float max_proj = -std::numeric_limits<float>::infinity();
+    float sum_proj = 0.0f;
+    size_t nonzero_proj = 0;
+    
+    #pragma omp parallel for collapse(2) reduction(min:min_proj) reduction(max:max_proj) \
+                             reduction(+:sum_proj,nonzero_proj)
+    for (size_t i = 0; i < projection.rows(); ++i) {
+        for (size_t j = 0; j < projection.cols(); ++j) {
+            float val = projection(i, j);
+            min_proj = std::min(min_proj, val);
+            max_proj = std::max(max_proj, val);
+            sum_proj += val;
+            if (std::abs(val) > 1e-6) nonzero_proj++;
+        }
+    }
+    
+    std::cout << "Initial Projection Matrix Statistics:\n"
+              << "Min proj: " << min_proj << "\n"
+              << "Max proj: " << max_proj << "\n"
+              << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n"
+              << "Nonzero proj: " << nonzero_proj << "/" 
+              << (projection.rows() * projection.cols()) << "\n\n";
     
     // Initialize bias with a slight preference for common tokens
     #pragma omp parallel for
@@ -99,12 +142,12 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
               << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
     
     // Scale hidden states for better gradient flow
-    float scale_factor = std::sqrt(1.0f / hidden_size_);  // Changed scaling factor
+    float hidden_scale = std::sqrt(1.0f / hidden_size_);  // Scale factor for hidden states
     Matrix scaled_hidden = hidden_states;
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < scaled_hidden.rows(); i++) {
         for (size_t j = 0; j < scaled_hidden.cols(); j++) {
-            scaled_hidden(i, j) *= scale_factor;
+            scaled_hidden(i, j) *= hidden_scale;
         }
     }
     
@@ -133,22 +176,54 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     float min_proj = std::numeric_limits<float>::infinity();
     float max_proj = -std::numeric_limits<float>::infinity();
     float sum_proj = 0.0f;
+    size_t nonzero_proj = 0;
     
-    #pragma omp parallel for collapse(2) reduction(min:min_proj) reduction(max:max_proj) \
-                             reduction(+:sum_proj)
-    for (size_t i = 0; i < projection.rows(); i++) {
-        for (size_t j = 0; j < projection.cols(); j++) {
-            float val = projection(i, j);
-            min_proj = std::min(min_proj, val);
-            max_proj = std::max(max_proj, val);
-            sum_proj += val;
-        }
+    // Debug output for projection matrix dimensions
+    std::cout << "Projection matrix dimensions: " << projection.rows() << "x" << projection.cols() << std::endl;
+    
+    // Access projection matrix data directly
+    const float* proj_data = projection.data();
+    size_t total_elements = projection.rows() * projection.cols();
+    
+    #pragma omp parallel for reduction(min:min_proj) reduction(max:max_proj) \
+                             reduction(+:sum_proj,nonzero_proj)
+    for (size_t i = 0; i < total_elements; i++) {
+        float val = proj_data[i];
+        min_proj = std::min(min_proj, val);
+        max_proj = std::max(max_proj, val);
+        sum_proj += val;
+        if (std::abs(val) > 1e-6) nonzero_proj++;
     }
     
-    std::cout << "Projection Matrix Statistics:\n"
+    std::cout << "Projection Matrix Statistics (Estimated from sampling):\n"
               << "Min proj: " << min_proj << "\n"
               << "Max proj: " << max_proj << "\n"
-              << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n\n";
+              << "Mean proj: " << sum_proj / total_elements << "\n"
+              << "Nonzero proj: " << nonzero_proj << "/" << total_elements << "\n\n";
+    
+    // If projection matrix values are too small, rescale them
+    if (std::abs(max_proj) < 0.1f) {  // If projection values are too small
+        float proj_scale = std::sqrt(6.0f / hidden_size_);  // Larger scale for rescaling
+        std::cout << "Rescaling projection matrix with scale factor: " << proj_scale << "\n";
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < projection.rows(); ++i) {
+            for (size_t j = 0; j < projection.cols(); ++j) {
+                projection(i, j) *= proj_scale;
+            }
+        }
+        
+        // Verify rescaling
+        float new_min = std::numeric_limits<float>::infinity();
+        float new_max = -std::numeric_limits<float>::infinity();
+        #pragma omp parallel for collapse(2) reduction(min:new_min) reduction(max:new_max)
+        for (size_t i = 0; i < projection.rows(); ++i) {
+            for (size_t j = 0; j < projection.cols(); ++j) {
+                new_min = std::min(new_min, std::abs(projection(i, j)));
+                new_max = std::max(new_max, std::abs(projection(i, j)));
+            }
+        }
+        std::cout << "After rescaling - Min abs: " << new_min << ", Max abs: " << new_max << "\n";
+    }
     
     // Compute logits with verification
     Matrix logits = matmul(scaled_hidden, projection);
@@ -204,29 +279,63 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
         }
     }
     
-    // Apply softmax with lower temperature for sharper predictions
-    const float temperature = 0.7f;  // Reduced from 0.8f
+    // Apply softmax with improved numerical stability
+    const float temperature = 0.7f;  // Temperature for sharpening predictions
+    const float min_denominator = 1e-6f;  // Minimum value for numerical stability
+    
     #pragma omp parallel for
     for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max for numerical stability
-        float max_val = logits(i, 0);
-        for (size_t j = 1; j < logits.cols(); j++) {
+        // Find max for numerical stability with SIMD-friendly loop
+        float max_val = -std::numeric_limits<float>::infinity();
+        #pragma omp simd reduction(max:max_val)
+        for (size_t j = 0; j < logits.cols(); j++) {
             max_val = std::max(max_val, logits(i, j));
         }
         
-        // Apply temperature and compute sum
+        // First pass: compute exp values and sum
         float sum = 0.0f;
+        std::vector<float> exp_values(logits.cols());
+        
+        #pragma omp simd reduction(+:sum)
         for (size_t j = 0; j < logits.cols(); j++) {
-            logits(i, j) = std::exp((logits(i, j) - max_val) / temperature);
-            sum += logits(i, j);
+            // Compute exp with scaled and shifted values
+            float scaled_val = (logits(i, j) - max_val) / temperature;
+            // Clip scaled_val to avoid underflow/overflow
+            scaled_val = std::max(-87.0f, std::min(scaled_val, 87.0f));
+            float exp_val = std::exp(scaled_val);
+            exp_values[j] = exp_val;
+            sum += exp_val;
         }
         
-        // Normalize
-        if (sum > 1e-6f) {
-            for (size_t j = 0; j < logits.cols(); j++) {
-                logits(i, j) /= sum;
-            }
+        // Second pass: normalize with stability check
+        sum = std::max(sum, min_denominator);  // Ensure non-zero denominator
+        float inv_sum = 1.0f / sum;  // Compute reciprocal once
+        
+        #pragma omp simd
+        for (size_t j = 0; j < logits.cols(); j++) {
+            float normalized = exp_values[j] * inv_sum;
+            // Ensure result is in valid probability range
+            logits(i, j) = std::max(0.0f, std::min(1.0f, normalized));
         }
+        
+        // Validate results for this row
+        #ifndef NDEBUG
+        float row_sum = 0.0f;
+        bool has_invalid = false;
+        for (size_t j = 0; j < logits.cols(); j++) {
+            if (std::isnan(logits(i, j)) || std::isinf(logits(i, j))) {
+                std::cerr << "Warning: Invalid value at position (" << i << "," << j << "): " << logits(i, j) << std::endl;
+                has_invalid = true;
+            }
+            row_sum += logits(i, j);
+        }
+        if (has_invalid) {
+            std::cerr << "Warning: Row " << i << " contains NaN or Inf values" << std::endl;
+        }
+        if (std::abs(row_sum - 1.0f) >= 1e-4f) {
+            std::cerr << "Warning: Row " << i << " sum = " << row_sum << " (expected: 1.0)" << std::endl;
+        }
+        #endif
     }
     
     // Debug output for logit statistics
@@ -235,51 +344,48 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     float sum_logits = 0.0f;
     size_t active_logits = 0;
     
-    const int bar_width = 50;
-    const size_t total_elements = logits.rows() * logits.cols();
-    size_t processed_elements = 0;
+    std::cout << "\nAnalyzing logits (shape: " << logits.rows() << "x" << logits.cols() << ")...\n";
     
-    std::cout << "\nCounting active logits:\n" << std::flush;
-    
+    // First pass - get statistics
+    #pragma omp parallel for collapse(2) reduction(min:min_logit) reduction(max:max_logit) \
+                             reduction(+:sum_logits,active_logits)
     for (size_t i = 0; i < logits.rows(); i++) {
         for (size_t j = 0; j < logits.cols(); j++) {
             float val = logits(i, j);
             min_logit = std::min(min_logit, val);
             max_logit = std::max(max_logit, val);
             sum_logits += val;
-            if (val > 1e-6) active_logits++;
-            
-            processed_elements++;
-            
-            // Update progress bar every 1000 elements for smoother display
-            if (processed_elements % 1000 == 0 || processed_elements == total_elements) {
-                float progress = float(processed_elements) / total_elements;
-                int pos = bar_width * progress;
-                
-                std::cout << "\r[";
-                for (int k = 0; k < bar_width; ++k) {
-                    if (k < pos) std::cout << "=";
-                    else if (k == pos) std::cout << ">";
-                    else std::cout << " ";
-                }
-                std::cout << "] " << std::fixed << std::setprecision(1) 
-                         << (progress * 100.0) << "% "
-                         << "(" << processed_elements << "/" << total_elements << ")" 
-                         << std::flush;
+            if (std::abs(val) > 1e-6) {
+                active_logits++;
             }
         }
     }
-    std::cout << std::endl << std::endl;  // Add extra newline for spacing
     
-    float mean_logit = sum_logits / total_elements;
+    float mean_logit = total_elements > 0 ? sum_logits / total_elements : 0.0f;
     float range = max_logit - min_logit;
     
     std::cout << "Logit Statistics in forward_impl:\n"
-              << "Min logit: " << std::fixed << std::setprecision(1) << min_logit << "\n"
+              << "Min logit: " << std::fixed << std::setprecision(6) << min_logit << "\n"
               << "Max logit: " << max_logit << "\n"
               << "Mean logit: " << mean_logit << "\n"
               << "Range: " << range << "\n"
               << "Active logits: " << active_logits << "/" << total_elements << "\n\n";
+              
+    // Validate logits before returning
+    if (std::isnan(min_logit) || std::isnan(max_logit) || std::isnan(mean_logit)) {
+        std::cout << "WARNING: NaN detected in logits!\n";
+        // Reinitialize projection matrix
+        float scale = std::sqrt(6.0f / hidden_size_);
+        projection.randomize(-scale, scale);
+        return forward_impl(hidden_states);  // Retry with reinitialized weights
+    }
+    
+    if (active_logits == 0 || (max_logit == 0.0f && min_logit == 0.0f)) {
+        std::cout << "WARNING: All logits are zero or inactive! Reinitializing projection matrix...\n";
+        float scale = std::sqrt(6.0f / hidden_size_);
+        projection.randomize(-scale, scale);
+        return forward_impl(hidden_states);  // Retry with reinitialized weights
+    }
     
     return logits;
 }
@@ -298,207 +404,49 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
 }
 
 Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& target_distribution) {
-    size_t total_size = hidden_states.rows();
-    size_t batch_size = total_size / 2;
-    size_t seq_len = 2;
-    
-    // Scale gradients to match forward pass scaling
-    float scale_factor = std::sqrt(2.0f / hidden_size_);  // Match forward pass scaling
-    
-    Matrix loss_grad(grad_output.rows(), grad_output.cols());
-    
-    // First compute max logits for numerical stability
-    std::vector<float> max_logits(grad_output.rows(), -std::numeric_limits<float>::infinity());
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            max_logits[i] = std::max(max_logits[i], grad_output(i, j));
-        }
-    }
-    
-    // Compute sum of exponentials for each row
-    std::vector<float> sum_exp(grad_output.rows(), 0.0f);
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            sum_exp[i] += std::exp(grad_output(i, j) - max_logits[i]);
-        }
-    }
-    
-    // Print softmax statistics for debugging
-    std::cout << "\nSoftmax Statistics in backward:\n"
-              << "Max logit values: " << max_logits[0] << "\n"
-              << "Sum of exponentials: " << sum_exp[0] << "\n";
-    
-    // Compute gradients with proper softmax normalization
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            if (!target_distribution.empty() && target_distribution(i, j) > 0.0f) {
-                // Cross entropy gradient with numerical stability
-                float softmax = std::exp(grad_output(i, j) - max_logits[i]) / sum_exp[i];
-                loss_grad(i, j) = (softmax - target_distribution(i, j)) * scale_factor;
-            } else {
-                loss_grad(i, j) = grad_output(i, j) * scale_factor;
-            }
-        }
-    }
-
-    // Print gradient statistics
-    float min_grad = std::numeric_limits<float>::infinity();
-    float max_grad = -std::numeric_limits<float>::infinity();
-    float sum_grad = 0.0f;
-    size_t nonzero_count = 0;
-    for (size_t i = 0; i < loss_grad.rows(); i++) {
-        for (size_t j = 0; j < loss_grad.cols(); j++) {
-            float val = std::abs(loss_grad(i, j));
-            if (val > 1e-10) {
-                nonzero_count++;
-            }
-            min_grad = std::min(min_grad, val);
-            max_grad = std::max(max_grad, val);
-            sum_grad += val;
-        }
-    }
-    std::cout << "\nGradient Statistics in LM Head backward:\n"
-              << "Min gradient: " << min_grad << "\n"
-              << "Max gradient: " << max_grad << "\n"
-              << "Mean gradient: " << sum_grad / (loss_grad.rows() * loss_grad.cols()) << "\n"
-              << "Nonzero gradients: " << nonzero_count << "/" 
-              << (loss_grad.rows() * loss_grad.cols()) << "\n";
-
-    Matrix expanded_grad(total_size, vocab_size_);
-    expanded_grad.fill(0.0f);
-    
-    #pragma omp parallel for
-    for (size_t b = 0; b < batch_size; b++) {
-        size_t src_idx = b;
-        size_t dst_idx = (b * seq_len + (seq_len - 1));
-        for (size_t v = 0; v < vocab_size_; v++) {
-            expanded_grad(dst_idx, v) = loss_grad(src_idx, v);
-        }
-    }
-
-    backward_linear(expanded_grad);
-    
-    // Scale gradients for hidden states
-    Matrix hidden_grad = matmul(expanded_grad, projection.transpose());
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < hidden_grad.rows(); i++) {
-        for (size_t j = 0; j < hidden_grad.cols(); j++) {
-            hidden_grad(i, j) *= scale_factor;
-        }
-    }
-    
-    return hidden_grad;
+    return backward_pass(grad_output, hidden_states);  // Use the existing backward_pass implementation
 }
 
 void LanguageModelHead::backward_linear(const Matrix& grad_output) {
-    if (grad_output.rows() != hidden_states.rows()) {
-        throw std::runtime_error("Invalid matrix dimensions for gradient computation");
-    }
+    // Use backward_pass which already has Adam optimization
+    backward_pass(grad_output, hidden_states);
+}
 
-    // Scale hidden states to match forward pass
-    Matrix scaled_hidden = hidden_states;
-    float scale_factor = std::sqrt(2.0f / hidden_size_);
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
-        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
-            scaled_hidden(i, j) *= scale_factor;
-        }
-    }
-
-    Matrix grad_proj = matmul(scaled_hidden.transpose(), grad_output);
-    Vector grad_bias(bias.size(), 0.0f);
-
-    // Compute bias gradients
-    #pragma omp parallel
-    {
-        Vector local_grad_bias(bias.size(), 0.0f);
-        #pragma omp for collapse(2)
-        for (size_t i = 0; i < grad_output.rows(); i++) {
-            for (size_t j = 0; j < grad_output.cols(); j++) {
-                local_grad_bias[j] += grad_output(i, j);
-            }
-        }
-        #pragma omp critical
-        {
-            for (size_t j = 0; j < bias.size(); j++) {
-                grad_bias[j] += local_grad_bias[j];
-            }
-        }
-    }
-
-    // Compute gradient statistics for adaptive clipping
-    float max_grad = 0.0f;
-    float grad_norm = 0.0f;
-    
-    #pragma omp parallel for reduction(max:max_grad) reduction(+:grad_norm)
-    for (size_t i = 0; i < grad_proj.rows(); i++) {
-        for (size_t j = 0; j < grad_proj.cols(); j++) {
-            float abs_grad = std::abs(grad_proj(i, j));
-            max_grad = std::max(max_grad, abs_grad);
-            grad_norm += grad_proj(i, j) * grad_proj(i, j);
-        }
-    }
-    grad_norm = std::sqrt(grad_norm);
-    
-    // Clip gradients using adaptive threshold
-    const float clip_threshold = 1.0f;
-    float clip_scale = 1.0f;
-    if (grad_norm > clip_threshold) {
-        clip_scale = clip_threshold / grad_norm;
+void LanguageModelHead::update_learning_rate(float current_loss) {
+    // Add loss to history
+    loss_history.push_back(current_loss);
+    if (loss_history.size() > LOSS_HISTORY_SIZE) {
+        loss_history.pop_front();
     }
     
-    // Use much smaller base learning rate and decay
-    const float base_lr = 0.001f;  // Reduced from 0.01f
-    const float min_lr = 0.0001f;  // Minimum learning rate
-    float effective_lr = std::max(min_lr, 
-                                base_lr / (1.0f + std::sqrt(static_cast<float>(training_steps + 1))));  // Cast to float
-    
-    // Update projection matrix with safeguards
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < projection.rows(); i++) {
-        for (size_t j = 0; j < projection.cols(); j++) {
-            float update = effective_lr * clip_scale * grad_proj(i, j);
-            
-            // Limit maximum update magnitude
-            const float max_update = 0.1f;
-            if (std::abs(update) > max_update) {
-                update = (update > 0 ? max_update : -max_update);
-            }
-            
-            // Update with safeguard against zero values
-            float new_value = projection(i, j) - update;
-            
-            // Prevent values from getting too close to zero
-            const float min_abs_value = 1e-4f;
-            if (std::abs(new_value) < min_abs_value) {
-                new_value = (new_value >= 0 ? min_abs_value : -min_abs_value);
-            }
-            
-            projection(i, j) = new_value;
-        }
-    }
-
-    // Update bias with similar safeguards
-    #pragma omp parallel for
-    for (size_t i = 0; i < bias.size(); i++) {
-        float update = effective_lr * clip_scale * grad_bias[i];
+    // Only adjust learning rate if we have enough history
+    if (loss_history.size() >= 2) {
+        float avg_recent_loss = 0.0f;
+        float avg_old_loss = 0.0f;
+        size_t recent_count = loss_history.size() / 2;
         
-        // Limit bias updates
-        const float max_bias_update = 0.05f;
-        if (std::abs(update) > max_bias_update) {
-            update = (update > 0 ? max_bias_update : -max_bias_update);
+        // Calculate average of recent and older losses
+        for (size_t i = 0; i < loss_history.size(); i++) {
+            if (i >= loss_history.size() - recent_count) {
+                avg_recent_loss += loss_history[i];
+            } else {
+                avg_old_loss += loss_history[i];
+            }
         }
+        avg_recent_loss /= recent_count;
+        avg_old_loss /= (loss_history.size() - recent_count);
         
-        bias[i] -= update;
+        // Adjust learning rate based on loss trend
+        if (avg_recent_loss < avg_old_loss) {
+            // Loss is decreasing, increase learning rate slightly
+            current_lr = std::min(max_lr, current_lr * lr_growth);
+        } else {
+            // Loss is increasing or stagnant, decrease learning rate
+            current_lr = std::max(min_lr, current_lr * lr_decay);
+        }
     }
     
-    // Print statistics for monitoring
-    std::cout << "Backward pass statistics:\n"
-              << "Gradient norm: " << grad_norm << "\n"
-              << "Max gradient: " << max_grad << "\n"
-              << "Effective learning rate: " << effective_lr << "\n"
-              << "Clip scale: " << clip_scale << "\n\n";
+    prev_loss = current_loss;
 }
 
 void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens) {
@@ -603,4 +551,156 @@ LanguageModelHead::~LanguageModelHead() {
 
 void LanguageModelHead::set_training(bool training_mode) {
     is_training_ = training_mode;
+}
+
+Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
+    // Compute gradients for projection and bias
+    std::cout << "Computing gradients for projection and bias" << std::endl;
+    Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
+    std::cout << "grad projection shape: " << grad_proj.shape() << std::endl;
+    Vector grad_bias = grad_output.row_sum();
+    std::cout << "grad bias size: " << grad_bias.size() << std::endl;
+
+    t++;  // Increment time step
+
+    // Update projection matrix using Adam optimizer with improved stability
+    std::cout << "Updating projection matrix using Adam optimizer with scaled updates\n";
+    const float scale_factor = std::sqrt(2.0f / hidden_size_);
+    const float max_update = 0.1f * scale_factor;  // Limit maximum update size
+    
+    // Validate gradients before applying updates
+    float max_grad = -std::numeric_limits<float>::infinity();
+    float min_grad = std::numeric_limits<float>::infinity();
+    float sum_grad = 0.0f;
+    size_t nonzero_grad = 0;
+    
+    #pragma omp parallel for collapse(2) reduction(max:max_grad) reduction(min:min_grad) \
+                             reduction(+:sum_grad,nonzero_grad)
+    for (size_t i = 0; i < grad_proj.rows(); ++i) {
+        for (size_t j = 0; j < grad_proj.cols(); ++j) {
+            float val = grad_proj(i, j);
+            max_grad = std::max(max_grad, std::abs(val));
+            min_grad = std::min(min_grad, std::abs(val));
+            sum_grad += val;
+            if (std::abs(val) > 1e-6) nonzero_grad++;
+        }
+    }
+    
+    std::cout << "Gradient Statistics before update:\n"
+              << "Max abs grad: " << max_grad << "\n"
+              << "Min abs grad: " << min_grad << "\n"
+              << "Mean grad: " << sum_grad / (grad_proj.rows() * grad_proj.cols()) << "\n"
+              << "Nonzero grads: " << nonzero_grad << "/" 
+              << (grad_proj.rows() * grad_proj.cols()) << "\n\n";
+              
+    // Skip update if gradients are invalid
+    if (std::isnan(max_grad) || std::isnan(min_grad) || std::isnan(sum_grad)) {
+        std::cout << "WARNING: Invalid gradients detected, skipping update\n";
+        return matmul(grad_output, projection);
+    }
+    
+    // Clip extremely large gradients
+    if (max_grad > 10.0f) {
+        float clip_ratio = 10.0f / max_grad;
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < grad_proj.rows(); ++i) {
+            for (size_t j = 0; j < grad_proj.cols(); ++j) {
+                grad_proj(i, j) *= clip_ratio;
+            }
+        }
+        std::cout << "Clipped large gradients by factor: " << clip_ratio << "\n";
+    }
+
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < projection.rows(); ++i) {
+        for (size_t j = 0; j < projection.cols(); ++j) {
+            // Update momentum with bounds checking
+            float new_m = beta1 * m_proj(i, j) + (1 - beta1) * grad_proj(i, j);
+            if (std::isfinite(new_m)) {
+                m_proj(i, j) = new_m;
+            }
+            
+            // Update RMSprop with stability
+            float grad_squared = grad_proj(i, j) * grad_proj(i, j);
+            float new_v = beta2 * v_proj(i, j) + (1 - beta2) * grad_squared;
+            if (std::isfinite(new_v)) {
+                v_proj(i, j) = new_v;
+            }
+            
+            // Bias correction
+            float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
+            float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
+            
+            // Compute update with scaling and clipping
+            float update = current_lr * m_hat / (std::sqrt(v_hat) + eps);
+            update *= scale_factor;  // Scale update relative to projection matrix
+            update = std::max(std::min(update, max_update), -max_update);  // Clip update
+            
+            // Only apply update if it's finite
+            if (std::isfinite(update)) {
+                projection(i, j) -= update;
+            }
+        }
+    }
+
+    // Debug output for projection matrix after update
+    float min_proj_after = std::numeric_limits<float>::infinity();
+    float max_proj_after = -std::numeric_limits<float>::infinity();
+    float sum_proj_after = 0.0f;
+    size_t nonzero_proj_after = 0;
+
+    #pragma omp parallel for collapse(2) reduction(min:min_proj_after) reduction(max:max_proj_after) \
+                             reduction(+:sum_proj_after,nonzero_proj_after)
+    for (size_t i = 0; i < projection.rows(); ++i) {
+        for (size_t j = 0; j < projection.cols(); ++j) {
+            float val = projection(i, j);
+            min_proj_after = std::min(min_proj_after, val);
+            max_proj_after = std::max(max_proj_after, val);
+            sum_proj_after += val;
+            if (std::abs(val) > 1e-6) nonzero_proj_after++;
+        }
+    }
+
+    std::cout << "Projection Matrix Statistics After Update:\n"
+              << "Min proj: " << min_proj_after << "\n"
+              << "Max proj: " << max_proj_after << "\n"
+              << "Mean proj: " << sum_proj_after / (projection.rows() * projection.cols()) << "\n"
+              << "Nonzero proj: " << nonzero_proj_after << "/" 
+              << (projection.rows() * projection.cols()) << "\n\n";
+
+    // If projection matrix has degenerated, reinitialize it
+    if (nonzero_proj_after < projection.rows() * projection.cols() / 2) {
+        std::cout << "WARNING: Projection matrix has too many zeros. Reinitializing...\n";
+        float scale = std::sqrt(6.0f / (hidden_size_ + vocab_size_));
+        projection.randomize(-scale, scale);
+    }
+
+    // Update bias vector using Adam optimizer with similar changes
+    #pragma omp parallel for
+    for (size_t i = 0; i < bias.size(); ++i) {
+        // Update momentum
+        m_bias[i] = beta1 * m_bias[i] + (1 - beta1) * grad_bias[i];
+        // Update RMSprop with stability
+        v_bias[i] = beta2 * v_bias[i] + (1 - beta2) * grad_bias[i] * grad_bias[i];
+        
+        // Bias correction
+        float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
+        float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
+        
+        // Compute update without restrictive bounds
+        float update = current_lr * m_hat / (std::sqrt(v_hat) + eps);
+        
+        // Apply update directly
+        bias[i] -= update;
+    }
+
+    // Compute gradient with respect to input
+    Matrix grad_input = matmul(grad_output, projection);
+    if (grad_input.cols() != hidden_states.cols()) {
+        throw std::runtime_error("Language model head gradient output dimension (" +
+                                 std::to_string(grad_input.cols()) +
+                                 ") must match hidden size (" +
+                                 std::to_string(hidden_states.cols()) + ")");
+    }
+    return grad_input;
 } 

@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <deque>
 
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
@@ -39,6 +40,29 @@ class LanguageModelHead {
     std::vector<int> active_token_indices;     // List of indices of active tokens
     size_t training_steps;
     bool is_training_;  // Add training state member variable
+    
+    // Adam optimizer state
+    Matrix m_proj;  // Momentum for projection
+    Matrix v_proj;  // RMSprop for projection
+    Vector m_bias;  // Momentum for bias
+    Vector v_bias;  // RMSprop for bias
+    size_t t;      // Time step
+    float beta1;   // Momentum parameter
+    float beta2;   // RMSprop parameter
+    float eps;     // Small constant for numerical stability
+    
+    // Learning rate adaptation
+    float current_lr;  // Current learning rate
+    float min_lr;      // Minimum learning rate
+    float max_lr;      // Maximum learning rate
+    float lr_decay;    // Learning rate decay factor
+    float lr_growth;   // Learning rate growth factor
+    std::deque<float> loss_history;
+    static constexpr size_t LOSS_HISTORY_SIZE = 100;
+    float prev_loss = std::numeric_limits<float>::infinity();
+    
+    // Add the update_learning_rate function declaration
+    void update_learning_rate(float current_loss);
     
     // Pinned memory for efficient GPU transfers
     float* h_projection = nullptr;
@@ -112,81 +136,7 @@ class LanguageModelHead {
      * @param hidden_states Original input hidden states
      * @return Gradient with respect to the input
      */
-    Matrix backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
-        // Compute gradients for projection and bias
-        std::cout << "Computing gradients for projection and bias" << std::endl;
-        Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
-        std::cout << "grad projection shape: " << grad_proj.shape() << std::endl;
-        Vector grad_bias = grad_output.row_sum();
-        std::cout << "grad bias size: " << grad_bias.size() << std::endl;
-
-        // Apply weight updates with adaptive learning rate
-        float lr = 0.001f;    // Base learning rate
-        float beta1 = 0.9f;   // Momentum parameter
-        float beta2 = 0.999f; // RMSprop parameter
-        float eps = 1e-8f;    // Small constant for numerical stability
-
-        static Matrix m_proj(projection.rows(), projection.cols(),
-                             0.0f); // Momentum for projection
-        static Matrix v_proj(projection.rows(), projection.cols(),
-                             0.0f);              // RMSprop for projection
-        static Vector m_bias(bias.size(), 0.0f); // Momentum for bias
-        static Vector v_bias(bias.size(), 0.0f); // RMSprop for bias
-        static size_t t = 0;                     // Time step
-        t++;
-
-        // Update projection matrix using Adam optimizer
-        std::cout << "updating projection matrix using Adam optimizer" << std::endl;
-        for (size_t i = 0; i < projection.rows(); ++i) {
-            for (size_t j = 0; j < projection.cols(); ++j) {
-                std::cout << "updating momentum" << std::endl;
-                // Update momentum
-                m_proj(i, j) = beta1 * m_proj(i, j) + (1 - beta1) * grad_proj(i, j);
-                std::cout << "updating RMSprop" << std::endl;
-                // Update RMSprop
-                v_proj(i, j) =
-                    beta2 * v_proj(i, j) + (1 - beta2) * grad_proj(i, j) * grad_proj(i, j);
-                std::cout << "calculating bias correction" << std::endl;
-                // Bias correction
-                float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
-                float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
-                std::cout << "updating weights" << std::endl;
-                // Update weights
-                projection(i, j) -= lr * m_hat / (std::sqrt(v_hat) + eps);
-            }
-        }
-
-        // Update bias vector using Adam optimizer
-        for (size_t i = 0; i < bias.size(); ++i) {
-            std::cout << "updating momentum" << std::endl;
-            // Update momentum
-            m_bias[i] = beta1 * m_bias[i] + (1 - beta1) * grad_bias[i];
-            std::cout << "updating RMSprop" << std::endl;
-            // Update RMSprop
-            v_bias[i] = beta2 * v_bias[i] + (1 - beta2) * grad_bias[i] * grad_bias[i];
-            std::cout << "calculating bias correction" << std::endl;
-            // Bias correction
-            float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
-            float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
-            std::cout << "updating bias" << std::endl;
-            // Update bias
-            bias[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
-        }
-        std::cout << "Gradient with respect to input" << std::endl;
-        std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols()
-                  << std::endl;
-        std::cout << "projection dims: " << projection.rows() << "x" << projection.cols()
-                  << std::endl;
-        // Compute gradient with respect to input
-        Matrix grad_input = matmul(grad_output, projection);
-        if (grad_input.cols() != hidden_states.cols()) {
-            throw std::runtime_error("Language model head gradient output dimension (" +
-                                     std::to_string(grad_input.cols()) +
-                                     ") must match hidden size (" +
-                                     std::to_string(hidden_states.cols()) + ")");
-        }
-        return grad_input;
-    }
+    Matrix backward_pass(const Matrix& grad_output, const Matrix& hidden_states);
 
     /**
      * @brief Saves the model head to a stream.
