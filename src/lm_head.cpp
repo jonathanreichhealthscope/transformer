@@ -257,85 +257,111 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
         logits = matmul(scaled_hidden, projection);  // Recompute logits
     }
     
-    // Add bias and apply token-specific adjustments
+    // Add bias and apply token-specific adjustments with improved scaling
+    const float logit_scale = 10.0f;  // Increase scale for better distribution
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
-            // Add bias
-            logits(i, j) += bias[j];
+            // Scale logits before adding bias
+            logits(i, j) *= logit_scale;
             
-            // Token-specific adjustments
+            // Add bias with stronger values
+            logits(i, j) += bias[j] * 2.0f;
+            
+            // Token-specific adjustments with stronger penalties
             if (j == static_cast<size_t>(tokens::UNK_ID)) {
-                logits(i, j) -= 15.0f;  // Stronger penalty for UNK
+                logits(i, j) -= 30.0f;  // Stronger penalty for UNK
             }
             else if (j < 5) {  // Other special tokens
-                logits(i, j) -= 5.0f;  // Moderate penalty
+                logits(i, j) -= 10.0f;  // Stronger penalty
             }
             else {
-                // Scale logits based on token frequency
-                float freq_bonus = token_frequencies[j];
+                // Scale frequency bonus for more pronounced effect
+                float freq_bonus = token_frequencies[j] * 5.0f;
                 logits(i, j) += freq_bonus;
             }
         }
     }
     
+    // Apply softmax with lower temperature for sharper distribution
+    const float temperature = 0.5f;  // Lower temperature (was 0.7f)
+    
     // Apply softmax with improved numerical stability
-    const float temperature = 0.7f;  // Temperature for sharpening predictions
     const float min_denominator = 1e-6f;  // Minimum value for numerical stability
     
+    // Validate logits before returning
+    if (std::isnan(min_raw_logit) || std::isnan(max_raw_logit) || std::isnan(sum_raw_logit)) {
+        std::cout << "WARNING: NaN detected in logits! Attempting recovery...\n";
+        // Instead of recursion, try to recover the current computation
+        float scale = std::sqrt(6.0f / hidden_size_);
+        projection.randomize(-scale, scale);
+        logits = matmul(scaled_hidden, projection);  // Recompute directly
+        
+        // Apply basic softmax without fancy adjustments
+        #pragma omp parallel for
+        for (size_t i = 0; i < logits.rows(); i++) {
+            float max_val = logits(i, 0);
+            for (size_t j = 1; j < logits.cols(); j++) {
+                max_val = std::max(max_val, logits(i, j));
+            }
+            
+            float sum = 0.0f;
+            // Pre-allocate exp_values outside the parallel region
+            std::vector<float> row_exp_values(logits.cols());
+            
+            for (size_t j = 0; j < logits.cols(); j++) {
+                float val = std::exp(logits(i, j) - max_val);
+                row_exp_values[j] = val;
+                sum += val;
+            }
+            
+            sum = std::max(sum, 1e-6f);
+            for (size_t j = 0; j < logits.cols(); j++) {
+                logits(i, j) = row_exp_values[j] / sum;
+            }
+        }
+        return logits;
+    }
+    
+    if (active_token_indices.empty()) {
+        std::cout << "WARNING: All logits are zero or inactive! Attempting recovery...\n";
+        // Instead of recursion, initialize to uniform distribution
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < logits.rows(); i++) {
+            for (size_t j = 0; j < logits.cols(); j++) {
+                logits(i, j) = 1.0f / logits.cols();
+            }
+        }
+        return logits;
+    }
+    
+    // Fix the softmax calculation to avoid vector allocation in parallel regions
     #pragma omp parallel for
     for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max for numerical stability with SIMD-friendly loop
+        // Find max for numerical stability
         float max_val = -std::numeric_limits<float>::infinity();
-        #pragma omp simd reduction(max:max_val)
         for (size_t j = 0; j < logits.cols(); j++) {
             max_val = std::max(max_val, logits(i, j));
         }
         
-        // First pass: compute exp values and sum
+        // Compute sum of exp values directly
         float sum = 0.0f;
-        std::vector<float> exp_values(logits.cols());
-        
-        #pragma omp simd reduction(+:sum)
         for (size_t j = 0; j < logits.cols(); j++) {
-            // Compute exp with scaled and shifted values
             float scaled_val = (logits(i, j) - max_val) / temperature;
-            // Clip scaled_val to avoid underflow/overflow
             scaled_val = std::max(-87.0f, std::min(scaled_val, 87.0f));
-            float exp_val = std::exp(scaled_val);
-            exp_values[j] = exp_val;
-            sum += exp_val;
+            sum += std::exp(scaled_val);
         }
         
-        // Second pass: normalize with stability check
-        sum = std::max(sum, min_denominator);  // Ensure non-zero denominator
-        float inv_sum = 1.0f / sum;  // Compute reciprocal once
+        // Normalize in a separate loop to avoid numerical issues
+        sum = std::max(sum, min_denominator);
+        float inv_sum = 1.0f / sum;
         
-        #pragma omp simd
         for (size_t j = 0; j < logits.cols(); j++) {
-            float normalized = exp_values[j] * inv_sum;
-            // Ensure result is in valid probability range
+            float scaled_val = (logits(i, j) - max_val) / temperature;
+            scaled_val = std::max(-87.0f, std::min(scaled_val, 87.0f));
+            float normalized = std::exp(scaled_val) * inv_sum;
             logits(i, j) = std::max(0.0f, std::min(1.0f, normalized));
         }
-        
-        // Validate results for this row
-        #ifndef NDEBUG
-        float row_sum = 0.0f;
-        bool has_invalid = false;
-        for (size_t j = 0; j < logits.cols(); j++) {
-            if (std::isnan(logits(i, j)) || std::isinf(logits(i, j))) {
-                std::cerr << "Warning: Invalid value at position (" << i << "," << j << "): " << logits(i, j) << std::endl;
-                has_invalid = true;
-            }
-            row_sum += logits(i, j);
-        }
-        if (has_invalid) {
-            std::cerr << "Warning: Row " << i << " contains NaN or Inf values" << std::endl;
-        }
-        if (std::abs(row_sum - 1.0f) >= 1e-4f) {
-            std::cerr << "Warning: Row " << i << " sum = " << row_sum << " (expected: 1.0)" << std::endl;
-        }
-        #endif
     }
     
     // Debug output for logit statistics
@@ -371,22 +397,6 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
               << "Range: " << range << "\n"
               << "Active logits: " << active_logits << "/" << total_elements << "\n\n";
               
-    // Validate logits before returning
-    if (std::isnan(min_logit) || std::isnan(max_logit) || std::isnan(mean_logit)) {
-        std::cout << "WARNING: NaN detected in logits!\n";
-        // Reinitialize projection matrix
-        float scale = std::sqrt(6.0f / hidden_size_);
-        projection.randomize(-scale, scale);
-        return forward_impl(hidden_states);  // Retry with reinitialized weights
-    }
-    
-    if (active_logits == 0 || (max_logit == 0.0f && min_logit == 0.0f)) {
-        std::cout << "WARNING: All logits are zero or inactive! Reinitializing projection matrix...\n";
-        float scale = std::sqrt(6.0f / hidden_size_);
-        projection.randomize(-scale, scale);
-        return forward_impl(hidden_states);  // Retry with reinitialized weights
-    }
-    
     return logits;
 }
 
