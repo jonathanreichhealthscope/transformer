@@ -111,18 +111,18 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
             // Apply more balanced penalties for special tokens
             if (j == static_cast<size_t>(tokens::UNK_ID)) {
                 // Reduced penalty for UNK token
-                logits(i, j) -= 8.0f;
+                logits(i, j) -= 4.0f;
             } else if (token_frequencies[j] < 1e-6) {
                 // Reduced penalty for rare tokens
-                logits(i, j) -= 4.0f;
+                logits(i, j) -= 2.0f;
             } else if (token_frequencies[j] < 1e-4) {
                 // Minimal penalty for uncommon tokens
-                logits(i, j) -= 2.0f;
+                logits(i, j) -= 1.0f;
             }
             
             // Add small bonus for common tokens
             if (token_frequencies[j] > 1e-2) {
-                logits(i, j) += 1.0f;
+                logits(i, j) += 0.5f;
             }
         }
     }
@@ -332,10 +332,21 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
     Matrix grad_proj = matmul(scaled_hidden.transpose(), grad_output);
     Vector grad_bias(bias.size(), 0.0f);
 
-    #pragma omp parallel for collapse(2) reduction(+:grad_bias[:bias.size()])
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            grad_bias[j] += grad_output(i, j);
+    // Compute bias gradients without array section syntax
+    #pragma omp parallel
+    {
+        Vector local_grad_bias(bias.size(), 0.0f);
+        #pragma omp for collapse(2)
+        for (size_t i = 0; i < grad_output.rows(); i++) {
+            for (size_t j = 0; j < grad_output.cols(); j++) {
+                local_grad_bias[j] += grad_output(i, j);
+            }
+        }
+        #pragma omp critical
+        {
+            for (size_t j = 0; j < bias.size(); j++) {
+                grad_bias[j] += local_grad_bias[j];
+            }
         }
     }
 

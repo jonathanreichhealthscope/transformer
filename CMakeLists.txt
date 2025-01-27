@@ -45,6 +45,20 @@ else()
     find_package(OpenMP)
 endif()
 
+# Store OpenMP status for later use
+if(OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP found - enabling parallel processing support")
+    if(MSVC)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -fopenmp")
+    endif()
+else()
+    message(WARNING "OpenMP not found - parallel processing will be disabled")
+endif()
+
 # Download and build nlohmann/json
 FetchContent_Declare(
     json
@@ -86,6 +100,8 @@ set(CORE_SOURCES
     src/config.cpp
     src/tokenizer.cpp
     src/tiktoken_tokenizer.cpp
+    src/matrix.cpp
+    src/data_augmentation.cpp
 )
 
 # Neural network components
@@ -139,11 +155,9 @@ add_library(transformer_lib
     ${CORE_SOURCES}
     ${NN_SOURCES}
     ${UTIL_SOURCES}
-    ${ATTENTION_SOURCES}
     ${LM_SOURCES}
     ${OPTIMIZER_SOURCES}
-    src/data_augmentation.cpp
-    src/matrix.cpp
+    ${SOURCES}
 )
 
 # Set CUDA specific properties for the library
@@ -151,6 +165,16 @@ set_target_properties(transformer_lib PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     POSITION_INDEPENDENT_CODE ON
 )
+
+# Add OpenMP configuration if found
+if(OpenMP_CXX_FOUND)
+    target_compile_definitions(transformer_lib PUBLIC USE_OPENMP)
+    target_compile_options(transformer_lib PRIVATE ${OpenMP_CXX_FLAGS})
+    if(NOT MSVC)
+        target_compile_options(transformer_lib PRIVATE -fopenmp)
+    endif()
+    target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
+endif()
 
 # Create executable
 add_executable(transformer src/main.cpp)
@@ -215,6 +239,7 @@ else()
     message(WARNING "tcmalloc not found, continuing without it")
 endif()
 
+# Link OpenMP if found
 if(OpenMP_CXX_FOUND)
     target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()
