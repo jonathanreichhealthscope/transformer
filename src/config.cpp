@@ -17,8 +17,21 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length, s
           "transformer_model", // model_name
           2                    // checkpoint_frequency
       },
-      // Initialize beam search parameters with defaults
-      beam_size(5), length_penalty(0.6f), temperature(1.0f), top_p(0.9f), max_length(20) {
+      beam_search{
+          true,   // use_beam_search
+          5,      // beam_size
+          4,      // beams_per_group
+          3,      // num_groups
+          1.5f,   // length_penalty
+          1.0f,   // temperature
+          0.9f,   // top_p
+          20,     // max_length
+          3.0f,   // initial_temperature
+          0.8f,   // initial_noise_scale
+          4.0f,   // diversity_strength
+          100,    // top_k
+          0.1f    // token_noise_scale
+      } {
     std::cout << "entering TransformerConfig constructor" << std::endl;
     if (hidden_size % num_heads != 0) {
         throw std::invalid_argument("Hidden size must be divisible by number of heads");
@@ -28,12 +41,18 @@ TransformerConfig::TransformerConfig(size_t vocab_size, size_t max_seq_length, s
 
 // Define as a member function
 bool TransformerConfig::operator!=(const TransformerConfig& other) const {
-    return vocab_size != other.vocab_size || max_seq_length != other.max_seq_length ||
-           hidden_size != other.hidden_size || num_layers != other.num_layers ||
-           num_heads != other.num_heads || use_flash_attention != other.use_flash_attention ||
-           use_rope != other.use_rope || use_sliding_window != other.use_sliding_window ||
-           window_size != other.window_size || batch_size != other.batch_size ||
-           num_epochs != other.num_epochs || beam_size != other.beam_size ||
-           length_penalty != other.length_penalty || temperature != other.temperature ||
-           top_p != other.top_p || max_length != other.max_length;
+    return vocab_size != other.vocab_size || 
+           max_seq_length != other.max_seq_length ||
+           hidden_size != other.hidden_size ||
+           num_layers != other.num_layers ||
+           num_heads != other.num_heads ||
+           head_dim != other.head_dim ||
+           intermediate_size != other.intermediate_size ||
+           batch_size != other.batch_size ||
+           num_epochs != other.num_epochs ||
+           beam_search.beam_size != other.beam_search.beam_size ||
+           beam_search.length_penalty != other.beam_search.length_penalty ||
+           beam_search.temperature != other.beam_search.temperature ||
+           beam_search.top_p != other.beam_search.top_p ||
+           beam_search.max_length != other.beam_search.max_length;
 }

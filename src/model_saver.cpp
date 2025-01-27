@@ -318,3 +318,26 @@ bool ModelSaver::readMetadata(const std::string& directory, const std::string& m
 
     return true;
 }
+
+void ModelSaver::save_vocabulary(const std::string& path, const Vocabulary& vocab) {
+    try {
+        // Save special token mappings in consistent order
+        special_tokens_json = {
+            {"<pad>", 0},
+            {"<unk>", 1},
+            {"<bos>", 2},
+            {"<eos>", 3},
+            {"<mask>", 4}
+        };
+
+        // Write to file
+        std::ofstream file(path);
+        if (!file) {
+            logger.log("Failed to open vocabulary file for writing: " + path, true);
+            return;
+        }
+        file << std::setw(4) << special_tokens_json << std::endl;
+    } catch (const std::exception& e) {
+        logger.log("Error saving vocabulary: " + std::string(e.what()), true);
+    }
+}

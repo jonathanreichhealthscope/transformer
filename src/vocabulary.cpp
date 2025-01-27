@@ -1,4 +1,5 @@
 #include "../include/vocabulary.hpp"
+#include "../include/token_constants.hpp"
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -6,19 +7,19 @@
 #include <unordered_set>
 
 Vocabulary::Vocabulary() {
-    // Initialize special tokens first (guaranteed IDs)
-    add_special_token("<pad>", 0);  // Padding token
-    add_special_token("<unk>", 1);  // Unknown token
-    add_special_token("<bos>", 2);  // Beginning of sequence
-    add_special_token("<eos>", 3);  // End of sequence
-    add_special_token("<mask>", 4); // Mask token for MLM
+    // Initialize special tokens in consistent order using constants
+    add_special_token(tokens::PAD_TOKEN, tokens::PAD_ID);
+    add_special_token(tokens::UNK_TOKEN, tokens::UNK_ID);
+    add_special_token(tokens::BOS_TOKEN, tokens::BOS_ID);
+    add_special_token(tokens::EOS_TOKEN, tokens::EOS_ID);
+    add_special_token(tokens::MASK_TOKEN, tokens::MASK_ID);
 
-    // Store special token IDs
-    pad_token_id = 0;
-    unk_token_id = 1;
-    bos_token_id = 2;
-    eos_token_id = 3;
-    mask_token_id = 4;
+    // Update member variables
+    pad_token_id = tokens::PAD_ID;
+    unk_token_id = tokens::UNK_ID;
+    bos_token_id = tokens::BOS_ID;
+    eos_token_id = tokens::EOS_ID;
+    mask_token_id = tokens::MASK_ID;
 
     initialize_basic_vocabulary();
 }
@@ -27,15 +28,12 @@ void Vocabulary::add_word(const std::string& word) {
     if (token_to_id.find(word) == token_to_id.end()) {
         int id = id_to_token.size();
         token_to_id[word] = id;
-        id_to_token.push_back(word);
+        id_to_token[id] = word;
     }
 }
 
 void Vocabulary::add_special_token(const std::string& token, int id) {
     token_to_id[token] = id;
-    if (id >= id_to_token.size()) {
-        id_to_token.resize(id + 1);
-    }
     id_to_token[id] = token;
 }
 
@@ -346,7 +344,16 @@ int Vocabulary::get_id(const std::string& token) const {
 }
 
 std::string Vocabulary::get_token(int id) const {
-    return (id >= 0 && id < id_to_token.size()) ? id_to_token[id] : id_to_token[unk_token_id];
+    auto it = id_to_token.find(id);
+    if (it == id_to_token.end()) {
+        // Return the unknown token string, not its ID
+        auto unk_it = id_to_token.find(unk_token_id);
+        if (unk_it == id_to_token.end()) {
+            throw std::runtime_error("Unknown token not found in vocabulary");
+        }
+        return unk_it->second;
+    }
+    return it->second;
 }
 
 size_t Vocabulary::size() const {
@@ -355,31 +362,56 @@ size_t Vocabulary::size() const {
 
 void Vocabulary::print_vocabulary_mappings() const {
     std::cout << "\n=== Special Tokens ===\n";
-    std::cout << "PAD token: " << pad_token_id << " <-> " << id_to_token[pad_token_id] << "\n";
-    std::cout << "UNK token: " << unk_token_id << " <-> " << id_to_token[unk_token_id] << "\n";
-    std::cout << "BOS token: " << bos_token_id << " <-> " << id_to_token[bos_token_id] << "\n";
-    std::cout << "EOS token: " << eos_token_id << " <-> " << id_to_token[eos_token_id] << "\n";
+    
+    // Use .at() for const access to map
+    std::cout << "PAD token: " << pad_token_id << " <-> " << id_to_token.at(pad_token_id) << "\n";
+    std::cout << "UNK token: " << unk_token_id << " <-> " << id_to_token.at(unk_token_id) << "\n";
+    std::cout << "BOS token: " << bos_token_id << " <-> " << id_to_token.at(bos_token_id) << "\n";
+    std::cout << "EOS token: " << eos_token_id << " <-> " << id_to_token.at(eos_token_id) << "\n";
+    std::cout << "MASK token: " << mask_token_id << " <-> " << id_to_token.at(mask_token_id) << "\n";
 
     std::cout << "\n=== Full Vocabulary ===\n";
     std::cout << "Total size: " << size() << " tokens\n\n";
+    
+    // Print first few tokens as sample
+    size_t sample_size = std::min(size_t(10), size());
+    for (size_t i = 0; i < sample_size; i++) {
+        std::cout << "ID " << i << " -> '" << id_to_token.at(i) << "'\n";
+    }
+    if (size() > sample_size) {
+        std::cout << "... and " << (size() - sample_size) << " more tokens\n";
+    }
 }
 
 bool Vocabulary::verify_mappings() const {
-    bool valid = true;
-    for (const auto& [token, id] : token_to_id) {
-        if (id >= id_to_token.size()) {
-            std::cout << "Error: Token '" << token << "' maps to invalid ID " << id << "\n";
-            valid = false;
-            continue;
+    try {
+        // Validate special tokens directly
+        const std::vector<std::pair<std::string, int>> special_tokens = {
+            {tokens::PAD_TOKEN, tokens::PAD_ID},
+            {tokens::UNK_TOKEN, tokens::UNK_ID},
+            {tokens::BOS_TOKEN, tokens::BOS_ID},
+            {tokens::EOS_TOKEN, tokens::EOS_ID},
+            {tokens::MASK_TOKEN, tokens::MASK_ID}
+        };
+
+        // Check special token mappings
+        for (const auto& [token, id] : special_tokens) {
+            auto token_id_it = token_to_id.find(token);
+            auto id_token_it = id_to_token.find(id);
+            
+            if (token_id_it == token_to_id.end() || id_token_it == id_to_token.end()) {
+                throw std::runtime_error("Missing special token mapping for: " + token);
+            }
+            if (token_id_it->second != id || id_token_it->second != token) {
+                throw std::runtime_error("Inconsistent special token mapping for: " + token);
+            }
         }
-        if (id_to_token[id] != token) {
-            std::cout << "Error: Inconsistent mapping for token '" << token << "'\n";
-            std::cout << "token_to_id['" << token << "'] = " << id << "\n";
-            std::cout << "id_to_token[" << id << "] = '" << id_to_token[id] << "'\n";
-            valid = false;
-        }
+        
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Vocabulary validation failed: " << e.what() << std::endl;
+        return false;
     }
-    return valid;
 }
 
 bool Vocabulary::is_noun(const std::string& token) const {

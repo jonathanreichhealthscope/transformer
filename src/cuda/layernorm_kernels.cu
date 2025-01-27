@@ -1,9 +1,12 @@
-#include "cuda/layernorm_kernels.cuh"
+#include "layernorm_kernels.cuh"
+
+namespace cuda {
 
 __global__ void layer_norm_stats_kernel(const float* input, float* mean, float* variance,
                                         const int hidden_size, const int batch_size) {
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
     const int stride = blockDim.x * gridDim.x;
+    const float MIN_VAR = 1e-6f;  // Minimum variance threshold
 
     extern __shared__ float shared_mem[];
     float* shared_sum = shared_mem;
@@ -21,7 +24,8 @@ __global__ void layer_norm_stats_kernel(const float* input, float* mean, float* 
         }
 
         mean[batch_idx] = sum / hidden_size;
-        variance[batch_idx] = (sq_sum / hidden_size) - (mean[batch_idx] * mean[batch_idx]);
+        float var = (sq_sum / hidden_size) - (mean[batch_idx] * mean[batch_idx]);
+        variance[batch_idx] = max(var, MIN_VAR);  // Apply minimum variance threshold
     }
 }
 
@@ -31,6 +35,7 @@ __global__ void layer_norm_kernel(const float* input, const float* mean, const f
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
     const int stride = blockDim.x * gridDim.x;
     const int total_elements = batch_size * hidden_size;
+    const float MIN_VAR = 1e-6f;  // Minimum variance threshold
 
     for (int idx = tid; idx < total_elements; idx += stride) {
         const int batch_idx = idx / hidden_size;
@@ -38,26 +43,11 @@ __global__ void layer_norm_kernel(const float* input, const float* mean, const f
 
         float val = input[idx];
         float mean_val = mean[batch_idx];
-        float var_val = variance[batch_idx];
+        float var_val = max(variance[batch_idx], MIN_VAR);  // Apply minimum variance threshold
         float std_dev = sqrt(var_val + eps);
 
         output[idx] = gamma[hidden_idx] * ((val - mean_val) / std_dev) + beta[hidden_idx];
     }
 }
 
-__global__ void layer_norm_backward_kernel(const float* grad, const float* input,
-                                           const float* gamma, float* dx, const int batch_size,
-                                           const int hidden_size, const float eps) {
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int stride = blockDim.x * gridDim.x;
-
-    extern __shared__ float shared_mem[];
-    float* mean = shared_mem;
-    float* var = shared_mem + blockDim.x;
-    float* sum_grad = shared_mem + 2 * blockDim.x;
-    float* sum_grad_diff = shared_mem + 3 * blockDim.x;
-
-    for (int batch_idx = tid; batch_idx < batch_size; batch_idx += stride) {
-        // ... rest of the kernel implementation ...
-    }
-}
+} // namespace cuda

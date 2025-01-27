@@ -9,7 +9,19 @@
 #define KERNEL
 #endif
 
+namespace cuda {
+
 // Declare CUDA kernels
-KERNEL void layer_norm_backward_kernel(const float* grad, const float* input, const float* gamma,
-                                       float* dx, const int batch_size, const int hidden_size,
-                                       const float eps);
+KERNEL void layer_norm_stats_kernel(const float* input, float* mean, float* variance,
+                                  const int hidden_size, const int batch_size);
+
+KERNEL void layer_norm_kernel(const float* input, const float* mean, const float* variance,
+                            const float* gamma, const float* beta, float* output,
+                            const int hidden_size, const int batch_size, const float eps);
+
+KERNEL void layer_norm_backward_kernel(const float* grad_output, const float* input,
+                                     const float* gamma, float* grad_gamma,
+                                     float* grad_beta, int batch_size, int hidden_size,
+                                     float eps);
+
+} // namespace cuda

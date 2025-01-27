@@ -1,4 +1,6 @@
 #pragma once
+#include "vector.hpp"
+#include "matrix.hpp"
 #include "cache.hpp"
 #include "components.hpp"
 #include "tensor.hpp"
@@ -262,6 +264,14 @@ class MultiHeadAttention {
      * @return Attention scores [batch_size * num_heads, seq_len, seq_len]
      */
     Matrix compute_attention_scores(const Matrix& Q, const Matrix& K);
+
+    /**
+     * @brief Initialize the attention weights and biases
+     * 
+     * Initializes projection matrices with Xavier/Glorot initialization
+     * and biases with small non-zero values for better training stability.
+     */
+    void initialize_weights();
 
   private:
     Parameters params;                  // Trainable parameters

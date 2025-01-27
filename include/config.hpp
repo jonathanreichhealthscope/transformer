@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <string>
+#include <vector>
 
 /**
  * @brief Configuration class for transformer model architecture and training settings.
@@ -55,11 +56,31 @@ class TransformerConfig {
     std::string checkpoint_to_load; ///< Path to checkpoint file to load
 
     // Beam search parameters
-    size_t beam_size;            ///< Size of beam for beam search
-    float length_penalty;        ///< Length penalty for beam search
-    float temperature;           ///< Temperature for sampling
-    float top_p;                ///< Nucleus sampling probability threshold
-    size_t max_length;          ///< Maximum generation length
+    struct BeamSearchConfig {
+        bool use_beam_search = true;
+        size_t beam_size = 5;
+        size_t beams_per_group = 4;
+        size_t num_groups = 3;
+        float length_penalty = 1.5f;
+        float temperature = 1.0f;
+        float top_p = 0.9f;
+        size_t max_length = 20;
+        float initial_temperature = 3.0f;
+        float initial_noise_scale = 0.8f;
+        float diversity_strength = 4.0f;
+        size_t top_k = 100;
+        float token_noise_scale = 0.1f;
+    } beam_search;
+
+    // Tokenizer configuration
+    struct TokenizerConfig {
+        bool use_subword = true;
+        size_t vocab_size = 32000;  // Changed from max_vocab_size
+        std::string model_path = "model/tokenizer.model";
+        std::vector<std::string> special_tokens = {
+            "<pad>", "<unk>", "<bos>", "<eos>", "<mask>"
+        };
+    } tokenizer;
 
     /**
      * @brief Constructs a transformer configuration with default values.

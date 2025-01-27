@@ -171,4 +171,11 @@ class FeedForward {
 
     // Parameter updates
     void update_parameters(const Matrix& grad);
+
+    /**
+     * @brief Initialize the feed forward layer weights and biases
+     * 
+     * Uses Xavier/Glorot initialization for weights and small non-zero values for biases
+     */
+    void initialize_weights();
 };
