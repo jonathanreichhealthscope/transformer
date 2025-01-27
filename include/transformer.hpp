@@ -237,6 +237,12 @@ class Transformer {
     Transformer() = default;
 
     /**
+     * @brief Sets the training mode for the transformer and all its components.
+     * @param mode True for training mode, false for inference mode
+     */
+    void set_training(bool mode);
+
+    /**
      * @brief Constructs a transformer model with the given configuration.
      * @param config Configuration parameters for the transformer
      */
@@ -330,13 +336,6 @@ class Transformer {
     }
     void set_lm_head(std::unique_ptr<LanguageModelHead> head) {
         lm_head = std::move(head);
-    }
-
-    void set_training(bool mode) {
-        training = mode;
-        for (auto& layer : layers) {
-            layer->set_training(mode);
-        }
     }
 
     bool verify_state() const {

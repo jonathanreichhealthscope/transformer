@@ -34,14 +34,11 @@ class LanguageModelHead {
     Matrix hidden_states;                ///< Cached hidden states for backward pass
     Matrix hidden_states_;               ///< Cached hidden states for forward pass
     std::vector<float> token_frequencies; ///< Tracked frequencies of token usage
-
-    // Vocabulary pruning
-    static constexpr size_t PRUNE_INTERVAL = 100;  // Update active tokens every N steps
-    static constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Minimum number of active tokens
     float pruning_threshold;
     std::vector<unsigned char> active_tokens;  // Changed from vector<bool> to vector<unsigned char>
     std::vector<int> active_token_indices;     // List of indices of active tokens
     size_t training_steps;
+    bool is_training_;  // Add training state member variable
     
     // Pinned memory for efficient GPU transfers
     float* h_projection = nullptr;
@@ -259,4 +256,6 @@ class LanguageModelHead {
      * @param min_frequency_threshold Minimum frequency threshold for keeping tokens
      */
     void prune_vocabulary(float min_frequency_threshold = 1e-5);
+
+    void set_training(bool training_mode);  // Add setter for training mode
 };

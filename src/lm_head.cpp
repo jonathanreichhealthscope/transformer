@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <random>
 
+// Add minimum active tokens constant
+constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Reasonable default value
+
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -14,7 +17,7 @@
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     : hidden_size_(hidden_size), vocab_size_(vocab_size), projection(hidden_size, vocab_size),
       bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f), pruning_threshold(1e-6f),
-      active_tokens(vocab_size, 1), training_steps(0)
+      active_tokens(vocab_size, 1), training_steps(0), is_training_(false)
 {
     // Initialize with smaller scale due to large vocab size
     float scale = std::sqrt(2.0f / hidden_size);  // Scale based on input dim only
@@ -49,6 +52,8 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     float sum_hidden = 0.0f;
     size_t nonzero_hidden = 0;
     
+    #pragma omp parallel for collapse(2) reduction(min:min_hidden) reduction(max:max_hidden) \
+                             reduction(+:sum_hidden,nonzero_hidden)
     for (size_t i = 0; i < hidden_states.rows(); i++) {
         for (size_t j = 0; j < hidden_states.cols(); j++) {
             float val = hidden_states(i, j);
@@ -76,23 +81,62 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
         }
     }
     
-    // Debug projection matrix
+    // Debug projection matrix using sampling
     float min_proj = std::numeric_limits<float>::infinity();
     float max_proj = -std::numeric_limits<float>::infinity();
     float sum_proj = 0.0f;
     size_t nonzero_proj = 0;
     
-    for (size_t i = 0; i < projection.rows(); i++) {
-        for (size_t j = 0; j < projection.cols(); j++) {
-            float val = projection(i, j);
-            min_proj = std::min(min_proj, val);
-            max_proj = std::max(max_proj, val);
-            sum_proj += val;
-            if (std::abs(val) > 1e-6) nonzero_proj++;
+    // Only compute expensive statistics in debug mode or first forward pass
+    static bool first_pass = true;
+    if (first_pass || !is_training_) {
+        const size_t total_elements = projection.rows() * projection.cols();
+        // Sample ~1% of elements or 10000, whichever is smaller
+        const size_t sample_size = std::min(total_elements / 100, size_t(10000));
+        const float* data = projection.data();
+        
+        // Use thread-safe random number generation
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<size_t> dist(0, total_elements - 1);
+        
+        #pragma omp parallel
+        {
+            float local_min = std::numeric_limits<float>::infinity();
+            float local_max = -std::numeric_limits<float>::infinity();
+            float local_sum = 0.0f;
+            size_t local_nonzero = 0;
+            size_t local_samples = 0;
+            
+            // Each thread processes its share of samples
+            #pragma omp for
+            for (size_t i = 0; i < sample_size; i++) {
+                size_t idx = dist(gen);
+                float val = data[idx];
+                local_min = std::min(local_min, val);
+                local_max = std::max(local_max, val);
+                local_sum += val;
+                if (std::abs(val) > 1e-6) local_nonzero++;
+                local_samples++;
+            }
+            
+            // Scale up the counts to estimate full matrix
+            float scale_factor = float(total_elements) / sample_size;
+            local_sum *= scale_factor;
+            local_nonzero = size_t(local_nonzero * scale_factor);
+            
+            #pragma omp critical
+            {
+                min_proj = std::min(min_proj, local_min);
+                max_proj = std::max(max_proj, local_max);
+                sum_proj += local_sum;
+                nonzero_proj += local_nonzero;
+            }
         }
+        first_pass = false;
     }
     
-    std::cout << "Projection Matrix Statistics:\n"
+    std::cout << "Projection Matrix Statistics (Estimated from sampling):\n"
               << "Min proj: " << min_proj << "\n"
               << "Max proj: " << max_proj << "\n"
               << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n"
@@ -423,17 +467,17 @@ void LanguageModelHead::update_active_tokens() {
     
     // Partial sort only what we need
     std::partial_sort(freq_pairs.begin(), 
-                     freq_pairs.begin() + MIN_ACTIVE_TOKENS,
+                     freq_pairs.begin() + std::min(MIN_ACTIVE_TOKENS, vocab_size_),
                      freq_pairs.end(),
-                     std::greater<>());
+                     [](const auto& a, const auto& b) { return a.first > b.first; });
     
     // Reset active tokens
     std::fill(active_tokens.begin(), active_tokens.end(), 0);
     active_token_indices.clear();
-    active_token_indices.reserve(MIN_ACTIVE_TOKENS);
+    active_token_indices.reserve(std::min(MIN_ACTIVE_TOKENS, vocab_size_));
     
     // Set active tokens based on sorted frequencies
-    for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
+    for (size_t i = 0; i < std::min(MIN_ACTIVE_TOKENS, vocab_size_); i++) {
         size_t idx = freq_pairs[i].second;
         active_tokens[idx] = 1;
         active_token_indices.push_back(idx);
@@ -468,4 +512,8 @@ LanguageModelHead::~LanguageModelHead() {
     if (d_active_token_indices) cudaFree(d_active_token_indices);
     if (compute_stream) cudaStreamDestroy(compute_stream);
 #endif
+}
+
+void LanguageModelHead::set_training(bool training_mode) {
+    is_training_ = training_mode;
 } 

@@ -51,6 +51,8 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
     size_t nonzero_norm = 0;
     const size_t total_elements = normalized.rows() * normalized.cols();
     
+    #pragma omp parallel for collapse(2) reduction(min:min_norm) reduction(max:max_norm) \
+                             reduction(+:sum_norm,sum_squared,nonzero_norm)
     for (size_t i = 0; i < normalized.rows(); i++) {
         for (size_t j = 0; j < normalized.cols(); j++) {
             float val = normalized(i, j);
@@ -107,6 +109,8 @@ Matrix TransformerLayer::forward(const Matrix& input, const AttentionMask& mask,
     float sum_attn = 0.0f;
     size_t nonzero_attn = 0;
     
+    #pragma omp parallel for collapse(2) reduction(min:min_attn) reduction(max:max_attn) \
+                             reduction(+:sum_attn,nonzero_attn)
     for (size_t i = 0; i < attention_output.rows(); i++) {
         for (size_t j = 0; j < attention_output.cols(); j++) {
             float val = attention_output(i, j);
@@ -841,5 +845,16 @@ void TransformerConfig::load_from_json(const std::string& config_path) {
 
     } catch (const std::exception& e) {
         throw std::runtime_error("Error loading config from JSON: " + std::string(e.what()));
+    }
+}
+
+void Transformer::set_training(bool training_mode) {
+    training = training_mode;
+    // Set training mode for all components that need it
+    for (auto& layer : layers) {
+        layer->training = training_mode;
+    }
+    if (lm_head) {
+        lm_head->set_training(training_mode);
     }
 }
