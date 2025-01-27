@@ -19,14 +19,14 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
       bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f), pruning_threshold(1e-6f),
       active_tokens(vocab_size, 1), training_steps(0), is_training_(false)
 {
-    // Initialize with smaller scale due to large vocab size
-    float scale = std::sqrt(2.0f / hidden_size);  // Scale based on input dim only
+    // Initialize with Xavier/Glorot initialization
+    float scale = std::sqrt(6.0f / (hidden_size + vocab_size));  // Proper Xavier scaling
     projection.randomize(-scale, scale);
     
-    // Initialize bias to small negative values to encourage sparsity
+    // Initialize bias to zero instead of negative values
     #pragma omp parallel for
     for (size_t i = 0; i < vocab_size; i++) {
-        bias[i] = -0.1f;  // Small negative bias
+        bias[i] = 0.0f;
     }
     
     active_token_indices.reserve(vocab_size);
@@ -74,7 +74,7 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
               << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
     
     // Scale hidden states for better gradient flow
-    float scale_factor = std::sqrt(2.0f / hidden_size_);
+    float scale_factor = std::sqrt(1.0f / hidden_size_);  // Changed scaling factor
     Matrix scaled_hidden = hidden_states;
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < scaled_hidden.rows(); i++) {
@@ -145,56 +145,47 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
               << "Nonzero proj: " << nonzero_proj << "/" 
               << (projection.rows() * projection.cols()) << "\n\n";
     
-    // Compute logits
+    // Compute logits with proper scaling
     Matrix logits = matmul(scaled_hidden, projection);
     
-    // Add bias and compute logits
+    // Add bias and apply proper scaling
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
+            // Add bias
             logits(i, j) += bias[j];
             
-            // Apply more balanced penalties for special tokens
+            // Apply token-specific adjustments
             if (j == static_cast<size_t>(tokens::UNK_ID)) {
-                // Reduced penalty for UNK token
-                logits(i, j) -= 4.0f;
+                logits(i, j) -= 2.0f;  // Reduced penalty for UNK
             } else if (token_frequencies[j] < 1e-6) {
-                // Reduced penalty for rare tokens
-                logits(i, j) -= 2.0f;
-            } else if (token_frequencies[j] < 1e-4) {
-                // Minimal penalty for uncommon tokens
-                logits(i, j) -= 1.0f;
-            }
-            
-            // Add small bonus for common tokens
-            if (token_frequencies[j] > 1e-2) {
-                logits(i, j) += 0.5f;
+                logits(i, j) -= 1.0f;  // Smaller penalty for rare tokens
             }
         }
     }
     
-    // Apply softmax with improved temperature scaling
-    const float temperature = 0.8f;  // More moderate temperature
+    // Apply layer normalization to logits for better numerical stability
     #pragma omp parallel for
-    for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max for numerical stability
-        float max_val = logits(i, 0);
-        for (size_t j = 1; j < logits.cols(); j++) {
-            max_val = std::max(max_val, logits(i, j));
-        }
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        float row_mean = 0.0f;
+        float row_var = 0.0f;
         
-        // Apply temperature and compute sum
-        float sum = 0.0f;
-        for (size_t j = 0; j < logits.cols(); j++) {
-            logits(i, j) = std::exp((logits(i, j) - max_val) / temperature);
-            sum += logits(i, j);
+        // Compute mean
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            row_mean += logits(i, j);
         }
+        row_mean /= logits.cols();
         
-        // Normalize
-        if (sum > 1e-6f) {
-            for (size_t j = 0; j < logits.cols(); j++) {
-                logits(i, j) /= sum;
-            }
+        // Compute variance
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            float diff = logits(i, j) - row_mean;
+            row_var += diff * diff;
+        }
+        row_var = std::sqrt(row_var / logits.cols() + 1e-5f);
+        
+        // Normalize and scale
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            logits(i, j) = (logits(i, j) - row_mean) / row_var;
         }
     }
     
