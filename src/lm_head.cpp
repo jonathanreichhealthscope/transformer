@@ -20,13 +20,38 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
       active_tokens(vocab_size, 1), training_steps(0), is_training_(false)
 {
     // Initialize with Xavier/Glorot initialization
-    float scale = std::sqrt(6.0f / (hidden_size + vocab_size));  // Proper Xavier scaling
+    float scale = std::sqrt(6.0f / (hidden_size + vocab_size));
     projection.randomize(-scale, scale);
     
-    // Initialize bias to zero instead of negative values
+    // Initialize bias with a slight preference for common tokens
     #pragma omp parallel for
     for (size_t i = 0; i < vocab_size; i++) {
-        bias[i] = 0.0f;
+        // Special tokens get neutral bias
+        if (i < 5) {
+            bias[i] = 0.0f;
+        }
+        // Common tokens (first ~1000) get slight positive bias
+        else if (i < 1000) {
+            bias[i] = 0.1f;
+        }
+        // Rest get slight negative bias
+        else {
+            bias[i] = -0.1f;
+        }
+    }
+    
+    // Initialize token frequencies with meaningful values
+    #pragma omp parallel for
+    for (size_t i = 0; i < vocab_size; i++) {
+        if (i < 5) {  // Special tokens
+            token_frequencies[i] = 0.5f;  // Moderate frequency
+        }
+        else if (i < 1000) {  // Common tokens
+            token_frequencies[i] = 1.0f - (i / 1000.0f);  // Gradually decreasing frequency
+        }
+        else {  // Less common tokens
+            token_frequencies[i] = 0.1f;  // Small but non-zero frequency
+        }
     }
     
     active_token_indices.reserve(vocab_size);
@@ -83,109 +108,124 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
         }
     }
     
-    // Debug projection matrix using sampling
+    // Debug hidden states after scaling
+    float min_scaled = std::numeric_limits<float>::infinity();
+    float max_scaled = -std::numeric_limits<float>::infinity();
+    float sum_scaled = 0.0f;
+    
+    #pragma omp parallel for collapse(2) reduction(min:min_scaled) reduction(max:max_scaled) \
+                             reduction(+:sum_scaled)
+    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
+        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
+            float val = scaled_hidden(i, j);
+            min_scaled = std::min(min_scaled, val);
+            max_scaled = std::max(max_scaled, val);
+            sum_scaled += val;
+        }
+    }
+    
+    std::cout << "Scaled Hidden States Statistics:\n"
+              << "Min scaled: " << min_scaled << "\n"
+              << "Max scaled: " << max_scaled << "\n"
+              << "Mean scaled: " << sum_scaled / (scaled_hidden.rows() * scaled_hidden.cols()) << "\n\n";
+              
+    // Verify projection matrix values
     float min_proj = std::numeric_limits<float>::infinity();
     float max_proj = -std::numeric_limits<float>::infinity();
     float sum_proj = 0.0f;
-    size_t nonzero_proj = 0;
     
-    // Only compute expensive statistics in debug mode or first forward pass
-    static bool first_pass = true;
-    if (first_pass || !is_training_) {
-        const size_t total_elements = projection.rows() * projection.cols();
-        // Sample ~1% of elements or 10000, whichever is smaller
-        const size_t sample_size = std::min(total_elements / 100, size_t(10000));
-        const float* data = projection.data();
-        
-        // Use thread-safe random number generation
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<size_t> dist(0, total_elements - 1);
-        
-        #pragma omp parallel
-        {
-            float local_min = std::numeric_limits<float>::infinity();
-            float local_max = -std::numeric_limits<float>::infinity();
-            float local_sum = 0.0f;
-            size_t local_nonzero = 0;
-            size_t local_samples = 0;
-            
-            // Each thread processes its share of samples
-            #pragma omp for
-            for (size_t i = 0; i < sample_size; i++) {
-                size_t idx = dist(gen);
-                float val = data[idx];
-                local_min = std::min(local_min, val);
-                local_max = std::max(local_max, val);
-                local_sum += val;
-                if (std::abs(val) > 1e-6) local_nonzero++;
-                local_samples++;
-            }
-            
-            // Scale up the counts to estimate full matrix
-            float scale_factor = float(total_elements) / sample_size;
-            local_sum *= scale_factor;
-            local_nonzero = size_t(local_nonzero * scale_factor);
-            
-            #pragma omp critical
-            {
-                min_proj = std::min(min_proj, local_min);
-                max_proj = std::max(max_proj, local_max);
-                sum_proj += local_sum;
-                nonzero_proj += local_nonzero;
-            }
+    #pragma omp parallel for collapse(2) reduction(min:min_proj) reduction(max:max_proj) \
+                             reduction(+:sum_proj)
+    for (size_t i = 0; i < projection.rows(); i++) {
+        for (size_t j = 0; j < projection.cols(); j++) {
+            float val = projection(i, j);
+            min_proj = std::min(min_proj, val);
+            max_proj = std::max(max_proj, val);
+            sum_proj += val;
         }
-        first_pass = false;
     }
     
-    std::cout << "Projection Matrix Statistics (Estimated from sampling):\n"
+    std::cout << "Projection Matrix Statistics:\n"
               << "Min proj: " << min_proj << "\n"
               << "Max proj: " << max_proj << "\n"
-              << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n"
-              << "Nonzero proj: " << nonzero_proj << "/" 
-              << (projection.rows() * projection.cols()) << "\n\n";
+              << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n\n";
     
-    // Compute logits with proper scaling
+    // Compute logits with verification
     Matrix logits = matmul(scaled_hidden, projection);
     
-    // Add bias and apply proper scaling
+    // Verify logits immediately after matmul
+    float min_raw_logit = std::numeric_limits<float>::infinity();
+    float max_raw_logit = -std::numeric_limits<float>::infinity();
+    float sum_raw_logit = 0.0f;
+    
+    #pragma omp parallel for collapse(2) reduction(min:min_raw_logit) reduction(max:max_raw_logit) \
+                             reduction(+:sum_raw_logit)
+    for (size_t i = 0; i < logits.rows(); i++) {
+        for (size_t j = 0; j < logits.cols(); j++) {
+            float val = logits(i, j);
+            min_raw_logit = std::min(min_raw_logit, val);
+            max_raw_logit = std::max(max_raw_logit, val);
+            sum_raw_logit += val;
+        }
+    }
+    
+    std::cout << "Raw Logits Statistics (before bias):\n"
+              << "Min raw logit: " << min_raw_logit << "\n"
+              << "Max raw logit: " << max_raw_logit << "\n"
+              << "Mean raw logit: " << sum_raw_logit / (logits.rows() * logits.cols()) << "\n\n";
+              
+    // If logits are all zero, reinitialize projection matrix with larger scale
+    if (std::abs(max_raw_logit) < 1e-6 && std::abs(min_raw_logit) < 1e-6) {
+        std::cout << "WARNING: Logits are all zero. Reinitializing projection matrix...\n";
+        float scale = std::sqrt(6.0f / hidden_size_);  // Larger initialization scale
+        projection.randomize(-scale, scale);
+        logits = matmul(scaled_hidden, projection);  // Recompute logits
+    }
+    
+    // Add bias and apply token-specific adjustments
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
             // Add bias
             logits(i, j) += bias[j];
             
-            // Apply token-specific adjustments
+            // Token-specific adjustments
             if (j == static_cast<size_t>(tokens::UNK_ID)) {
-                logits(i, j) -= 2.0f;  // Reduced penalty for UNK
-            } else if (token_frequencies[j] < 1e-6) {
-                logits(i, j) -= 1.0f;  // Smaller penalty for rare tokens
+                logits(i, j) -= 15.0f;  // Stronger penalty for UNK
+            }
+            else if (j < 5) {  // Other special tokens
+                logits(i, j) -= 5.0f;  // Moderate penalty
+            }
+            else {
+                // Scale logits based on token frequency
+                float freq_bonus = token_frequencies[j];
+                logits(i, j) += freq_bonus;
             }
         }
     }
     
-    // Apply layer normalization to logits for better numerical stability
+    // Apply softmax with lower temperature for sharper predictions
+    const float temperature = 0.7f;  // Reduced from 0.8f
     #pragma omp parallel for
-    for (size_t i = 0; i < logits.rows(); ++i) {
-        float row_mean = 0.0f;
-        float row_var = 0.0f;
-        
-        // Compute mean
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            row_mean += logits(i, j);
+    for (size_t i = 0; i < logits.rows(); i++) {
+        // Find max for numerical stability
+        float max_val = logits(i, 0);
+        for (size_t j = 1; j < logits.cols(); j++) {
+            max_val = std::max(max_val, logits(i, j));
         }
-        row_mean /= logits.cols();
         
-        // Compute variance
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            float diff = logits(i, j) - row_mean;
-            row_var += diff * diff;
+        // Apply temperature and compute sum
+        float sum = 0.0f;
+        for (size_t j = 0; j < logits.cols(); j++) {
+            logits(i, j) = std::exp((logits(i, j) - max_val) / temperature);
+            sum += logits(i, j);
         }
-        row_var = std::sqrt(row_var / logits.cols() + 1e-5f);
         
-        // Normalize and scale
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            logits(i, j) = (logits(i, j) - row_mean) / row_var;
+        // Normalize
+        if (sum > 1e-6f) {
+            for (size_t j = 0; j < logits.cols(); j++) {
+                logits(i, j) /= sum;
+            }
         }
     }
     
@@ -358,7 +398,7 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
 
     // Scale hidden states to match forward pass
     Matrix scaled_hidden = hidden_states;
-    float scale_factor = std::sqrt(2.0f / hidden_size_);  // Match forward pass scaling
+    float scale_factor = std::sqrt(2.0f / hidden_size_);
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < scaled_hidden.rows(); i++) {
         for (size_t j = 0; j < scaled_hidden.cols(); j++) {
@@ -369,7 +409,7 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
     Matrix grad_proj = matmul(scaled_hidden.transpose(), grad_output);
     Vector grad_bias(bias.size(), 0.0f);
 
-    // Compute bias gradients without array section syntax
+    // Compute bias gradients
     #pragma omp parallel
     {
         Vector local_grad_bias(bias.size(), 0.0f);
@@ -387,31 +427,78 @@ void LanguageModelHead::backward_linear(const Matrix& grad_output) {
         }
     }
 
-    // Use adaptive learning rate based on gradient magnitude
+    // Compute gradient statistics for adaptive clipping
+    float max_grad = 0.0f;
     float grad_norm = 0.0f;
-    #pragma omp parallel for reduction(+:grad_norm)
+    
+    #pragma omp parallel for reduction(max:max_grad) reduction(+:grad_norm)
     for (size_t i = 0; i < grad_proj.rows(); i++) {
         for (size_t j = 0; j < grad_proj.cols(); j++) {
+            float abs_grad = std::abs(grad_proj(i, j));
+            max_grad = std::max(max_grad, abs_grad);
             grad_norm += grad_proj(i, j) * grad_proj(i, j);
         }
     }
     grad_norm = std::sqrt(grad_norm);
     
-    // Clip learning rate based on gradient norm
-    const float base_lr = 0.01f;
-    float effective_lr = std::min(base_lr, base_lr / (1.0f + grad_norm));
+    // Clip gradients using adaptive threshold
+    const float clip_threshold = 1.0f;
+    float clip_scale = 1.0f;
+    if (grad_norm > clip_threshold) {
+        clip_scale = clip_threshold / grad_norm;
+    }
     
+    // Use much smaller base learning rate and decay
+    const float base_lr = 0.001f;  // Reduced from 0.01f
+    const float min_lr = 0.0001f;  // Minimum learning rate
+    float effective_lr = std::max(min_lr, 
+                                base_lr / (1.0f + std::sqrt(static_cast<float>(training_steps + 1))));  // Cast to float
+    
+    // Update projection matrix with safeguards
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < projection.rows(); i++) {
         for (size_t j = 0; j < projection.cols(); j++) {
-            projection(i, j) -= effective_lr * grad_proj(i, j);
+            float update = effective_lr * clip_scale * grad_proj(i, j);
+            
+            // Limit maximum update magnitude
+            const float max_update = 0.1f;
+            if (std::abs(update) > max_update) {
+                update = (update > 0 ? max_update : -max_update);
+            }
+            
+            // Update with safeguard against zero values
+            float new_value = projection(i, j) - update;
+            
+            // Prevent values from getting too close to zero
+            const float min_abs_value = 1e-4f;
+            if (std::abs(new_value) < min_abs_value) {
+                new_value = (new_value >= 0 ? min_abs_value : -min_abs_value);
+            }
+            
+            projection(i, j) = new_value;
         }
     }
 
+    // Update bias with similar safeguards
     #pragma omp parallel for
     for (size_t i = 0; i < bias.size(); i++) {
-        bias[i] -= effective_lr * grad_bias[i];
+        float update = effective_lr * clip_scale * grad_bias[i];
+        
+        // Limit bias updates
+        const float max_bias_update = 0.05f;
+        if (std::abs(update) > max_bias_update) {
+            update = (update > 0 ? max_bias_update : -max_bias_update);
+        }
+        
+        bias[i] -= update;
     }
+    
+    // Print statistics for monitoring
+    std::cout << "Backward pass statistics:\n"
+              << "Gradient norm: " << grad_norm << "\n"
+              << "Max gradient: " << max_grad << "\n"
+              << "Effective learning rate: " << effective_lr << "\n"
+              << "Clip scale: " << clip_scale << "\n\n";
 }
 
 void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens) {

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <fstream>
 #include <filesystem>
 #include <nlohmann/json.hpp>
@@ -20,84 +21,77 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         tiktoken_ = std::make_unique<tiktoken::Encoding>("gpt2");
         std::cout << "Loaded gpt2 vocabulary" << std::endl;
         
-        // Set target vocabulary size
-        target_vocab_size = 2500;
+        // First, collect all GPT2 tokens and their IDs
+        std::vector<std::pair<std::string, int>> gpt2_tokens;
+        std::string sample_text = "This is a sample text to help build the vocabulary.";
+        std::vector<int> sample_ids = tiktoken_->encode(sample_text);
         
-        // Initialize token frequencies with cleaned tokens
-        std::vector<std::string> common_words = {
-            "the", "be", "to", "of", "and", "a", "in", "that", "have", "I",
-            "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-            "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
-            "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
-            "so", "up", "out", "if", "about", "who", "get", "which", "go", "me"
-        };
+        // Create a set of unique token IDs
+        std::unordered_set<int> seen_ids;
         
-        // Add common word combinations
-        std::vector<std::string> word_combinations = {
-            "I am", "I will", "I have", "the cat", "to the", "in the", "of the",
-            "it is", "they are", "we are", "you are", "he is", "she is",
-            "school", "home", "work", "store", "market", "park", "library",
-            "morning", "afternoon", "evening", "night"
-        };
+        // Process sample text tokens
+        for (const auto& id : sample_ids) {
+            if (seen_ids.insert(id).second) {  // If this is a new ID
+                std::string token = tiktoken_->decode({id});
+                gpt2_tokens.push_back({token, id});
+            }
+        }
         
-        common_words.insert(common_words.end(), word_combinations.begin(), word_combinations.end());
+        // Add more tokens by sampling individual characters and common combinations
+        std::string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-_'\"();:$/ ";
+        for (char c : chars) {
+            std::string token_str(1, c);
+            std::vector<int> ids = tiktoken_->encode(token_str);
+            for (const auto& id : ids) {
+                if (seen_ids.insert(id).second) {
+                    std::string token = tiktoken_->decode({id});
+                    gpt2_tokens.push_back({token, id});
+                }
+            }
+        }
         
-        // First add special tokens
+        // Sort tokens by their GPT2 IDs
+        std::sort(gpt2_tokens.begin(), gpt2_tokens.end(),
+                 [](const auto& a, const auto& b) { return a.second < b.second; });
+        
+        // Create our token mappings
+        old_to_new_id_.clear();
+        new_to_old_id_.clear();
+        
+        // First, map special tokens
         setup_special_tokens();
-        
-        // Initialize our token mappings
-        std::cout << "Building vocabulary mappings..." << std::endl;
-        int current_id = 5;  // Start after special tokens
-        
-        // First, add special tokens to our mappings
         for (int i = 0; i < 5; i++) {
             old_to_new_id_[i] = i;
             new_to_old_id_[i] = i;
         }
         
-        std::cout << "Adding common words to vocabulary..." << std::endl;
-        
-        // Process common words first
-        for (const auto& word : common_words) {
-            // Add space prefix for encoding if not present
-            std::string search_word = (word[0] != ' ') ? " " + word : word;
-            std::vector<int> token_ids = tiktoken_->encode(search_word);
-            
-            // Only add single-token words to maintain vocabulary efficiency
-            if (token_ids.size() == 1 && current_id < target_vocab_size) {
-                int old_id = token_ids[0];
-                if (old_to_new_id_.find(old_id) == old_to_new_id_.end()) {
-                    old_to_new_id_[old_id] = current_id;
-                    new_to_old_id_[current_id] = old_id;
-                    current_id++;
-                }
-            }
-        }
-        
-        std::cout << "Adding remaining tokens..." << std::endl;
-        
-        // Add remaining common tokens by sampling text
-        std::string sample_text = "This is a sample text to help build the vocabulary. "
-                                "It includes common words and patterns that might be useful. "
-                                "We want to ensure we have good coverage of typical English text. "
-                                "The quick brown fox jumps over the lazy dog. "
-                                "Numbers like 0 1 2 3 4 5 6 7 8 9 are important too. "
-                                "Common punctuation , . ! ? ( ) [ ] { } : ; ' \" should be included.";
-        
-        std::vector<int> sample_tokens = tiktoken_->encode(sample_text);
-        for (int old_id : sample_tokens) {
+        // Then map GPT2 tokens to our consecutive IDs
+        int current_id = 5;  // Start after special tokens
+        for (const auto& [token, gpt2_id] : gpt2_tokens) {
             if (current_id >= target_vocab_size) break;
-            if (old_to_new_id_.find(old_id) == old_to_new_id_.end()) {
-                old_to_new_id_[old_id] = current_id;
-                new_to_old_id_[current_id] = old_id;
-                current_id++;
-            }
+            
+            // Skip if this is a special token
+            if (gpt2_id < 5) continue;
+            
+            old_to_new_id_[gpt2_id] = current_id;
+            new_to_old_id_[current_id] = gpt2_id;
+            current_id++;
         }
         
-        std::cout << "Vocabulary construction complete:" << std::endl;
-        std::cout << "- Total tokens: " << current_id << std::endl;
+        std::cout << "Vocabulary mapping complete:" << std::endl;
+        std::cout << "- Total mapped tokens: " << current_id << std::endl;
         std::cout << "- Special tokens: 5" << std::endl;
         std::cout << "- Regular tokens: " << (current_id - 5) << std::endl;
+        
+        // Initialize token frequencies
+        token_frequencies_.clear();
+        for (const auto& [token, gpt2_id] : gpt2_tokens) {
+            if (old_to_new_id_.find(gpt2_id) != old_to_new_id_.end()) {
+                // More frequent tokens appear earlier in GPT2's vocabulary
+                float freq = 1.0f - (static_cast<float>(gpt2_id) / tiktoken_->get_vocab_size());
+                token_frequencies_[token] = freq;
+            }
+        }
         
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to initialize tokenizer: " + std::string(e.what()));
