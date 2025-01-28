@@ -28,7 +28,7 @@ public:
     // Initialize with model type
     void initialize(const std::string& encoding_name = "cl100k_base");
 
-    bool is_initialized() const { return tiktoken_ != nullptr; }
+    bool is_initialized() const { return is_initialized_; }
 
     void set_vocab_size(size_t size) {
         target_vocab_size = size;
@@ -53,6 +53,10 @@ private:
     // Helper to build frequency-based vocabulary
     void build_vocabulary_from_frequencies();
 
-    size_t target_vocab_size = 2500;  // Reduced from 7000 to better match training data distribution
+    // New member variables for custom tokenizer
+    std::unordered_map<std::string, int> token_to_id_;  // Maps tokens to their IDs
+    std::unordered_map<int, std::string> id_to_token_;  // Maps IDs back to tokens
+    bool is_initialized_ = false;
+    size_t target_vocab_size = 2500;  // Default vocabulary size
     static bool debug_logging_;  // Add static debug flag
 }; 
