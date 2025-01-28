@@ -53,6 +53,6 @@ private:
     // Helper to build frequency-based vocabulary
     void build_vocabulary_from_frequencies();
 
-    size_t target_vocab_size = 7000;  // Keep the reduced vocabulary size
+    size_t target_vocab_size = 2500;  // Reduced from 7000 to better match training data distribution
     static bool debug_logging_;  // Add static debug flag
 }; 

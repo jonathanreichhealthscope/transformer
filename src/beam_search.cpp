@@ -13,8 +13,8 @@ BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperatur
                        float diversity_strength, size_t top_k, float top_p)
     : beam_width_(beam_width)
     , length_penalty_(length_penalty)
-    , temperature(temperature)
-    , diversity_strength(diversity_strength)
+    , temperature(std::min(temperature, 0.7f))  // Cap temperature to prevent too much randomness
+    , diversity_strength(std::max(diversity_strength, 1.0f))  // Ensure minimum diversity
     , top_k(top_k)
     , top_p(top_p) {
     std::cout << "Initializing BeamSearch with width=" << beam_width
@@ -294,6 +294,7 @@ BeamSearch::search(const std::vector<float>& initial_logits,
 void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float strength) {
     // Apply much stronger diversity penalty
     const float base_penalty = strength * 4.0f;  // Increased from 2.0f to 4.0f
+    const float unk_penalty = base_penalty * 2.0f;  // Extra penalty for UNK tokens
     
     // Track unique tokens to penalize repetition across beams
     std::unordered_map<size_t, int> global_token_counts;
@@ -302,6 +303,10 @@ void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float 
     for (const auto& candidate : candidates) {
         for (const auto& token : candidate.sequence) {
             global_token_counts[token]++;
+            // Apply extra penalty for UNK tokens
+            if (token == unk_token_id_) {
+                candidate.score -= unk_penalty * global_token_counts[token];
+            }
         }
     }
     
@@ -350,6 +355,10 @@ std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits)
     float sum = 0.0f;
     
     for (float& score : scores) {
+        // Apply a strong penalty to UNK token (ID 1)
+        if (score == logits[unk_token_id_]) {
+            score -= 10.0f;  // Large penalty to discourage UNK tokens
+        }
         score = std::exp((score - max_score) / temperature);
         sum += score;
     }

@@ -258,109 +258,128 @@ Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     }
     
     // Add bias and apply token-specific adjustments with improved scaling
-    const float logit_scale = 10.0f;  // Increase scale for better distribution
+    const float logit_scale = 3.0f;  // Reduced scale to prevent overwhelming the model
+    const float unk_penalty = 150.0f;  // Increased penalty for UNK token
+    const float special_token_penalty = 30.0f;  // Increased penalty for other special tokens
+    const float freq_scale = 8.0f;  // Increased impact of frequency-based adjustments
+    const float vocab_position_penalty = 0.001f;  // Small penalty based on token position in vocab
+    
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
-            // Scale logits before adding bias
-            logits(i, j) *= logit_scale;
+            float& logit = logits(i, j);
             
-            // Add bias with stronger values
-            logits(i, j) += bias[j] * 2.0f;
-            
-            // Token-specific adjustments with stronger penalties
+            // Apply token-specific penalties
             if (j == static_cast<size_t>(tokens::UNK_ID)) {
-                logits(i, j) -= 30.0f;  // Stronger penalty for UNK
+                logit -= unk_penalty;  // Stronger penalty for UNK
+                
+                // Additional dynamic penalty based on other token probabilities
+                float mean_logit = sum_raw_logit / (logits.rows() * logits.cols());
+                if (logit > mean_logit) {
+                    logit = mean_logit - unk_penalty;  // Force UNK below mean if it's too high
+                }
             }
-            else if (j < 5) {  // Other special tokens
-                logits(i, j) -= 10.0f;  // Stronger penalty
+            else if (j < tokens::NUM_SPECIAL_TOKENS) {
+                logit -= special_token_penalty;  // Increased penalty for special tokens
             }
             else {
-                // Scale frequency bonus for more pronounced effect
-                float freq_bonus = token_frequencies[j] * 5.0f;
-                logits(i, j) += freq_bonus;
+                // Enhanced frequency-based adjustments
+                float freq_bonus = token_frequencies[j] * freq_scale;
+                
+                // Add position-based penalty (tokens later in vocab get slightly lower scores)
+                float position_penalty = (j / static_cast<float>(vocab_size_)) * vocab_position_penalty;
+                
+                logit += freq_bonus - position_penalty;
+            }
+            
+            // Scale logits after penalties
+            logit *= logit_scale;
+            // Add bias with stronger values for common tokens
+            logit += bias[j] * (j < 1000 ? 3.0f : 1.0f);  // Stronger bias for common tokens
+        }
+    }
+    
+    // Apply top-k filtering
+    const size_t k = 50;  // Restrict to top 50 tokens
+    std::vector<float> max_logits(logits.rows(), -std::numeric_limits<float>::infinity());
+    std::vector<std::vector<size_t>> top_k_indices(logits.rows());
+    
+    #pragma omp parallel for
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        std::vector<std::pair<float, size_t>> token_logits;
+        token_logits.reserve(logits.cols());
+        
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            token_logits.emplace_back(logits(i, j), j);
+        }
+        
+        // Sort to get top-k tokens
+        std::partial_sort(token_logits.begin(), 
+                         token_logits.begin() + k,
+                         token_logits.end(),
+                         [](const auto& a, const auto& b) { return a.first > b.first; });
+        
+        // Zero out logits for tokens not in top-k
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            bool in_top_k = false;
+            for (size_t idx = 0; idx < k; ++idx) {
+                if (token_logits[idx].second == j) {
+                    in_top_k = true;
+                    break;
+                }
+            }
+            if (!in_top_k) {
+                logits(i, j) = -std::numeric_limits<float>::infinity();
             }
         }
     }
     
-    // Apply softmax with lower temperature for sharper distribution
-    const float temperature = 0.5f;  // Lower temperature (was 0.7f)
+    // Apply softmax with dynamic temperature
+    const float base_temperature = 0.7f;  // Base temperature
+    const float min_temperature = 0.3f;   // Minimum temperature
     
-    // Apply softmax with improved numerical stability
-    const float min_denominator = 1e-6f;  // Minimum value for numerical stability
-    
-    // Validate logits before returning
-    if (std::isnan(min_raw_logit) || std::isnan(max_raw_logit) || std::isnan(sum_raw_logit)) {
-        std::cout << "WARNING: NaN detected in logits! Attempting recovery...\n";
-        // Instead of recursion, try to recover the current computation
-        float scale = std::sqrt(6.0f / hidden_size_);
-        projection.randomize(-scale, scale);
-        logits = matmul(scaled_hidden, projection);  // Recompute directly
+    #pragma omp parallel for
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        // Calculate dynamic temperature based on logit distribution
+        float max_logit = -std::numeric_limits<float>::infinity();
+        float min_logit = std::numeric_limits<float>::infinity();
         
-        // Apply basic softmax without fancy adjustments
-        #pragma omp parallel for
-        for (size_t i = 0; i < logits.rows(); i++) {
-            float max_val = logits(i, 0);
-            for (size_t j = 1; j < logits.cols(); j++) {
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
+                max_logit = std::max(max_logit, logits(i, j));
+                min_logit = std::min(min_logit, logits(i, j));
+            }
+        }
+        
+        // Adjust temperature based on logit range
+        float logit_range = max_logit - min_logit;
+        float temperature = std::max(min_temperature, 
+                                   base_temperature * std::exp(-logit_range / 100.0f));
+        
+        // Apply temperature scaling and softmax
+        float max_val = -std::numeric_limits<float>::infinity();
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
+                logits(i, j) /= temperature;
                 max_val = std::max(max_val, logits(i, j));
             }
-            
-            float sum = 0.0f;
-            // Pre-allocate exp_values outside the parallel region
-            std::vector<float> row_exp_values(logits.cols());
-            
-            for (size_t j = 0; j < logits.cols(); j++) {
-                float val = std::exp(logits(i, j) - max_val);
-                row_exp_values[j] = val;
-                sum += val;
-            }
-            
-            sum = std::max(sum, 1e-6f);
-            for (size_t j = 0; j < logits.cols(); j++) {
-                logits(i, j) = row_exp_values[j] / sum;
-            }
-        }
-        return logits;
-    }
-    
-    if (active_token_indices.empty()) {
-        std::cout << "WARNING: All logits are zero or inactive! Attempting recovery...\n";
-        // Instead of recursion, initialize to uniform distribution
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < logits.rows(); i++) {
-            for (size_t j = 0; j < logits.cols(); j++) {
-                logits(i, j) = 1.0f / logits.cols();
-            }
-        }
-        return logits;
-    }
-    
-    // Fix the softmax calculation to avoid vector allocation in parallel regions
-    #pragma omp parallel for
-    for (size_t i = 0; i < logits.rows(); i++) {
-        // Find max for numerical stability
-        float max_val = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < logits.cols(); j++) {
-            max_val = std::max(max_val, logits(i, j));
         }
         
-        // Compute sum of exp values directly
-        float sum = 0.0f;
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float scaled_val = (logits(i, j) - max_val) / temperature;
-            scaled_val = std::max(-87.0f, std::min(scaled_val, 87.0f));
-            sum += std::exp(scaled_val);
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
+                logits(i, j) = std::exp(logits(i, j) - max_val);
+                sum_exp += logits(i, j);
+            }
         }
         
-        // Normalize in a separate loop to avoid numerical issues
-        sum = std::max(sum, min_denominator);
-        float inv_sum = 1.0f / sum;
-        
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float scaled_val = (logits(i, j) - max_val) / temperature;
-            scaled_val = std::max(-87.0f, std::min(scaled_val, 87.0f));
-            float normalized = std::exp(scaled_val) * inv_sum;
-            logits(i, j) = std::max(0.0f, std::min(1.0f, normalized));
+        const float min_prob = 1e-6f;
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
+                logits(i, j) = std::max(logits(i, j) / sum_exp, min_prob);
+            } else {
+                logits(i, j) = 0.0f;
+            }
         }
     }
     

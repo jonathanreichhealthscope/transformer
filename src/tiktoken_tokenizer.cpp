@@ -19,7 +19,7 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         
         // Initialize with gpt2 encoding
         tiktoken_ = std::make_unique<tiktoken::Encoding>("gpt2");
-        std::cout << "Loaded gpt2 vocabulary" << std::endl;
+        std::cout << "Loaded gpt2 vocabulary with " << tiktoken_->get_vocab_size() << " unique tokens" << std::endl;
         
         // First, collect all GPT2 tokens and their IDs
         std::vector<std::pair<std::string, int>> gpt2_tokens;
@@ -81,7 +81,8 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         std::cout << "Vocabulary mapping complete:" << std::endl;
         std::cout << "- Total mapped tokens: " << current_id << std::endl;
         std::cout << "- Special tokens: 5" << std::endl;
-        std::cout << "- Regular tokens: " << (current_id - 5) << std::endl;
+        std::cout << "- Regular GPT-2 tokens: " << (current_id - 5) << std::endl;
+        std::cout << "- Total GPT-2 vocabulary size: " << tiktoken_->get_vocab_size() << std::endl;
         
         // Initialize token frequencies
         token_frequencies_.clear();

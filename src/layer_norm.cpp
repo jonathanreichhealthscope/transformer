@@ -21,7 +21,12 @@ Matrix LayerNorm::forward(const Matrix& input) {
 #ifdef USE_CUDA
         try {
             Matrix output(input.rows(), input.cols());
+            std::cout << "Input shape: " << input.rows() << "x" << input.cols() << std::endl;
+            std::cout << "Gamma shape: " << gamma_.rows() << "x" << gamma_.cols() << std::endl;
+            std::cout << "Beta shape: " << beta_.rows() << "x" << beta_.cols() << std::endl;
+            std::cout << "Output shape: " << output.rows() << "x" << output.cols() << std::endl;
             cuda::layer_norm_forward(input, gamma_, beta_, output, eps_);
+            std::cout << "Layer norm forward completed" << std::endl;
             return output;
         } catch (const std::runtime_error& e) {
             std::cerr << "CUDA layer norm failed, falling back to CPU: " << e.what() << std::endl;
@@ -29,7 +34,10 @@ Matrix LayerNorm::forward(const Matrix& input) {
             // CPU implementation
             Matrix output(input.rows(), input.cols());
             const float MIN_VAR = 1e-6f;  // Minimum variance threshold
-            
+            std::cout << "Input shape: " << input.rows() << "x" << input.cols() << std::endl;
+            std::cout << "Gamma shape: " << gamma_.rows() << "x" << gamma_.cols() << std::endl;
+            std::cout << "Beta shape: " << beta_.rows() << "x" << beta_.cols() << std::endl;
+            std::cout << "Output shape: " << output.rows() << "x" << output.cols() << std::endl;
             for (size_t i = 0; i < input.rows(); ++i) {
                 float mean = 0.0f;
                 float var = 0.0f;
@@ -53,6 +61,7 @@ Matrix LayerNorm::forward(const Matrix& input) {
                     output(i, j) = gamma_(0, j) * (input(i, j) - mean) / std + beta_(0, j);
                 }
             }
+            std::cout << "Output shape: " << output.rows() << "x" << output.cols() << std::endl;
             output_cache_ = output;  // Store for backward pass
             return output;
 #ifdef USE_CUDA
