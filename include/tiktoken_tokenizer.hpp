@@ -12,8 +12,8 @@ public:
     ~TiktokenTokenizer() = default;
 
     // Core tokenization methods
-    std::vector<int> encode(const std::string& text) const;
-    std::string decode(const std::vector<int>& tokens) const;
+    std::vector<int> encode(const std::string& text, bool add_special_tokens = true) const;
+    std::string decode(const std::vector<int>& token_ids, bool skip_special_tokens = true) const;
 
     // Special token getters - using our constants
     int get_pad_token_id() const { return tokens::PAD_ID; }
@@ -21,12 +21,16 @@ public:
     int get_bos_token_id() const { return tokens::BOS_ID; }
     int get_eos_token_id() const { return tokens::EOS_ID; }
     int get_mask_token_id() const { return tokens::MASK_ID; }
+    int get_sep_token_id() const { return tokens::SEP_ID; }
+
+    // Special token strings - using literal to match tokens::SEP_TOKEN
+    static constexpr const char* SEP_TOKEN = "|";
 
     // Vocabulary size
-    size_t vocab_size() const;
+    size_t vocab_size() const { return vocab_size_; }
 
-    // Initialize with model type
-    void initialize(const std::string& encoding_name = "cl100k_base");
+    // Initialize with model type (with default encoding)
+    void initialize(const std::string& encoding_name = "gpt2");
 
     bool is_initialized() const { return is_initialized_; }
 
@@ -35,6 +39,11 @@ public:
     }
 
     static void set_debug_logging(bool enable);  // Add static method to control logging
+
+protected:
+    // Helper functions for tokenization
+    std::vector<int> tokenize_text(const std::string& text) const;
+    std::string decode_token(int token_id) const;
 
 private:
     std::unique_ptr<tiktoken::Encoding> tiktoken_;
@@ -59,4 +68,5 @@ private:
     bool is_initialized_ = false;
     size_t target_vocab_size = 2500;  // Default vocabulary size
     static bool debug_logging_;  // Add static debug flag
+    size_t vocab_size_;  // Add vocab_size_ member variable
 }; 

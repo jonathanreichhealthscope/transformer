@@ -173,25 +173,6 @@ std::vector<std::string> Tokenizer::get_vocabulary_vector() const {
     return vocab;
 }
 
-void Tokenizer::initialize() {
-    try {
-        // Create tokenizer first
-        tokenizer_ = std::make_unique<TiktokenTokenizer>();
-        if (!tokenizer_) {
-            throw std::runtime_error("Failed to create TiktokenTokenizer");
-        }
-        
-        // Then initialize it with the encoding name
-        std::cout << "Initializing tokenizer with encoding: " << encoding_name_ << std::endl;
-        tokenizer_->initialize(encoding_name_);
-        
-        size_t vocab_size_val = tokenizer_->vocab_size();
-        std::cout << "Vocabulary size: " << vocab_size_val << std::endl;
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to initialize tokenizer: " + std::string(e.what()));
-    }
-}
-
 bool Tokenizer::is_noun(const std::string& token) const {
     // Simple heuristic: consider capitalized words or special tokens as nouns
     return !token.empty() && (

@@ -1,6 +1,8 @@
 #pragma once
 #include "components.hpp"
 #include "cuda_utils.hpp"
+#include "layer_norm.hpp"
+#include "tiktoken_tokenizer.hpp"
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -76,6 +78,10 @@ class LanguageModelHead {
     half* d_output_fp16 = nullptr;  // FP16 intermediate output
     float* d_output = nullptr;      // Final FP32 output
 
+    // Add new member variables
+    std::unique_ptr<LayerNorm> layer_norm;  ///< Layer normalization
+    std::shared_ptr<TiktokenTokenizer> tokenizer;  ///< Tokenizer instance
+
     /**
      * @brief Computes gradients for the linear projection.
      * @param grad_output Gradient of the loss with respect to the output
@@ -110,6 +116,9 @@ class LanguageModelHead {
     cublasHandle_t cublas_handle;
 #endif
 
+    // Helper methods
+    void bias_completion_format(Matrix& logits);
+
   public:
     /**
      * @brief Constructs a language model head.
@@ -125,7 +134,7 @@ class LanguageModelHead {
      * @param hidden_states Input hidden states
      * @return Matrix of logits over vocabulary
      */
-    Matrix forward(const Matrix& hidden_states);
+    Matrix forward(const Matrix& hidden_states, bool training = false);
 
     /**
      * @brief Performs the backward pass with Adam optimization.
@@ -205,4 +214,7 @@ class LanguageModelHead {
     void prune_vocabulary(float min_frequency_threshold = 1e-5);
 
     void set_training(bool training_mode);  // Add setter for training mode
+
+    // Add tokenizer setter
+    void set_tokenizer(std::shared_ptr<TiktokenTokenizer> tok) { tokenizer = tok; }
 };

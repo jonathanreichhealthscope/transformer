@@ -34,7 +34,9 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
       min_lr(0.0001f),
       max_lr(0.01f),
       lr_decay(0.99f),
-      lr_growth(1.1f)
+      lr_growth(1.1f),
+      // Initialize layer norm
+      layer_norm(std::make_unique<LayerNorm>(hidden_size))
 {
     // Initialize with larger scale for projection matrix
     float scale = std::sqrt(6.0f / hidden_size);  // Increased initialization scale
@@ -107,9 +109,32 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
               << " and hidden size " << hidden_size << std::endl;
 }
 
-Matrix LanguageModelHead::forward(const Matrix& hidden_states) {
-    hidden_states_ = hidden_states;  // Cache for backward pass
-    return project_to_vocab(hidden_states);
+Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
+    // Apply layer normalization first
+    Matrix normalized = layer_norm->forward(hidden_states);
+    
+    // Project to vocabulary size using projection matrix directly
+    Matrix logits = matmul(normalized, projection);
+    
+    // Add bias terms
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            logits(i, j) += bias[j];
+        }
+    }
+    
+    if (training) {
+        // During training, apply higher temperature to encourage exploration
+        logits = logits * (1.0f / 0.7f);
+    } else {
+        // During inference, use lower temperature for more focused predictions
+        logits = logits * (1.0f / 0.3f);
+    }
+    
+    // Apply format-specific biasing
+    bias_completion_format(logits);
+    
+    return logits;
 }
 
 Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
@@ -518,4 +543,29 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
                                  std::to_string(hidden_states.cols()) + ")");
     }
     return grad_input;
+}
+
+void LanguageModelHead::bias_completion_format(Matrix& logits) {
+    if (!tokenizer) {
+        return;  // Skip biasing if tokenizer is not set
+    }
+
+    // Get special token IDs from tokenizer
+    const int sep_token_id = tokenizer->get_sep_token_id();
+    
+    // Get the last predicted token
+    int last_token = -1;  // You'll need to track this
+    
+    // After separator token, boost probability of tokens that commonly start completions
+    if (last_token == sep_token_id) {
+        // Boost tokens that typically start completions (e.g., space token)
+        // This helps enforce the format where completions start with a space
+        const float boost_factor = 2.0f;
+        for (size_t i = 0; i < logits.rows(); i++) {
+            std::string token = tokenizer->decode({static_cast<int>(i)});
+            if (!token.empty() && token[0] == ' ') {
+                logits.data()[i] *= boost_factor;
+            }
+        }
+    }
 } 

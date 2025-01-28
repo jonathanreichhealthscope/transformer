@@ -8,11 +8,8 @@
 
 class Tokenizer {
 public:
-    // Default constructor
-    Tokenizer() : encoding_name_("gpt2") {}
-    
-    // Constructor with encoding type
-    explicit Tokenizer(const std::string& encoding) : encoding_name_(encoding) {}
+    // Constructor with encoding type (explicit to prevent implicit conversions)
+    explicit Tokenizer(const std::string& encoding_name = "gpt2") : encoding_name_(encoding_name) {}
     
     ~Tokenizer() = default;
 
@@ -28,11 +25,17 @@ public:
     int get_bos_token_id() const { return tokenizer_->get_bos_token_id(); }
     int get_eos_token_id() const { return tokenizer_->get_eos_token_id(); }
     int get_mask_token_id() const { return tokenizer_->get_mask_token_id(); }
+    int get_sep_token_id() const { return tokenizer_->get_sep_token_id(); }
     
     size_t vocab_size() const { return tokenizer_->vocab_size(); }
 
     // Initialize tokenizer
-    void initialize();
+    void initialize() {
+        if (!tokenizer_) {
+            tokenizer_ = std::make_unique<TiktokenTokenizer>();
+        }
+        tokenizer_->initialize(encoding_name_);
+    }
 
     bool is_initialized() const { return tokenizer_ && tokenizer_->is_initialized(); }
 

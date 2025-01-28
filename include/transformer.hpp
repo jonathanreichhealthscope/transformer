@@ -215,21 +215,9 @@ class Transformer {
     // Private methods
     Matrix compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets);
     void backward_pass(const std::vector<Matrix>& activations, const Matrix& loss_grad);
-    void update_parameters(float learning_rate);
 
     // Get parameter gradients
-    std::vector<Matrix>& parameter_gradients() {
-        if (!parameter_grads.has_value()) {
-            parameter_grads = std::vector<Matrix>();
-            // Initialize gradients for all parameters
-            auto& params = parameters();
-            parameter_grads->reserve(params.size());
-            for (const auto& param : params) {
-                parameter_grads->emplace_back(param.rows(), param.cols(), 0.0f);
-            }
-        }
-        return parameter_grads.value();
-    }
+    std::vector<Matrix>& parameter_gradients();
 
     bool training = true;
 
@@ -364,4 +352,10 @@ class Transformer {
     const std::string& get_last_query() const {
         return last_input_query_;
     }
+
+    /**
+     * @brief Updates model parameters using computed gradients.
+     * @param learning_rate Learning rate for the update
+     */
+    void update_parameters(float learning_rate);
 };

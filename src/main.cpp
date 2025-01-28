@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <random>
 #include "../include/tokenizer.hpp"
+#include "../include/utils.hpp"  // Add include for Utils
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -13,6 +14,91 @@ const float INITIAL_LEARNING_RATE = 0.001f;
 float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 size_t global_step = 0;
+
+float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, const Tokenizer& tokenizer) {
+    float loss = 0.0f;
+    const int sep_token_id = tokenizer.get_sep_token_id();
+    bool after_separator = false;
+    
+    for (size_t i = 0; i < target_tokens.size() - 1; i++) {
+        int current_token = target_tokens[i];
+        int next_token = target_tokens[i + 1];
+        
+        // Track if we're after the separator
+        if (current_token == sep_token_id) {
+            after_separator = true;
+        }
+        
+        // Get predicted probability distribution
+        Vector logits_row = logits.row(i);  // Get as Vector
+        std::vector<float> row_data(logits_row.begin(), logits_row.end());  // Convert to std::vector<float>
+        
+        // Find max for numerical stability
+        float max_val = *std::max_element(row_data.begin(), row_data.end());
+        
+        // Compute softmax with numerical stability
+        std::vector<float> probs(row_data.size());
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < row_data.size(); j++) {
+            probs[j] = std::exp(row_data[j] - max_val);
+            sum_exp += probs[j];
+        }
+        
+        // Normalize
+        for (float& p : probs) {
+            p /= sum_exp;
+        }
+        
+        float token_loss = -std::log(probs[next_token] + 1e-10);
+        
+        // Apply additional penalty for format violations after separator
+        if (after_separator) {
+            std::string next_token_str = tokenizer.decode({next_token});
+            if (!next_token_str.empty() && next_token_str[0] != ' ') {
+                // Penalize tokens that don't start with space after separator
+                token_loss *= 1.5f;
+            }
+        }
+        
+        loss += token_loss;
+    }
+    
+    return loss / target_tokens.size();
+}
+
+// Update the training loop
+void train_epoch(Transformer& model, const std::vector<std::pair<std::string, std::string>>& training_pairs,
+                float learning_rate, const Tokenizer& tokenizer) {
+    for (const auto& [context, target] : training_pairs) {
+        // Combine context and target with separator
+        std::string full_text = context + "|" + target;  // Use literal separator token
+        
+        // Tokenize
+        std::vector<int> tokens = tokenizer.encode(full_text);
+        
+        // Forward pass with original text
+        Matrix logits = model.forward(tokens, full_text, tokenizer);
+        
+        // Compute loss with format-specific penalties
+        float loss = compute_loss(logits, tokens, tokenizer);
+        
+        // Create loss gradients matrix
+        Matrix loss_gradients(logits.rows(), logits.cols());
+        // Fill loss_gradients based on the computed loss
+        for (size_t i = 0; i < logits.rows(); i++) {
+            for (size_t j = 0; j < logits.cols(); j++) {
+                loss_gradients(i, j) = logits(i, j) - (j < tokens.size() ? 1.0f : 0.0f);
+            }
+        }
+        
+        // Backward pass and optimization
+        model.backward(loss_gradients, tokens, learning_rate);
+        model.update_parameters(learning_rate);
+        
+        // Log progress
+        std::cout << "Loss: " << loss << std::endl;
+    }
+}
 
 int main(int argc, char* argv[]) {
     std::cout << "entering main" << std::endl;

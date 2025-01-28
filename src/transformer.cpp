@@ -809,6 +809,21 @@ std::vector<Matrix>& Transformer::parameters() {
     return all_params;
 }
 
+std::vector<Matrix>& Transformer::parameter_gradients() {
+    if (!parameter_grads) {
+        // Initialize parameter gradients if they don't exist
+        parameter_grads = std::vector<Matrix>();
+        auto& params = parameters();
+        parameter_grads->reserve(params.size());
+        
+        // Create gradient matrices with same dimensions as parameters
+        for (const auto& param : params) {
+            parameter_grads->emplace_back(param.rows(), param.cols());
+        }
+    }
+    return *parameter_grads;
+}
+
 Transformer::~Transformer() {
     std::cout << "Transformer destructor called" << std::endl;
 }
