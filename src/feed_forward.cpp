@@ -147,7 +147,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             // Normalize output before residual connection
             float output_mean = 0.0f;
             float output_var = 0.0f;
-            
+            std::cout << "Calculating mean" << std::endl;
             // Calculate mean
             #pragma omp parallel for collapse(2) reduction(+:output_mean)
             for (size_t i = 0; i < output.rows(); i++) {
@@ -156,7 +156,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             output_mean /= (output.rows() * output.cols());
-            
+            std::cout << "Calculating variance" << std::endl;
             // Calculate variance
             #pragma omp parallel for collapse(2) reduction(+:output_var)
             for (size_t i = 0; i < output.rows(); i++) {
@@ -166,7 +166,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             output_var /= (output.rows() * output.cols());
-            
+            std::cout << "Applying normalization" << std::endl;
             // Update scaling factors for better stability
             const float ffn_scale = 0.5f;  // Increased from 0.2f to prevent collapse
             #pragma omp parallel for collapse(2)
@@ -185,14 +185,14 @@ Matrix FeedForward::forward(const Matrix& input) {
                     scaled_input(i, j) *= residual_scale;
                 }
             }
-            
+            std::cout << "Adding scaled residual connection" << std::endl;
             // Add scaled residual connection
             output += scaled_input;
             
             // Add layer normalization after residual connection with adjusted target variance
             float final_mean = 0.0f;
             float final_var = 0.0f;
-            
+            std::cout << "Calculating mean" << std::endl;
             // Calculate mean
             #pragma omp parallel for collapse(2) reduction(+:final_mean)
             for (size_t i = 0; i < output.rows(); i++) {
@@ -201,7 +201,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             final_mean /= (output.rows() * output.cols());
-            
+            std::cout << "Calculating variance" << std::endl;
             // Calculate variance
             #pragma omp parallel for collapse(2) reduction(+:final_var)
             for (size_t i = 0; i < output.rows(); i++) {
@@ -211,7 +211,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             final_var /= (output.rows() * output.cols());
-            
+            std::cout << "Applying final normalization" << std::endl;
             // Apply final normalization with increased target variance
             const float target_var = 2.0f;  // Increased from 1.0f to encourage more spread
             #pragma omp parallel for collapse(2)
@@ -220,7 +220,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                     output(i, j) = std::sqrt(target_var) * (output(i, j) - final_mean) / std::sqrt(final_var + eps);
                 }
             }
-            
+            std::cout << "Clipping output" << std::endl;
             // Increased clip value to allow more variation
             const float clip_val = 2.5f;  // Increased from 1.5f
             #pragma omp parallel for collapse(2)
@@ -235,6 +235,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             std::cerr << "CUDA feed forward failed, falling back to CPU: " << e.what() << std::endl;
 #endif
             // CPU fallback implementation
+            std::cout << "Using CPU fallback" << std::endl;
             Matrix intermediate = matmul(input, w1);
             intermediate.add_bias(b1);
 
@@ -243,6 +244,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             float int_var = 0.0f;
             
             // Calculate mean
+            std::cout << "Calculating mean" << std::endl;
             #pragma omp parallel for collapse(2) reduction(+:int_mean)
             for (size_t i = 0; i < intermediate.rows(); i++) {
                 for (size_t j = 0; j < intermediate.cols(); j++) {
@@ -252,6 +254,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             int_mean /= (intermediate.rows() * intermediate.cols());
             
             // Calculate variance
+            std::cout << "Calculating variance" << std::endl;
             #pragma omp parallel for collapse(2) reduction(+:int_var)
             for (size_t i = 0; i < intermediate.rows(); i++) {
                 for (size_t j = 0; j < intermediate.cols(); j++) {
@@ -260,7 +263,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             int_var /= (intermediate.rows() * intermediate.cols());
-            
+            std::cout << "Applying normalization" << std::endl;
             // Apply normalization with scaling
             const float eps = 1e-5f;
             const float pre_gelu_scale = 1.2f;  // Slightly larger to encourage more activations
@@ -270,10 +273,11 @@ Matrix FeedForward::forward(const Matrix& input) {
                     intermediate(i, j) = pre_gelu_scale * (intermediate(i, j) - int_mean) / std::sqrt(int_var + eps);
                 }
             }
-
+            std::cout << "Applying GELU" << std::endl;
             intermediate.apply_gelu();
             intermediate_cache = intermediate;
-            
+            std::cout << "Intermediate cache dimensions: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+            std::cout << "Calculating output" << std::endl;
             Matrix output = matmul(intermediate, w2);
             output.add_bias(b2);
             
@@ -288,7 +292,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             // Normalize output before residual connection
             float output_mean = 0.0f;
             float output_var = 0.0f;
-            
+            std::cout << "Calculating mean" << std::endl;
             // Calculate mean
             #pragma omp parallel for collapse(2) reduction(+:output_mean)
             for (size_t i = 0; i < output.rows(); i++) {
@@ -299,6 +303,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             output_mean /= (output.rows() * output.cols());
             
             // Calculate variance
+            std::cout << "Calculating variance" << std::endl;
             #pragma omp parallel for collapse(2) reduction(+:output_var)
             for (size_t i = 0; i < output.rows(); i++) {
                 for (size_t j = 0; j < output.cols(); j++) {
@@ -307,7 +312,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             output_var /= (output.rows() * output.cols());
-            
+            std::cout << "Applying normalization" << std::endl;
             // Update scaling factors for better stability
             const float ffn_scale = 0.5f;  // Increased from 0.2f to prevent collapse
             #pragma omp parallel for collapse(2)
@@ -320,20 +325,21 @@ Matrix FeedForward::forward(const Matrix& input) {
             // Scale input for residual connection
             const float residual_scale = 0.8f;  // Increased from 0.5f to maintain signal strength
             Matrix scaled_input = input;
+            std::cout << "Scaling input" << std::endl;
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < input.rows(); i++) {
                 for (size_t j = 0; j < input.cols(); j++) {
                     scaled_input(i, j) *= residual_scale;
                 }
             }
-            
+            std::cout << "Adding scaled residual connection" << std::endl;
             // Add scaled residual connection
             output += scaled_input;
             
             // Add layer normalization after residual connection with adjusted target variance
             float final_mean = 0.0f;
             float final_var = 0.0f;
-            
+            std::cout << "Calculating mean" << std::endl;
             // Calculate mean
             #pragma omp parallel for collapse(2) reduction(+:final_mean)
             for (size_t i = 0; i < output.rows(); i++) {
@@ -344,6 +350,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             final_mean /= (output.rows() * output.cols());
             
             // Calculate variance
+            std::cout << "Calculating variance" << std::endl;
             #pragma omp parallel for collapse(2) reduction(+:final_var)
             for (size_t i = 0; i < output.rows(); i++) {
                 for (size_t j = 0; j < output.cols(); j++) {
@@ -352,7 +359,7 @@ Matrix FeedForward::forward(const Matrix& input) {
                 }
             }
             final_var /= (output.rows() * output.cols());
-            
+            std::cout << "Applying final normalization" << std::endl;
             // Apply final normalization with increased target variance
             const float target_var = 2.0f;  // Increased from 1.0f to encourage more spread
             #pragma omp parallel for collapse(2)
@@ -364,6 +371,7 @@ Matrix FeedForward::forward(const Matrix& input) {
             
             // Increased clip value to allow more variation
             const float clip_val = 2.5f;  // Increased from 1.5f
+            std::cout << "Clipping output" << std::endl;
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < output.rows(); i++) {
                 for (size_t j = 0; j < output.cols(); j++) {

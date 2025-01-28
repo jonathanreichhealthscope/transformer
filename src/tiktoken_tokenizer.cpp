@@ -12,8 +12,8 @@
 TiktokenTokenizer::TiktokenTokenizer() = default;
 
 // Helper to get all complete phrases (targets) from the data
-std::vector<std::string> extract_phrases(const std::string& filepath) {
-    std::vector<std::string> phrases;
+std::vector<std::pair<std::string, std::string>> extract_phrase_pairs(const std::string& filepath) {
+    std::vector<std::pair<std::string, std::string>> pairs;
     std::ifstream file(filepath);
     std::string line;
     
@@ -21,21 +21,29 @@ std::vector<std::string> extract_phrases(const std::string& filepath) {
         if (line.empty()) continue;
         size_t sep_pos = line.find('|');
         if (sep_pos != std::string::npos) {
-            // Get both parts for vocabulary building
             std::string context = line.substr(0, sep_pos);
             std::string target = line.substr(sep_pos + 1);
             
-            // Add both parts if they're not empty
-            if (!context.empty()) phrases.push_back(context);
-            if (!target.empty()) phrases.push_back(target);
+            // Only trim the context, preserve exact target format
+            context.erase(0, context.find_first_not_of(" \t\r\n"));
+            context.erase(context.find_last_not_of(" \t\r\n") + 1);
+            
+            // Add a space prefix to target if it doesn't have one
+            if (!target.empty() && target[0] != ' ') {
+                target = " " + target;
+            }
+            
+            if (!context.empty() && !target.empty()) {
+                pairs.emplace_back(context, target);
+            }
         }
     }
-    return phrases;
+    return pairs;
 }
 
 void TiktokenTokenizer::initialize(const std::string& encoding_name) {
     try {
-        std::cout << "Initializing custom tokenizer..." << std::endl;
+        std::cout << "Initializing custom tokenizer for noun phrase completion..." << std::endl;
         
         // Find our data files
         std::vector<std::filesystem::path> possible_paths = {
@@ -68,97 +76,72 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
                   << "- Training: " << training_path << "\n"
                   << "- Validation: " << validation_path << std::endl;
         
-        // Extract all phrases
-        auto training_phrases = extract_phrases(training_path.string());
-        auto validation_phrases = extract_phrases(validation_path.string());
+        // Extract all phrase pairs
+        auto training_pairs = extract_phrase_pairs(training_path.string());
+        auto validation_pairs = extract_phrase_pairs(validation_path.string());
         
-        // Combine all phrases
-        std::vector<std::string> all_phrases;
-        all_phrases.insert(all_phrases.end(), training_phrases.begin(), training_phrases.end());
-        all_phrases.insert(all_phrases.end(), validation_phrases.begin(), validation_phrases.end());
+        // Collect target phrases and their frequencies
+        std::unordered_map<std::string, int> target_freq;
+        std::vector<std::string> all_targets;
         
-        std::cout << "Extracted " << all_phrases.size() << " total phrases" << std::endl;
+        for (const auto& [context, target] : training_pairs) {
+            target_freq[target]++;
+            all_targets.push_back(target);
+        }
+        for (const auto& [context, target] : validation_pairs) {
+            target_freq[target]++;
+            all_targets.push_back(target);
+        }
+        
+        std::cout << "Extracted " << all_targets.size() << " total phrases" << std::endl;
+        std::cout << "Found " << target_freq.size() << " unique target phrases" << std::endl;
         
         // Initialize vocabulary with special tokens
         std::vector<std::string> vocab = {
             "<pad>", "<unk>", "<s>", "</s>", "<mask>"
         };
         
-        // First add all individual characters
-        std::unordered_set<char> chars;
-        for (const auto& phrase : all_phrases) {
-            for (char c : phrase) {
-                chars.insert(c);
-            }
-        }
-        
-        // Add individual characters to vocab
-        for (char c : chars) {
-            if (c != '|') {  // Skip the separator character
-                vocab.push_back(std::string(1, c));
-            }
-        }
-        
-        // Now add all complete words as tokens
-        std::unordered_map<std::string, int> word_freq;
-        std::regex word_pattern(R"([a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*|[.,!?;])");
-        
-        for (const auto& phrase : all_phrases) {
-            auto words_begin = std::sregex_iterator(phrase.begin(), phrase.end(), word_pattern);
-            auto words_end = std::sregex_iterator();
-            
-            for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-                std::string word = i->str();
-                word_freq[word]++;
-            }
-        }
-        
-        // Sort words by frequency
-        std::vector<std::pair<std::string, int>> sorted_words(word_freq.begin(), word_freq.end());
-        std::sort(sorted_words.begin(), sorted_words.end(),
+        // Sort target phrases by frequency
+        std::vector<std::pair<std::string, int>> sorted_targets(target_freq.begin(), target_freq.end());
+        std::sort(sorted_targets.begin(), sorted_targets.end(),
                  [](const auto& a, const auto& b) { return a.second > b.second; });
         
-        // Add most frequent words to vocabulary
-        for (const auto& [word, freq] : sorted_words) {
+        // First add complete target phrases as tokens (with their spaces)
+        for (const auto& [phrase, freq] : sorted_targets) {
             if (vocab.size() >= target_vocab_size) break;
-            vocab.push_back(word);
+            
+            // Ensure the phrase starts with a space
+            std::string token = phrase;
+            if (!token.empty() && token[0] != ' ') {
+                token = " " + token;
+            }
+            vocab.push_back(token);
         }
         
-        // Now add common bigrams and trigrams if we still have space
+        // If we still have space, add individual words from targets (with spaces)
         if (vocab.size() < target_vocab_size) {
-            std::unordered_map<std::string, int> ngram_freq;
+            std::unordered_map<std::string, int> word_freq;
+            std::regex word_pattern(R"(\s*([a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*|[.,!?;]))");
             
-            for (const auto& phrase : all_phrases) {
+            for (const auto& [phrase, _] : sorted_targets) {
                 auto words_begin = std::sregex_iterator(phrase.begin(), phrase.end(), word_pattern);
                 auto words_end = std::sregex_iterator();
                 
-                std::vector<std::string> words;
                 for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-                    words.push_back(i->str());
-                }
-                
-                // Add bigrams and trigrams
-                for (size_t i = 0; i < words.size(); i++) {
-                    if (i + 1 < words.size()) {
-                        std::string bigram = words[i] + " " + words[i + 1];
-                        ngram_freq[bigram]++;
-                    }
-                    if (i + 2 < words.size()) {
-                        std::string trigram = words[i] + " " + words[i + 1] + " " + words[i + 2];
-                        ngram_freq[trigram]++;
-                    }
+                    std::string word = " " + i->str();  // Add space prefix
+                    word_freq[word]++;
                 }
             }
             
-            // Sort n-grams by frequency
-            std::vector<std::pair<std::string, int>> sorted_ngrams(ngram_freq.begin(), ngram_freq.end());
-            std::sort(sorted_ngrams.begin(), sorted_ngrams.end(),
+            // Sort words by frequency
+            std::vector<std::pair<std::string, int>> sorted_words(word_freq.begin(), word_freq.end());
+            std::sort(sorted_words.begin(), sorted_words.end(),
                      [](const auto& a, const auto& b) { return a.second > b.second; });
             
-            // Add most frequent n-grams
-            for (const auto& [ngram, freq] : sorted_ngrams) {
+            // Add most frequent words (they already have space prefixes)
+            for (const auto& [word, freq] : sorted_words) {
                 if (vocab.size() >= target_vocab_size) break;
-                vocab.push_back(ngram);
+                vocab.push_back(word);
             }
         }
         
@@ -175,19 +158,14 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         std::cout << "\nVocabulary statistics:" << std::endl;
         std::cout << "- Total vocabulary size: " << vocab.size() << std::endl;
         std::cout << "- Special tokens: 5" << std::endl;
-        std::cout << "- Regular tokens: " << (vocab.size() - 5) << std::endl;
+        std::cout << "- Complete phrases: " << std::min(sorted_targets.size(), target_vocab_size - 5) << std::endl;
+        std::cout << "- Individual words: " << (vocab.size() - 5 - std::min(sorted_targets.size(), target_vocab_size - 5)) << std::endl;
         
-        // Print some example tokens
-        std::cout << "\nExample tokens from vocabulary:" << std::endl;
-        for (size_t i = 5; i < std::min(vocab.size(), size_t(15)); i++) {
-            std::cout << std::setw(3) << i << ": '" << vocab[i] << "'" << std::endl;
-        }
-        
-        // Print top 10 most frequent words
-        std::cout << "\nTop 10 most frequent words:" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(10), sorted_words.size()); i++) {
-            const auto& [word, freq] = sorted_words[i];
-            std::cout << std::setw(3) << (i + 1) << ". '" << word << "': " 
+        // Print example complete phrases
+        std::cout << "\nTop 10 most common target phrases:" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), sorted_targets.size()); i++) {
+            const auto& [phrase, freq] = sorted_targets[i];
+            std::cout << std::setw(3) << (i + 1) << ". '" << phrase << "': " 
                       << freq << " occurrences" << std::endl;
         }
         
