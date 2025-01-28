@@ -125,10 +125,7 @@ class LanguageModelHead {
      * @param hidden_states Input hidden states
      * @return Matrix of logits over vocabulary
      */
-    Matrix forward(const Matrix& hidden_states) {
-        hidden_states_ = hidden_states;  // Cache for backward pass
-        return project_to_vocab(hidden_states);
-    }
+    Matrix forward(const Matrix& hidden_states);
 
     /**
      * @brief Performs the backward pass with Adam optimization.

@@ -21,24 +21,73 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         tiktoken_ = std::make_unique<tiktoken::Encoding>("gpt2");
         std::cout << "Loaded gpt2 vocabulary with " << tiktoken_->get_vocab_size() << " unique tokens" << std::endl;
         
-        // First, collect all GPT2 tokens and their IDs
+        // First, collect all GPT2 tokens and their IDs with frequency tracking
         std::vector<std::pair<std::string, int>> gpt2_tokens;
-        std::string sample_text = "This is a sample text to help build the vocabulary.";
-        std::vector<int> sample_ids = tiktoken_->encode(sample_text);
+        std::unordered_map<int, size_t> token_counts;  // Track frequency of each token
+        size_t total_tokens_processed = 0;
         
-        // Create a set of unique token IDs
+        // Create a set of unique token IDs, excluding UNK token
         std::unordered_set<int> seen_ids;
         
-        // Process sample text tokens
-        for (const auto& id : sample_ids) {
-            if (seen_ids.insert(id).second) {  // If this is a new ID
-                std::string token = tiktoken_->decode({id});
-                gpt2_tokens.push_back({token, id});
+        // First pass: analyze training data from validation_pairs.txt to get actual token usage
+        // Try multiple possible locations for the file
+        std::filesystem::path data_file;
+        std::vector<std::filesystem::path> possible_paths = {
+            "data/validation_pairs.txt",
+            "../data/validation_pairs.txt",
+            "../../data/validation_pairs.txt",
+            std::filesystem::current_path() / "data/validation_pairs.txt",
+            std::filesystem::current_path() / "../data/validation_pairs.txt"
+        };
+        
+        std::ifstream training_file;
+        for (const auto& path : possible_paths) {
+            if (std::filesystem::exists(path)) {
+                data_file = path;
+                training_file.open(path);
+                if (training_file.is_open()) {
+                    std::cout << "Found training file at: " << path << std::endl;
+                    break;
+                }
             }
         }
         
-        // Add more tokens by sampling individual characters and common combinations
-        std::string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-_'\"();:$/ ";
+        if (!training_file.is_open()) {
+            std::stringstream error_msg;
+            error_msg << "Could not open training file. Tried the following paths:\n";
+            for (const auto& path : possible_paths) {
+                error_msg << "- " << path << "\n";
+            }
+            error_msg << "Current working directory: " << std::filesystem::current_path() << "\n";
+            throw std::runtime_error(error_msg.str());
+        }
+        
+        std::string line;
+        while (std::getline(training_file, line)) {
+            // Skip empty lines
+            if (line.empty()) continue;
+            
+            // Encode the line to see what tokens are actually used
+            std::vector<int> ids = tiktoken_->encode(line);
+            total_tokens_processed += ids.size();
+            
+            for (const auto& id : ids) {
+                token_counts[id]++;
+                
+                if (seen_ids.insert(id).second) {  // If this is a new ID
+                    std::string token = tiktoken_->decode({id});
+                    gpt2_tokens.push_back({token, id});
+                }
+            }
+        }
+        
+        // Print initial statistics
+        std::cout << "\nToken Usage Statistics:" << std::endl;
+        std::cout << "- Total tokens processed: " << total_tokens_processed << std::endl;
+        std::cout << "- Unique tokens found: " << seen_ids.size() << std::endl;
+        
+        // Add common programming and special characters if not already seen
+        std::string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-_'\"();:$/ \n\t";
         for (char c : chars) {
             std::string token_str(1, c);
             std::vector<int> ids = tiktoken_->encode(token_str);
@@ -46,13 +95,19 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
                 if (seen_ids.insert(id).second) {
                     std::string token = tiktoken_->decode({id});
                     gpt2_tokens.push_back({token, id});
+                    token_counts[id] = 1;  // Give it a small count if not seen in training
                 }
             }
         }
         
-        // Sort tokens by their GPT2 IDs
+        // Sort tokens by frequency, then by GPT2 ID for ties
         std::sort(gpt2_tokens.begin(), gpt2_tokens.end(),
-                 [](const auto& a, const auto& b) { return a.second < b.second; });
+                 [&token_counts](const auto& a, const auto& b) {
+                     if (token_counts[a.second] != token_counts[b.second]) {
+                         return token_counts[a.second] > token_counts[b.second];
+                     }
+                     return a.second < b.second;
+                 });
         
         // Create our token mappings
         old_to_new_id_.clear();
@@ -65,8 +120,28 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
             new_to_old_id_[i] = i;
         }
         
-        // Then map GPT2 tokens to our consecutive IDs
+        // Ensure target_vocab_size is at least as large as our unique tokens
+        size_t min_required_size = seen_ids.size() + 5;  // Add 5 for special tokens
+        if (target_vocab_size < min_required_size) {
+            std::cout << "\nWarning: Increasing target_vocab_size from " << target_vocab_size 
+                      << " to " << min_required_size << " to accommodate all unique tokens" << std::endl;
+            target_vocab_size = min_required_size;
+        }
+        
+        // Then map GPT2 tokens to our consecutive IDs, prioritizing by frequency
         int current_id = 5;  // Start after special tokens
+        size_t total_occurrences = 0;
+        size_t mapped_occurrences = 0;
+        
+        // First calculate total occurrences (excluding special tokens and UNK)
+        for (const auto& [token, gpt2_id] : gpt2_tokens) {
+            if (gpt2_id >= 5) {  // Skip special tokens
+                total_occurrences += token_counts[gpt2_id];
+            }
+        }
+        
+        // Map tokens until we hit target_vocab_size
+        std::vector<std::pair<std::string, size_t>> token_frequency_list;
         for (const auto& [token, gpt2_id] : gpt2_tokens) {
             if (current_id >= target_vocab_size) break;
             
@@ -75,22 +150,38 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
             
             old_to_new_id_[gpt2_id] = current_id;
             new_to_old_id_[current_id] = gpt2_id;
+            mapped_occurrences += token_counts[gpt2_id];
+            
+            // Store for frequency reporting
+            token_frequency_list.push_back({token, token_counts[gpt2_id]});
+            
             current_id++;
         }
         
-        std::cout << "Vocabulary mapping complete:" << std::endl;
+        std::cout << "\nVocabulary mapping complete:" << std::endl;
         std::cout << "- Total mapped tokens: " << current_id << std::endl;
         std::cout << "- Special tokens: 5" << std::endl;
         std::cout << "- Regular GPT-2 tokens: " << (current_id - 5) << std::endl;
         std::cout << "- Total GPT-2 vocabulary size: " << tiktoken_->get_vocab_size() << std::endl;
+        std::cout << "- Coverage of training data: " 
+                  << std::fixed << std::setprecision(2)
+                  << (100.0 * mapped_occurrences / total_occurrences) << "%" << std::endl;
         
-        // Initialize token frequencies
+        // Print top 10 most frequent tokens
+        std::cout << "\nTop 10 most frequent tokens:" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(10), token_frequency_list.size()); i++) {
+            const auto& [token, count] = token_frequency_list[i];
+            std::cout << std::setw(3) << (i + 1) << ". '" << token << "': " 
+                      << count << " occurrences (" 
+                      << std::fixed << std::setprecision(2)
+                      << (100.0 * count / total_occurrences) << "%)" << std::endl;
+        }
+        
+        // Initialize token frequencies based on actual usage
         token_frequencies_.clear();
         for (const auto& [token, gpt2_id] : gpt2_tokens) {
             if (old_to_new_id_.find(gpt2_id) != old_to_new_id_.end()) {
-                // More frequent tokens appear earlier in GPT2's vocabulary
-                float freq = 1.0f - (static_cast<float>(gpt2_id) / tiktoken_->get_vocab_size());
-                token_frequencies_[token] = freq;
+                token_frequencies_[token] = static_cast<float>(token_counts[gpt2_id]) / total_occurrences;
             }
         }
         

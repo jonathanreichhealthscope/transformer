@@ -300,12 +300,12 @@ void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float 
     std::unordered_map<size_t, int> global_token_counts;
     
     // First pass: count all tokens across all candidates
-    for (const auto& candidate : candidates) {
-        for (const auto& token : candidate.sequence) {
+    for (size_t i = 0; i < candidates.size(); i++) {
+        for (const auto& token : candidates[i].sequence) {
             global_token_counts[token]++;
             // Apply extra penalty for UNK tokens
             if (token == unk_token_id_) {
-                candidate.score -= unk_penalty * global_token_counts[token];
+                candidates[i].score -= unk_penalty * global_token_counts[token];
             }
         }
     }
@@ -355,9 +355,10 @@ std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits)
     float sum = 0.0f;
     
     for (float& score : scores) {
-        // Apply a strong penalty to UNK token (ID 1)
+        // Completely filter out UNK token by setting its probability to 0
         if (score == logits[unk_token_id_]) {
-            score -= 10.0f;  // Large penalty to discourage UNK tokens
+            score = -std::numeric_limits<float>::infinity();  // Effectively zero probability after softmax
+            continue;
         }
         score = std::exp((score - max_score) / temperature);
         sum += score;

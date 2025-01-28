@@ -107,316 +107,34 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
               << " and hidden size " << hidden_size << std::endl;
 }
 
+Matrix LanguageModelHead::forward(const Matrix& hidden_states) {
+    hidden_states_ = hidden_states;  // Cache for backward pass
+    return project_to_vocab(hidden_states);
+}
+
 Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
-    size_t total_size = hidden_states.rows();
-    size_t hidden_dim = hidden_states.cols();
-    
-    if (hidden_dim != hidden_size_) {
-        throw std::runtime_error("Hidden dimension mismatch: " + std::to_string(hidden_dim) +
-                               " != " + std::to_string(hidden_size_));
-    }
-    
-    // Debug hidden states
-    float min_hidden = std::numeric_limits<float>::infinity();
-    float max_hidden = -std::numeric_limits<float>::infinity();
-    float sum_hidden = 0.0f;
-    size_t nonzero_hidden = 0;
-    
-    #pragma omp parallel for collapse(2) reduction(min:min_hidden) reduction(max:max_hidden) \
-                             reduction(+:sum_hidden,nonzero_hidden)
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            float val = hidden_states(i, j);
-            min_hidden = std::min(min_hidden, val);
-            max_hidden = std::max(max_hidden, val);
-            sum_hidden += val;
-            if (std::abs(val) > 1e-6) nonzero_hidden++;
-        }
-    }
-    
-    std::cout << "\nHidden States Statistics in forward_impl:\n"
-              << "Min hidden: " << min_hidden << "\n"
-              << "Max hidden: " << max_hidden << "\n"
-              << "Mean hidden: " << sum_hidden / (hidden_states.rows() * hidden_states.cols()) << "\n"
-              << "Nonzero hidden: " << nonzero_hidden << "/" 
-              << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
-    
-    // Scale hidden states for better gradient flow
-    float hidden_scale = std::sqrt(1.0f / hidden_size_);  // Scale factor for hidden states
-    Matrix scaled_hidden = hidden_states;
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
-        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
-            scaled_hidden(i, j) *= hidden_scale;
-        }
-    }
-    
-    // Debug hidden states after scaling
-    float min_scaled = std::numeric_limits<float>::infinity();
-    float max_scaled = -std::numeric_limits<float>::infinity();
-    float sum_scaled = 0.0f;
-    
-    #pragma omp parallel for collapse(2) reduction(min:min_scaled) reduction(max:max_scaled) \
-                             reduction(+:sum_scaled)
-    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
-        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
-            float val = scaled_hidden(i, j);
-            min_scaled = std::min(min_scaled, val);
-            max_scaled = std::max(max_scaled, val);
-            sum_scaled += val;
-        }
-    }
-    
-    std::cout << "Scaled Hidden States Statistics:\n"
-              << "Min scaled: " << min_scaled << "\n"
-              << "Max scaled: " << max_scaled << "\n"
-              << "Mean scaled: " << sum_scaled / (scaled_hidden.rows() * scaled_hidden.cols()) << "\n\n";
-              
-    // Verify projection matrix values
-    float min_proj = std::numeric_limits<float>::infinity();
-    float max_proj = -std::numeric_limits<float>::infinity();
-    float sum_proj = 0.0f;
-    size_t nonzero_proj = 0;
-    
-    // Debug output for projection matrix dimensions
-    std::cout << "Projection matrix dimensions: " << projection.rows() << "x" << projection.cols() << std::endl;
-    
-    // Access projection matrix data directly
-    const float* proj_data = projection.data();
-    size_t total_elements = projection.rows() * projection.cols();
-    
-    #pragma omp parallel for reduction(min:min_proj) reduction(max:max_proj) \
-                             reduction(+:sum_proj,nonzero_proj)
-    for (size_t i = 0; i < total_elements; i++) {
-        float val = proj_data[i];
-        min_proj = std::min(min_proj, val);
-        max_proj = std::max(max_proj, val);
-        sum_proj += val;
-        if (std::abs(val) > 1e-6) nonzero_proj++;
-    }
-    
-    std::cout << "Projection Matrix Statistics (Estimated from sampling):\n"
-              << "Min proj: " << min_proj << "\n"
-              << "Max proj: " << max_proj << "\n"
-              << "Mean proj: " << sum_proj / total_elements << "\n"
-              << "Nonzero proj: " << nonzero_proj << "/" << total_elements << "\n\n";
-    
-    // If projection matrix values are too small, rescale them
-    if (std::abs(max_proj) < 0.1f) {  // If projection values are too small
-        float proj_scale = std::sqrt(6.0f / hidden_size_);  // Larger scale for rescaling
-        std::cout << "Rescaling projection matrix with scale factor: " << proj_scale << "\n";
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < projection.rows(); ++i) {
-            for (size_t j = 0; j < projection.cols(); ++j) {
-                projection(i, j) *= proj_scale;
-            }
-        }
+    try {
+        // Ensure UNK token is never active
+        active_tokens[tokens::UNK_ID] = 0;  // Explicitly deactivate UNK token
         
-        // Verify rescaling
-        float new_min = std::numeric_limits<float>::infinity();
-        float new_max = -std::numeric_limits<float>::infinity();
-        #pragma omp parallel for collapse(2) reduction(min:new_min) reduction(max:new_max)
-        for (size_t i = 0; i < projection.rows(); ++i) {
-            for (size_t j = 0; j < projection.cols(); ++j) {
-                new_min = std::min(new_min, std::abs(projection(i, j)));
-                new_max = std::max(new_max, std::abs(projection(i, j)));
-            }
-        }
-        std::cout << "After rescaling - Min abs: " << new_min << ", Max abs: " << new_max << "\n";
-    }
-    
-    // Compute logits with verification
-    Matrix logits = matmul(scaled_hidden, projection);
-    
-    // Verify logits immediately after matmul
-    float min_raw_logit = std::numeric_limits<float>::infinity();
-    float max_raw_logit = -std::numeric_limits<float>::infinity();
-    float sum_raw_logit = 0.0f;
-    
-    #pragma omp parallel for collapse(2) reduction(min:min_raw_logit) reduction(max:max_raw_logit) \
-                             reduction(+:sum_raw_logit)
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float val = logits(i, j);
-            min_raw_logit = std::min(min_raw_logit, val);
-            max_raw_logit = std::max(max_raw_logit, val);
-            sum_raw_logit += val;
-        }
-    }
-    
-    std::cout << "Raw Logits Statistics (before bias):\n"
-              << "Min raw logit: " << min_raw_logit << "\n"
-              << "Max raw logit: " << max_raw_logit << "\n"
-              << "Mean raw logit: " << sum_raw_logit / (logits.rows() * logits.cols()) << "\n\n";
-              
-    // If logits are all zero, reinitialize projection matrix with larger scale
-    if (std::abs(max_raw_logit) < 1e-6 && std::abs(min_raw_logit) < 1e-6) {
-        std::cout << "WARNING: Logits are all zero. Reinitializing projection matrix...\n";
-        float scale = std::sqrt(6.0f / hidden_size_);  // Larger initialization scale
-        projection.randomize(-scale, scale);
-        logits = matmul(scaled_hidden, projection);  // Recompute logits
-    }
-    
-    // Add bias and apply token-specific adjustments with improved scaling
-    const float logit_scale = 3.0f;  // Reduced scale to prevent overwhelming the model
-    const float unk_penalty = 150.0f;  // Increased penalty for UNK token
-    const float special_token_penalty = 30.0f;  // Increased penalty for other special tokens
-    const float freq_scale = 8.0f;  // Increased impact of frequency-based adjustments
-    const float vocab_position_penalty = 0.001f;  // Small penalty based on token position in vocab
-    
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < logits.rows(); ++i) {
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            float& logit = logits(i, j);
-            
-            // Apply token-specific penalties
-            if (j == static_cast<size_t>(tokens::UNK_ID)) {
-                logit -= unk_penalty;  // Stronger penalty for UNK
-                
-                // Additional dynamic penalty based on other token probabilities
-                float mean_logit = sum_raw_logit / (logits.rows() * logits.cols());
-                if (logit > mean_logit) {
-                    logit = mean_logit - unk_penalty;  // Force UNK below mean if it's too high
+        // Project hidden states to vocabulary space
+        Matrix logits = matmul(hidden_states, projection);  // Using standalone matmul function
+        
+        // Add bias
+        for (size_t i = 0; i < logits.rows(); ++i) {
+            for (size_t j = 0; j < logits.cols(); ++j) {
+                if (active_tokens[j]) {  // Only add bias for active tokens
+                    logits(i, j) += bias[j];
+                } else {
+                    logits(i, j) = -std::numeric_limits<float>::infinity();  // Set inactive tokens to -inf
                 }
             }
-            else if (j < tokens::NUM_SPECIAL_TOKENS) {
-                logit -= special_token_penalty;  // Increased penalty for special tokens
-            }
-            else {
-                // Enhanced frequency-based adjustments
-                float freq_bonus = token_frequencies[j] * freq_scale;
-                
-                // Add position-based penalty (tokens later in vocab get slightly lower scores)
-                float position_penalty = (j / static_cast<float>(vocab_size_)) * vocab_position_penalty;
-                
-                logit += freq_bonus - position_penalty;
-            }
-            
-            // Scale logits after penalties
-            logit *= logit_scale;
-            // Add bias with stronger values for common tokens
-            logit += bias[j] * (j < 1000 ? 3.0f : 1.0f);  // Stronger bias for common tokens
         }
+        
+        return logits;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("LMHead forward failed: " + std::string(e.what()));
     }
-    
-    // Apply top-k filtering
-    const size_t k = 50;  // Restrict to top 50 tokens
-    std::vector<float> max_logits(logits.rows(), -std::numeric_limits<float>::infinity());
-    std::vector<std::vector<size_t>> top_k_indices(logits.rows());
-    
-    #pragma omp parallel for
-    for (size_t i = 0; i < logits.rows(); ++i) {
-        std::vector<std::pair<float, size_t>> token_logits;
-        token_logits.reserve(logits.cols());
-        
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            token_logits.emplace_back(logits(i, j), j);
-        }
-        
-        // Sort to get top-k tokens
-        std::partial_sort(token_logits.begin(), 
-                         token_logits.begin() + k,
-                         token_logits.end(),
-                         [](const auto& a, const auto& b) { return a.first > b.first; });
-        
-        // Zero out logits for tokens not in top-k
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            bool in_top_k = false;
-            for (size_t idx = 0; idx < k; ++idx) {
-                if (token_logits[idx].second == j) {
-                    in_top_k = true;
-                    break;
-                }
-            }
-            if (!in_top_k) {
-                logits(i, j) = -std::numeric_limits<float>::infinity();
-            }
-        }
-    }
-    
-    // Apply softmax with dynamic temperature
-    const float base_temperature = 0.7f;  // Base temperature
-    const float min_temperature = 0.3f;   // Minimum temperature
-    
-    #pragma omp parallel for
-    for (size_t i = 0; i < logits.rows(); ++i) {
-        // Calculate dynamic temperature based on logit distribution
-        float max_logit = -std::numeric_limits<float>::infinity();
-        float min_logit = std::numeric_limits<float>::infinity();
-        
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
-                max_logit = std::max(max_logit, logits(i, j));
-                min_logit = std::min(min_logit, logits(i, j));
-            }
-        }
-        
-        // Adjust temperature based on logit range
-        float logit_range = max_logit - min_logit;
-        float temperature = std::max(min_temperature, 
-                                   base_temperature * std::exp(-logit_range / 100.0f));
-        
-        // Apply temperature scaling and softmax
-        float max_val = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
-                logits(i, j) /= temperature;
-                max_val = std::max(max_val, logits(i, j));
-            }
-        }
-        
-        float sum_exp = 0.0f;
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
-                logits(i, j) = std::exp(logits(i, j) - max_val);
-                sum_exp += logits(i, j);
-            }
-        }
-        
-        const float min_prob = 1e-6f;
-        for (size_t j = 0; j < logits.cols(); ++j) {
-            if (logits(i, j) > -std::numeric_limits<float>::infinity()) {
-                logits(i, j) = std::max(logits(i, j) / sum_exp, min_prob);
-            } else {
-                logits(i, j) = 0.0f;
-            }
-        }
-    }
-    
-    // Debug output for logit statistics
-    float min_logit = std::numeric_limits<float>::infinity();
-    float max_logit = -std::numeric_limits<float>::infinity();
-    float sum_logits = 0.0f;
-    size_t active_logits = 0;
-    
-    std::cout << "\nAnalyzing logits (shape: " << logits.rows() << "x" << logits.cols() << ")...\n";
-    
-    // First pass - get statistics
-    #pragma omp parallel for collapse(2) reduction(min:min_logit) reduction(max:max_logit) \
-                             reduction(+:sum_logits,active_logits)
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float val = logits(i, j);
-            min_logit = std::min(min_logit, val);
-            max_logit = std::max(max_logit, val);
-            sum_logits += val;
-            if (std::abs(val) > 1e-6) {
-                active_logits++;
-            }
-        }
-    }
-    
-    float mean_logit = total_elements > 0 ? sum_logits / total_elements : 0.0f;
-    float range = max_logit - min_logit;
-    
-    std::cout << "Logit Statistics in forward_impl:\n"
-              << "Min logit: " << std::fixed << std::setprecision(6) << min_logit << "\n"
-              << "Max logit: " << max_logit << "\n"
-              << "Mean logit: " << mean_logit << "\n"
-              << "Range: " << range << "\n"
-              << "Active logits: " << active_logits << "/" << total_elements << "\n\n";
-              
-    return logits;
 }
 
 Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
