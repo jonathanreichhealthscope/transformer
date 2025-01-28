@@ -385,26 +385,34 @@ int main(int argc, char* argv[]) {
 
                 // Backpropagate through the model
                 Matrix lm_head_gradients = lm_head->backward(loss_gradients);
+                std::cout << "lm_head_gradients shape: " << lm_head_gradients.rows() << "x" << lm_head_gradients.cols() << std::endl;
                 transformer.backward(lm_head_gradients, flattened_batch, learning_rate);
-
+                std::cout << "lm_head_gradients shape after backward: " << lm_head_gradients.rows() << "x" << lm_head_gradients.cols() << std::endl;
                 // Update tracking variables
                 prev_loss = batch_loss;
                 epoch_loss += batch_loss;
                 global_step++;
-
+                
                 metrics.stop_timer("batch_processing");
 
                 // Make predictions after each batch
                     std::string test_input = "I go to";
                     std::string processed_input = test_input;
+                    std::cout << "Processing input: " << processed_input << std::endl;
                     tokenizer->preprocess_text(processed_input);
+                    std::cout << "Tokenizing input: " << processed_input << std::endl;
                     std::vector<int> test_tokens = tokenizer->encode(processed_input);
+                    std::cout << "Encoded tokens: " << test_tokens.size() << std::endl;
                     
                     // Get model prediction (in evaluation mode)
                     transformer.set_training(false);
+                    std::cout << "Setting training mode to false" << std::endl;
                     Matrix test_hidden = transformer.forward(test_tokens, test_input, *tokenizer);
+                    std::cout << "Forward pass completed" << std::endl;
                     Matrix pred_logits = lm_head->project_to_vocab(test_hidden);
+                    std::cout << "Projected to vocab" << std::endl;
                     transformer.set_training(true);  // Set back to training mode
+                    std::cout << "Setting training mode to true" << std::endl;
                     
                     // Show the top predictions
                     std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << test_input << "' ===\n";

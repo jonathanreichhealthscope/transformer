@@ -566,8 +566,29 @@ void LanguageModelHead::set_training(bool training_mode) {
 Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
     // Compute gradients for projection and bias
     std::cout << "Computing gradients for projection and bias" << std::endl;
-    Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
-    std::cout << "grad projection shape: " << grad_proj.shape() << std::endl;
+    Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
+    std::cout << "grad projection shape: " << grad_proj.rows() << "x" << grad_proj.cols() << std::endl;
+    std::cout << "projection shape: " << projection.rows() << "x" << projection.cols() << std::endl;
+    
+    // Validate matrix dimensions before any operations
+    if (grad_proj.rows() != projection.rows() || grad_proj.cols() != projection.cols()) {
+        std::cout << "ERROR: Dimension mismatch!\n"
+                  << "grad_proj: " << grad_proj.rows() << "x" << grad_proj.cols() << "\n"
+                  << "projection: " << projection.rows() << "x" << projection.cols() << "\n";
+        throw std::runtime_error("Matrix dimension mismatch in backward_pass");
+    }
+    
+    // Validate matrix bounds
+    if (grad_proj.rows() == 0 || grad_proj.cols() == 0 || 
+        projection.rows() == 0 || projection.cols() == 0) {
+        throw std::runtime_error("Zero dimension matrix in backward_pass");
+    }
+    
+    // Ensure matrices are properly allocated
+    if (grad_proj.data() == nullptr || projection.data() == nullptr) {
+        throw std::runtime_error("Null matrix data in backward_pass");
+    }
+    
     Vector grad_bias = grad_output.row_sum();
     std::cout << "grad bias size: " << grad_bias.size() << std::endl;
 
@@ -576,82 +597,129 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
     // Update projection matrix using Adam optimizer with improved stability
     std::cout << "Updating projection matrix using Adam optimizer with scaled updates\n";
     const float scale_factor = std::sqrt(2.0f / hidden_size_);
-    const float max_update = 0.1f * scale_factor;  // Limit maximum update size
+    const float max_update = 0.1f * scale_factor;
     
-    // Validate gradients before applying updates
-    float max_grad = -std::numeric_limits<float>::infinity();
-    float min_grad = std::numeric_limits<float>::infinity();
-    float sum_grad = 0.0f;
-    size_t nonzero_grad = 0;
+    // Constants for gradient clipping and stability
+    const float clip_threshold = 10.0f;
+    const float max_allowed_value = 100.0f;
+    bool has_unstable_update = false;
     
-    #pragma omp parallel for collapse(2) reduction(max:max_grad) reduction(min:min_grad) \
-                             reduction(+:sum_grad,nonzero_grad)
+    // Validate m_proj and v_proj dimensions match projection matrix
+    if (m_proj.rows() != projection.rows() || m_proj.cols() != projection.cols() ||
+        v_proj.rows() != projection.rows() || v_proj.cols() != projection.cols()) {
+        throw std::runtime_error("Momentum matrices dimension mismatch");
+    }
+    
+    // Print dimensions for debugging
+    std::cout << "Matrix dimensions in backward pass:\n"
+              << "grad_proj: " << grad_proj.rows() << "x" << grad_proj.cols() << "\n"
+              << "projection: " << projection.rows() << "x" << projection.cols() << "\n"
+              << "m_proj: " << m_proj.rows() << "x" << m_proj.cols() << "\n"
+              << "v_proj: " << v_proj.rows() << "x" << v_proj.cols() << "\n";
+    
+    // Remove debug prints inside OpenMP region to prevent garbled output
+    #pragma omp parallel for collapse(2) reduction(|:has_unstable_update)
     for (size_t i = 0; i < grad_proj.rows(); ++i) {
         for (size_t j = 0; j < grad_proj.cols(); ++j) {
-            float val = grad_proj(i, j);
-            max_grad = std::max(max_grad, std::abs(val));
-            min_grad = std::min(min_grad, std::abs(val));
-            sum_grad += val;
-            if (std::abs(val) > 1e-6) nonzero_grad++;
-        }
-    }
-    
-    std::cout << "Gradient Statistics before update:\n"
-              << "Max abs grad: " << max_grad << "\n"
-              << "Min abs grad: " << min_grad << "\n"
-              << "Mean grad: " << sum_grad / (grad_proj.rows() * grad_proj.cols()) << "\n"
-              << "Nonzero grads: " << nonzero_grad << "/" 
-              << (grad_proj.rows() * grad_proj.cols()) << "\n\n";
-              
-    // Skip update if gradients are invalid
-    if (std::isnan(max_grad) || std::isnan(min_grad) || std::isnan(sum_grad)) {
-        std::cout << "WARNING: Invalid gradients detected, skipping update\n";
-        return matmul(grad_output, projection);
-    }
-    
-    // Clip extremely large gradients
-    if (max_grad > 10.0f) {
-        float clip_ratio = 10.0f / max_grad;
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < grad_proj.rows(); ++i) {
-            for (size_t j = 0; j < grad_proj.cols(); ++j) {
-                grad_proj(i, j) *= clip_ratio;
+            // Bounds check before any access
+            if (i >= grad_proj.rows() || j >= grad_proj.cols() ||
+                i >= projection.rows() || j >= projection.cols() ||
+                i >= m_proj.rows() || j >= m_proj.cols() ||
+                i >= v_proj.rows() || j >= v_proj.cols()) {
+                #pragma omp critical
+                {
+                    std::cout << "ERROR: Index out of bounds at (" << i << "," << j << ")\n";
+                    std::cout << "Matrix dimensions:\n"
+                             << "grad_proj: " << grad_proj.rows() << "x" << grad_proj.cols() << "\n"
+                             << "projection: " << projection.rows() << "x" << projection.cols() << "\n";
+                }
+                has_unstable_update = true;
+                continue;
             }
-        }
-        std::cout << "Clipped large gradients by factor: " << clip_ratio << "\n";
-    }
 
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < projection.rows(); ++i) {
-        for (size_t j = 0; j < projection.cols(); ++j) {
-            // Update momentum with bounds checking
-            float new_m = beta1 * m_proj(i, j) + (1 - beta1) * grad_proj(i, j);
-            if (std::isfinite(new_m)) {
-                m_proj(i, j) = new_m;
+            if (!std::isfinite(grad_proj(i, j))) {
+                continue;
             }
             
-            // Update RMSprop with stability
-            float grad_squared = grad_proj(i, j) * grad_proj(i, j);
-            float new_v = beta2 * v_proj(i, j) + (1 - beta2) * grad_squared;
-            if (std::isfinite(new_v)) {
-                v_proj(i, j) = new_v;
+            // Clip gradient before momentum update
+            float clipped_grad = grad_proj(i, j);
+            if (std::abs(clipped_grad) > clip_threshold) {
+                clipped_grad *= clip_threshold / std::abs(clipped_grad);
             }
+            
+            // Update momentum
+            float new_m = beta1 * m_proj(i, j) + (1 - beta1) * clipped_grad;
+            if (!std::isfinite(new_m)) {
+                has_unstable_update = true;
+                continue;
+            }
+            m_proj(i, j) = new_m;
+            
+            // Update RMSprop
+            float grad_squared = clipped_grad * clipped_grad;
+            float new_v = beta2 * v_proj(i, j) + (1 - beta2) * grad_squared;
+            if (!std::isfinite(new_v)) {
+                has_unstable_update = true;
+                continue;
+            }
+            v_proj(i, j) = new_v;
             
             // Bias correction
             float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
             float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
             
-            // Compute update with scaling and clipping
-            float update = current_lr * m_hat / (std::sqrt(v_hat) + eps);
-            update *= scale_factor;  // Scale update relative to projection matrix
-            update = std::max(std::min(update, max_update), -max_update);  // Clip update
+            if (!std::isfinite(m_hat) || !std::isfinite(v_hat)) {
+                has_unstable_update = true;
+                continue;
+            }
             
-            // Only apply update if it's finite
-            if (std::isfinite(update)) {
-                projection(i, j) -= update;
+            // Compute update
+            float denom = std::sqrt(v_hat) + eps;
+            if (denom < eps) denom = eps;
+            
+            float update = current_lr * m_hat / denom;
+            update *= scale_factor;
+            
+            if (!std::isfinite(update)) {
+                has_unstable_update = true;
+                continue;
+            }
+            
+            // Hard clip update
+            update = std::max(-max_update, std::min(max_update, update));
+            
+            // Compute proposed new value
+            float new_value = projection(i, j) - update;
+            
+            if (std::abs(new_value) > max_allowed_value) {
+                has_unstable_update = true;
+                continue;
+            }
+            
+            if (std::isfinite(new_value)) {
+                projection(i, j) = new_value;
             }
         }
     }
+    
+    std::cout << "[DEBUG] Parameter updates completed" << std::endl;
+    std::cout << "[DEBUG] Checking for unstable updates" << std::endl;
+    
+    if (has_unstable_update) {
+        std::cout << "[DEBUG] Unstable updates detected, reducing learning rate" << std::endl;
+        current_lr *= 0.5f;
+        
+        std::cout << "[DEBUG] Resetting momentum and RMSprop states" << std::endl;
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < projection.rows(); ++i) {
+            for (size_t j = 0; j < projection.cols(); ++j) {
+                m_proj(i, j) = 0.0f;
+                v_proj(i, j) = 0.0f;
+            }
+        }
+    }
+    
+    std::cout << "[DEBUG] Update process completed" << std::endl;
 
     // Debug output for projection matrix after update
     float min_proj_after = std::numeric_limits<float>::infinity();
@@ -684,7 +752,7 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
         float scale = std::sqrt(6.0f / (hidden_size_ + vocab_size_));
         projection.randomize(-scale, scale);
     }
-
+    std::cout << "Projection matrix reinitialized" << std::endl;
     // Update bias vector using Adam optimizer with similar changes
     #pragma omp parallel for
     for (size_t i = 0; i < bias.size(); ++i) {
@@ -703,9 +771,9 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
         // Apply update directly
         bias[i] -= update;
     }
-
+    std::cout << "Bias vector updated" << std::endl;
     // Compute gradient with respect to input
-    Matrix grad_input = matmul(grad_output, projection);
+    Matrix grad_input = matmul(grad_output, projection.transpose());
     if (grad_input.cols() != hidden_states.cols()) {
         throw std::runtime_error("Language model head gradient output dimension (" +
                                  std::to_string(grad_input.cols()) +
