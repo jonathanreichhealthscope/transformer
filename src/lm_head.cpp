@@ -123,16 +123,20 @@ Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
         }
     }
     
-    if (training) {
-        // During training, apply higher temperature to encourage exploration
-        logits = logits * (1.0f / 0.7f);
-    } else {
-        // During inference, use lower temperature for more focused predictions
-        logits = logits * (1.0f / 0.3f);
-    }
+    // Use consistent temperature scaling
+    const float temperature = 0.8f;  // Single temperature value for both training and inference
+    logits = logits * (1.0f / temperature);
     
     // Apply format-specific biasing
     bias_completion_format(logits);
+    
+    // Clip logits to prevent extreme values
+    const float clip_val = 5.0f;
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            logits(i, j) = std::max(-clip_val, std::min(clip_val, logits(i, j)));
+        }
+    }
     
     return logits;
 }
@@ -329,40 +333,28 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
     // Compute gradients for projection and bias
     std::cout << "Computing gradients for projection and bias" << std::endl;
     Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
-    std::cout << "grad projection shape: " << grad_proj.rows() << "x" << grad_proj.cols() << std::endl;
-    std::cout << "projection shape: " << projection.rows() << "x" << projection.cols() << std::endl;
     
-    // Validate matrix dimensions before any operations
-    if (grad_proj.rows() != projection.rows() || grad_proj.cols() != projection.cols()) {
-        std::cout << "ERROR: Dimension mismatch!\n"
-                  << "grad_proj: " << grad_proj.rows() << "x" << grad_proj.cols() << "\n"
-                  << "projection: " << projection.rows() << "x" << projection.cols() << "\n";
-        throw std::runtime_error("Matrix dimension mismatch in backward_pass");
-    }
-    
-    // Validate matrix bounds
-    if (grad_proj.rows() == 0 || grad_proj.cols() == 0 || 
-        projection.rows() == 0 || projection.cols() == 0) {
-        throw std::runtime_error("Zero dimension matrix in backward_pass");
-    }
-    
-    // Ensure matrices are properly allocated
-    if (grad_proj.data() == nullptr || projection.data() == nullptr) {
-        throw std::runtime_error("Null matrix data in backward_pass");
+    // Gradient clipping for stability
+    const float grad_clip = 1.0f;
+    for (size_t i = 0; i < grad_proj.rows(); ++i) {
+        for (size_t j = 0; j < grad_proj.cols(); ++j) {
+            grad_proj(i, j) = std::max(-grad_clip, std::min(grad_clip, grad_proj(i, j)));
+        }
     }
     
     Vector grad_bias = grad_output.row_sum();
-    std::cout << "grad bias size: " << grad_bias.size() << std::endl;
+    for (size_t i = 0; i < grad_bias.size(); ++i) {
+        grad_bias[i] = std::max(-grad_clip, std::min(grad_clip, grad_bias[i]));
+    }
 
     t++;  // Increment time step
 
     // Update projection matrix using Adam optimizer with improved stability
-    std::cout << "Updating projection matrix using Adam optimizer with scaled updates\n";
-    const float scale_factor = std::sqrt(2.0f / hidden_size_);
-    const float max_update = 0.1f * scale_factor;
+    const float scale_factor = std::sqrt(1.0f / hidden_size_);  // Reduced scale factor
+    const float max_update = 0.05f * scale_factor;  // More conservative max update
     
     // Constants for gradient clipping and stability
-    const float clip_threshold = 10.0f;
+    const float clip_threshold = 5.0f;  // Reduced from 10.0f
     const float max_allowed_value = 100.0f;
     bool has_unstable_update = false;
     

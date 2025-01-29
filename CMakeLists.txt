@@ -102,6 +102,13 @@ set(CORE_SOURCES
     src/tiktoken_tokenizer.cpp
     src/matrix.cpp
     src/data_augmentation.cpp
+    # Add training components
+    src/training/loss_tracker.cpp
+    src/training/gradient_manager.cpp
+    src/training/learning_rate_scheduler.cpp
+    src/training/training_state_manager.cpp
+    src/training/training_monitor.cpp
+    src/phrase_analysis.cpp
 )
 
 # Neural network components
@@ -150,7 +157,7 @@ if(CUDAToolkit_FOUND)
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
 endif()
 
-# Create library
+# Create library with all components
 add_library(transformer_lib
     ${CORE_SOURCES}
     ${NN_SOURCES}
@@ -176,12 +183,13 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(transformer_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
-# Create executable
+# Create single executable
 add_executable(transformer src/main.cpp)
 
-# Link libraries
-target_link_libraries(transformer_lib
-    PUBLIC
+# Link everything to the executable
+target_link_libraries(transformer
+    PRIVATE
+    transformer_lib
     nlohmann_json::nlohmann_json
 )
 
@@ -193,11 +201,6 @@ if(CUDAToolkit_FOUND)
         CUDA::curand
     )
 endif()
-
-target_link_libraries(transformer
-    PRIVATE
-    transformer_lib
-)
 
 # Compiler options
 target_compile_definitions(transformer_lib

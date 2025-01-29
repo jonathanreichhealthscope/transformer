@@ -3,12 +3,13 @@
 #include <nlohmann/json.hpp>
 #include <random>
 #include "../include/tokenizer.hpp"
-#include "../include/utils.hpp"  // Add include for Utils
-#include "../include/phrase_analysis.hpp"  // Add this line
+#include "../include/utils.hpp"
+#include "../include/phrase_analysis.hpp"
+#include "../include/training/training.hpp"  // Include unified training header
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
-PerformanceMetrics metrics; // Single definition of the global metrics variable
+PerformanceMetrics metrics;
 
 // Configuration constants
 const float INITIAL_LEARNING_RATE = 0.001f;
@@ -16,10 +17,15 @@ float learning_rate = INITIAL_LEARNING_RATE;
 float prev_loss = std::numeric_limits<float>::max();
 size_t global_step = 0;
 
+// Add training components with proper types
+TrainingStateManagerPtr training_manager;
+TrainingMonitorPtr training_monitor;
+
 float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, const Tokenizer& tokenizer) {
     float loss = 0.0f;
     const int sep_token_id = tokenizer.get_sep_token_id();
     bool after_separator = false;
+    const float epsilon = 1e-6f;  // Increased epsilon for better stability
     
     for (size_t i = 0; i < target_tokens.size() - 1; i++) {
         int current_token = target_tokens[i];
@@ -31,8 +37,8 @@ float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, 
         }
         
         // Get predicted probability distribution
-        Vector logits_row = logits.row(i);  // Get as Vector
-        std::vector<float> row_data(logits_row.begin(), logits_row.end());  // Convert to std::vector<float>
+        Vector logits_row = logits.row(i);
+        std::vector<float> row_data(logits_row.begin(), logits_row.end());
         
         // Find max for numerical stability
         float max_val = *std::max_element(row_data.begin(), row_data.end());
@@ -40,23 +46,37 @@ float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, 
         // Compute softmax with numerical stability
         std::vector<float> probs(row_data.size());
         float sum_exp = 0.0f;
+        
+        // First pass: compute exponentials and sum
         for (size_t j = 0; j < row_data.size(); j++) {
-            probs[j] = std::exp(row_data[j] - max_val);
-            sum_exp += probs[j];
+            float val = std::exp(row_data[j] - max_val);
+            probs[j] = val;
+            sum_exp += val;
         }
         
-        // Normalize
+        // Second pass: normalize and ensure no zeros
+        sum_exp = std::max(sum_exp, epsilon);  // Prevent division by zero
         for (float& p : probs) {
-            p /= sum_exp;
+            p = std::max(p / sum_exp, epsilon);  // Ensure no probability is exactly zero
         }
         
-        float token_loss = -std::log(probs[next_token] + 1e-10);
+        // Compute loss with numerical stability checks
+        float prob = probs[next_token];
+        if (prob <= 0.0f || !std::isfinite(prob)) {
+            prob = epsilon;
+        }
+        float token_loss = -std::log(prob);
+        
+        // Check for NaN/Inf
+        if (!std::isfinite(token_loss)) {
+            std::cout << "Warning: Non-finite loss detected. Using fallback value." << std::endl;
+            token_loss = 100.0f;  // Fallback to a high but finite loss
+        }
         
         // Apply additional penalty for format violations after separator
         if (after_separator) {
             std::string next_token_str = tokenizer.decode({next_token});
             if (!next_token_str.empty() && next_token_str[0] != ' ') {
-                // Penalize tokens that don't start with space after separator
                 token_loss *= 1.5f;
             }
         }
@@ -64,12 +84,25 @@ float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, 
         loss += token_loss;
     }
     
-    return loss / target_tokens.size();
+    // Final stability check
+    if (!std::isfinite(loss)) {
+        std::cout << "Warning: Non-finite total loss detected. Using fallback value." << std::endl;
+        return 100.0f;  // Fallback to a high but finite loss
+    }
+    
+    return loss / std::max(static_cast<float>(target_tokens.size()), epsilon);
 }
 
 // Update the training loop
 void train_epoch(Transformer& model, const std::vector<std::pair<std::string, std::string>>& training_pairs,
                 float learning_rate, const Tokenizer& tokenizer) {
+    if (!training_manager) {
+        training_manager = std::make_unique<TrainingStateManager>(learning_rate);
+    }
+    if (!training_monitor) {
+        training_monitor = std::make_unique<TrainingMonitor>();
+    }
+
     for (const auto& [context, target] : training_pairs) {
         // Determine the phrase type based on the target
         PhraseType phrase_type = PhraseTypeHandler::detect_phrase_type(target);
@@ -77,41 +110,33 @@ void train_epoch(Transformer& model, const std::vector<std::pair<std::string, st
         
         // Combine context and target with appropriate delimiter
         std::string full_text = context + delimiter + target;
-        
-        // Extract the final phrase for special handling during training
         std::string final_phrase = PhraseTypeHandler::extract_final_phrase(full_text);
         
         // Tokenize
         std::vector<int> tokens = tokenizer.encode(full_text);
         std::vector<int> final_phrase_tokens = tokenizer.encode(final_phrase);
         
-        // Forward pass with original text and phrase type information
+        // Forward pass
         Matrix logits = model.forward(tokens, full_text, tokenizer);
-        
-        // Compute loss with format-specific penalties
         float loss = compute_loss(logits, tokens, tokenizer);
         
-        // Add phrase type-specific loss components
+        // Add type-specific penalties
         switch (phrase_type) {
             case PhraseType::VERB:
-                // Add penalty for non-verb predictions in verb contexts
                 loss += compute_verb_penalty(logits, final_phrase_tokens, tokenizer);
                 break;
             case PhraseType::ADJECTIVE:
-                // Add penalty for non-adjective predictions in adjective contexts
                 loss += compute_adjective_penalty(logits, final_phrase_tokens, tokenizer);
                 break;
             default:
                 break;
         }
         
-        // Create loss gradients matrix with phrase type-specific gradients
+        // Create gradients
         Matrix loss_gradients(logits.rows(), logits.cols());
         for (size_t i = 0; i < logits.rows(); i++) {
             for (size_t j = 0; j < logits.cols(); j++) {
                 float base_gradient = logits(i, j) - (j < tokens.size() ? 1.0f : 0.0f);
-                
-                // Add phrase type-specific gradient components
                 switch (phrase_type) {
                     case PhraseType::VERB:
                         base_gradient *= verb_gradient_factor(j, tokens, tokenizer);
@@ -122,18 +147,41 @@ void train_epoch(Transformer& model, const std::vector<std::pair<std::string, st
                     default:
                         break;
                 }
-                
                 loss_gradients(i, j) = base_gradient;
             }
         }
         
-        // Backward pass and optimization
-        model.backward(loss_gradients, tokens, learning_rate);
-        model.update_parameters(learning_rate);
+        // Update training state
+        TrainingMetrics metrics(
+            loss,                                                   // loss
+            loss_gradients,                                        // gradients
+            global_step / training_pairs.size(),                   // epoch
+            global_step,                                           // step
+            0.0f,                                                  // loss_trend (Will be computed by state manager)
+            RunningStatistics()                                    // grad_stats (Will be updated by state manager)
+        );
         
-        // Log progress with phrase type information
-        std::cout << "Loss: " << loss << " (Type: " 
-                  << static_cast<int>(phrase_type) << ")" << std::endl;
+        training_manager->update_state(metrics);
+        training_monitor->log_metrics(metrics);
+        
+        // Check if we should stop training
+        if (training_monitor->should_stop_training()) {
+            std::cout << "Training stopped due to monitor conditions" << std::endl;
+            return;
+        }
+        
+        // Get current learning rate from manager
+        float current_lr = training_manager->get_learning_rate();
+        
+        // Only proceed with update if training is stable
+        if (training_manager->is_stable()) {
+            model.backward(loss_gradients, tokens, current_lr);
+            model.update_parameters(current_lr);
+        } else {
+            std::cout << "Skipping update due to instability" << std::endl;
+        }
+        
+        global_step++;
     }
 }
 

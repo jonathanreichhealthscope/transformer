@@ -41,6 +41,11 @@ class AttentionMask {
     // Constructor taking a mask matrix
     explicit AttentionMask(const Matrix& mask) : mask_(mask), has_mask_(true) {}
 
+    // Add is_masked method
+    bool is_masked(size_t i, size_t j) const {
+        return mask.empty() ? false : mask(i, j) == 0.0f;
+    }
+
   private:
     Matrix mask_;
     bool has_mask_ = false;
@@ -346,36 +351,13 @@ class MultiHeadAttention {
         }
     }
 
-    // Add private gradient computation methods
-    Matrix compute_query_gradients(const Matrix& grad_output, const Matrix& input) const {
-        // Q = input * Wq
-        // dQ = grad_output * Wq^T
-        return matmul(grad_output, query_proj.transpose());
-    }
-
-    Matrix compute_key_gradients(const Matrix& grad_output, const Matrix& input) const {
-        // K = input * Wk
-        // dK = grad_output * Wk^T
-        return matmul(grad_output, key_proj.transpose());
-    }
-
-    Matrix compute_value_gradients(const Matrix& grad_output, const Matrix& input) const {
-        // V = input * Wv
-        // dV = grad_output * Wv^T
-        return matmul(grad_output, value_proj.transpose());
-    }
-
-    Matrix combine_gradients(const Matrix& dQ, const Matrix& dK, const Matrix& dV) const {
-        // Combine all gradients
-        Matrix combined = dQ;
-        combined += dK;
-        combined += dV;
-        return combined;
-    }
-
-    // Add compute_attention declaration
+    // Update method declarations to match implementations
+    Matrix compute_query_gradients(const Matrix& grad, const Matrix& input);
+    Matrix compute_key_gradients(const Matrix& grad, const Matrix& input);
+    Matrix compute_value_gradients(const Matrix& grad, const Matrix& input);
+    Matrix combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value);
     Matrix compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
-                             const AttentionMask& mask);
+                           const AttentionMask& mask) const;
 
     // Helper method for safe matrix multiplication
     Matrix safe_matmul(const Matrix& A, const Matrix& B) {
@@ -447,17 +429,6 @@ class MultiHeadAttention {
 
     // Add use_fp16 as a member variable
     bool use_fp16_;
-
-    /**
-     * @brief Compute gradients for query projection
-     * @param grad Gradient from upstream
-     * @param input Original input matrix
-     * @return Gradient for query computation
-     */
-    Matrix compute_query_gradients(const Matrix& grad, const Matrix& input);
-    Matrix compute_key_gradients(const Matrix& grad, const Matrix& input);
-    Matrix compute_value_gradients(const Matrix& grad, const Matrix& input);
-    Matrix combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value);
 };
 
 // Add sliding window attention
@@ -465,13 +436,39 @@ class SlidingWindowAttention : public MultiHeadAttention {
   private:
     size_t window_size;
     bool use_local_attention;
+    size_t head_dim;  // Add head dimension member
 
-    void process_attention_window(const Matrix& Q, const Matrix& K, const Matrix& V, Matrix& output,
-                                  size_t start, size_t end);
+    /**
+     * @brief Process attention for a single window
+     * @param Q Query matrix for current position
+     * @param K Key matrix for local window
+     * @param V Value matrix for local window
+     * @param output Output matrix to update
+     * @param pos Current position in sequence
+     * @param window_start Start position of current window
+     */
+    void process_attention_window(const Matrix& Q, const Matrix& K, const Matrix& V,
+                                Matrix& output, size_t pos, size_t window_start);
 
   public:
-    explicit SlidingWindowAttention(size_t window_size_ = 512)
-        : MultiHeadAttention(), window_size(window_size_) {}
+    /**
+     * @brief Construct a sliding window attention layer
+     * @param window_size_ Size of the attention window
+     * @param head_dim_ Dimension of each attention head
+     * @param use_local_attention_ Whether to use local attention only
+     */
+    explicit SlidingWindowAttention(size_t window_size_ = 512, size_t head_dim_ = 64,
+                                  bool use_local_attention_ = true)
+        : MultiHeadAttention(), window_size(window_size_), head_dim(head_dim_),
+          use_local_attention(use_local_attention_) {}
+
+    /**
+     * @brief Compute attention with local sliding windows
+     * @param Q Query matrix
+     * @param K Key matrix
+     * @param V Value matrix
+     * @return Output matrix after local attention
+     */
     Matrix compute_local_attention(const Matrix& Q, const Matrix& K, const Matrix& V);
 };
 

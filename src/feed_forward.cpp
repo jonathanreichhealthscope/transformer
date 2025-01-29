@@ -83,7 +83,7 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
 Matrix FeedForward::forward(const Matrix& input) {
     try {
         // Add eps constant declaration
-        const float eps = 1e-5f;  // Small constant for numerical stability
+        const float eps = 1e-6f;  // Smaller epsilon for better precision
         
         std::cout << "\n=== FeedForward Dimensions Debug ===" << std::endl;
         std::cout << "Input: " << input.rows() << "x" << input.cols() << std::endl;
@@ -98,131 +98,45 @@ Matrix FeedForward::forward(const Matrix& input) {
             auto& memory_mgr = cuda::MemoryManager::instance();
             // Allocate intermediate results
             Matrix intermediate(input.rows(), w1.cols());
-            std::cout << "Intermediate dimensions: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
             
+            // First linear layer
             cuda::matmul(input, w1, intermediate);
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();
-            
-            std::cout << "After first matmul - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
-            std::cout << "Bias dimensions: " << b1.size() << std::endl;
-            
-            // Apply bias and activation
             intermediate.add_bias(b1);
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();
             
-            std::cout << "After bias addition - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+            // Apply GELU first
             cuda::gelu_forward(intermediate);
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();
             
-            std::cout << "After GELU - Intermediate: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
-            // Store for backward pass
-            intermediate_cache = intermediate;
-            std::cout << "Intermediate cache dimensions: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+            // Then normalize after activation
+            float int_mean = 0.0f;
+            float int_var = 0.0f;
             
-            // Explicitly preserve input batch size
-            Matrix output(input.rows(), w2.cols());  // Force output to be 1019 x hidden_size
-            std::cout << "Output dimensions: " << output.rows() << "x" << output.cols() << std::endl;
+            // Calculate mean and variance
+            for (size_t i = 0; i < intermediate.rows(); i++) {
+                for (size_t j = 0; j < intermediate.cols(); j++) {
+                    float val = intermediate(i, j);
+                    int_mean += val;
+                    int_var += val * val;
+                }
+            }
             
+            int_mean /= (intermediate.rows() * intermediate.cols());
+            int_var = int_var / (intermediate.rows() * intermediate.cols()) - int_mean * int_mean;
+            
+            // Normalize with smaller epsilon
+            #pragma omp parallel for collapse(2)
+            for (size_t i = 0; i < intermediate.rows(); i++) {
+                for (size_t j = 0; j < intermediate.cols(); j++) {
+                    intermediate(i, j) = (intermediate(i, j) - int_mean) / std::sqrt(int_var + eps);
+                }
+            }
+            
+            // Second linear layer
+            Matrix output(intermediate.rows(), w2.cols());
             cuda::matmul(intermediate, w2, output);
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();
-            
-            std::cout << "After second matmul - Output: " << output.rows() << "x" << output.cols() << std::endl;
             output.add_bias(b2);
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();
             
-            std::cout << "After bias addition - Output: " << output.rows() << "x" << output.cols() << std::endl;
-            // Check dimensions before residual connection
-            if (output.rows() != input.rows() || output.cols() != input.cols()) {
-                throw std::runtime_error("FeedForward output dimensions " + 
-                    std::to_string(output.rows()) + "x" + std::to_string(output.cols()) +
-                    " don't match input dimensions " + 
-                    std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
-            }
-            
-            // Normalize output before residual connection
-            float output_mean = 0.0f;
-            float output_var = 0.0f;
-            std::cout << "Calculating mean" << std::endl;
-            // Calculate mean
-            #pragma omp parallel for collapse(2) reduction(+:output_mean)
-            for (size_t i = 0; i < output.rows(); i++) {
-                for (size_t j = 0; j < output.cols(); j++) {
-                    output_mean += output(i, j);
-                }
-            }
-            output_mean /= (output.rows() * output.cols());
-            std::cout << "Calculating variance" << std::endl;
-            // Calculate variance
-            #pragma omp parallel for collapse(2) reduction(+:output_var)
-            for (size_t i = 0; i < output.rows(); i++) {
-                for (size_t j = 0; j < output.cols(); j++) {
-                    float diff = output(i, j) - output_mean;
-                    output_var += diff * diff;
-                }
-            }
-            output_var /= (output.rows() * output.cols());
-            std::cout << "Applying normalization" << std::endl;
-            // Update scaling factors for better stability
-            const float ffn_scale = 0.5f;  // Increased from 0.2f to prevent collapse
-            #pragma omp parallel for collapse(2)
-            for (size_t i = 0; i < output.rows(); i++) {
-                for (size_t j = 0; j < output.cols(); j++) {
-                    output(i, j) = ffn_scale * (output(i, j) - output_mean) / std::sqrt(output_var + eps);
-                }
-            }
-            
-            // Scale input for residual connection
-            const float residual_scale = 0.8f;  // Increased from 0.5f to maintain signal strength
-            Matrix scaled_input = input;
-            #pragma omp parallel for collapse(2)
-            for (size_t i = 0; i < input.rows(); i++) {
-                for (size_t j = 0; j < input.cols(); j++) {
-                    scaled_input(i, j) *= residual_scale;
-                }
-            }
-            std::cout << "Adding scaled residual connection" << std::endl;
-            // Add scaled residual connection
-            output += scaled_input;
-            
-            // Add layer normalization after residual connection with adjusted target variance
-            float final_mean = 0.0f;
-            float final_var = 0.0f;
-            std::cout << "Calculating mean" << std::endl;
-            // Calculate mean
-            #pragma omp parallel for collapse(2) reduction(+:final_mean)
-            for (size_t i = 0; i < output.rows(); i++) {
-                for (size_t j = 0; j < output.cols(); j++) {
-                    final_mean += output(i, j);
-                }
-            }
-            final_mean /= (output.rows() * output.cols());
-            std::cout << "Calculating variance" << std::endl;
-            // Calculate variance
-            #pragma omp parallel for collapse(2) reduction(+:final_var)
-            for (size_t i = 0; i < output.rows(); i++) {
-                for (size_t j = 0; j < output.cols(); j++) {
-                    float diff = output(i, j) - final_mean;
-                    final_var += diff * diff;
-                }
-            }
-            final_var /= (output.rows() * output.cols());
-            std::cout << "Applying final normalization" << std::endl;
-            // Apply final normalization with increased target variance
-            const float target_var = 2.0f;  // Increased from 1.0f to encourage more spread
-            #pragma omp parallel for collapse(2)
-            for (size_t i = 0; i < output.rows(); i++) {
-                for (size_t j = 0; j < output.cols(); j++) {
-                    output(i, j) = std::sqrt(target_var) * (output(i, j) - final_mean) / std::sqrt(final_var + eps);
-                }
-            }
-            std::cout << "Clipping output" << std::endl;
-            // Increased clip value to allow more variation
-            const float clip_val = 2.5f;  // Increased from 1.5f
+            // Clip outputs to prevent explosion
+            const float clip_val = 1.0f;  // More conservative clipping
             #pragma omp parallel for collapse(2)
             for (size_t i = 0; i < output.rows(); i++) {
                 for (size_t j = 0; j < output.cols(); j++) {
