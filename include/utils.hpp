@@ -5,6 +5,14 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_set>
+
+// Token category structure
+struct TokenCategories {
+    std::unordered_set<std::string> verb_tokens;
+    std::unordered_set<std::string> adjective_tokens;
+    std::unordered_set<std::string> noun_tokens;
+};
 
 class Utils {
   public:
@@ -34,4 +42,9 @@ class Utils {
     static std::vector<std::string>& get_vocabulary(const Tokenizer& tokenizer);
     static std::vector<std::pair<std::string, float>> get_multi_token_predictions(
         const Matrix& logits, const Tokenizer& tokenizer, int beam_width);
+    
+    // Token category analysis functions
+    static TokenCategories analyze_token_categories(const std::vector<std::pair<std::string, std::string>>& training_data);
+    static std::string get_token_category(const std::string& token, const TokenCategories& categories);
+    static void trim(std::string& s);
 };

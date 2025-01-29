@@ -461,146 +461,92 @@ std::vector<std::pair<std::string, float>> Utils::get_multi_token_predictions(
     return predictions;
 }
 
-void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k) {
-    const auto& config = transformer.getConfig();
-    size_t total_beam_width = std::max(config.beam_search.beam_size, static_cast<size_t>(k * 3));
-    size_t num_groups = config.beam_search.num_groups;
-    size_t beams_per_group = config.beam_search.beams_per_group;
+TokenCategories Utils::analyze_token_categories(const std::vector<std::pair<std::string, std::string>>& training_data) {
+    TokenCategories categories;
     
-    BeamSearch beam_search(
-        beams_per_group,
-        config.beam_search.length_penalty,
-        config.beam_search.temperature,
-        config.beam_search.diversity_strength,
-        config.beam_search.top_k,
-        config.beam_search.top_p
-    );
-
-    // Store predictions from each group
-    std::vector<std::vector<BeamSearch::Hypothesis>> group_hypotheses;
-    std::vector<float> initial_logits;
-    initial_logits.reserve(logits.cols());
-    
-    // Get original input
-    std::vector<int> original_input = transformer.get_last_input();
-    std::string original_query = transformer.get_last_query();
-    size_t input_length = original_input.size();
-
-    // Convert logits to probabilities with temperature scaling and normalization
-    float temperature = config.beam_search.temperature;
-    float max_logit = -std::numeric_limits<float>::infinity();
-    
-    // Find max logit for numerical stability
-    for (int j = 0; j < logits.cols(); j++) {
-        max_logit = std::max(max_logit, logits(logits.rows() - 1, j));
+    for (const auto& [input, target] : training_data) {
+        size_t sep_pos;
+        if ((sep_pos = target.find('#')) != std::string::npos) {
+            // This is a verb ending
+            std::string verb = target.substr(sep_pos + 1);
+            Utils::trim(verb);
+            categories.verb_tokens.insert(verb);
+        } else if ((sep_pos = target.find('*')) != std::string::npos) {
+            // This is an adjective ending
+            std::string adj = target.substr(sep_pos + 1);
+            Utils::trim(adj);
+            categories.adjective_tokens.insert(adj);
+        } else if ((sep_pos = target.find('|')) != std::string::npos) {
+            // This is a noun ending
+            std::string noun = target.substr(sep_pos + 1);
+            Utils::trim(noun);
+            categories.noun_tokens.insert(noun);
+        }
     }
     
-    // Compute softmax with temperature scaling
+    std::cout << "\nToken Category Analysis:\n";
+    std::cout << "Unique Verbs: " << categories.verb_tokens.size() << "\n";
+    std::cout << "Unique Adjectives: " << categories.adjective_tokens.size() << "\n";
+    std::cout << "Unique Nouns: " << categories.noun_tokens.size() << "\n";
+    
+    return categories;
+}
+
+// Function to determine the category of a token
+std::string Utils::get_token_category(const std::string& token, const TokenCategories& categories) {
+    if (categories.verb_tokens.find(token) != categories.verb_tokens.end()) {
+        return "VERB";
+    } else if (categories.adjective_tokens.find(token) != categories.adjective_tokens.end()) {
+        return "ADJ";
+    } else if (categories.noun_tokens.find(token) != categories.noun_tokens.end()) {
+        return "NOUN";
+    }
+    return "UNKNOWN";
+}
+
+// Modify the print_top_predictions function to show token categories
+void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, 
+                                Transformer& transformer, int k) {
+    static TokenCategories categories = analyze_token_categories(create_training_data());
+    
+    // Get the last row of logits for next token prediction
+    std::vector<float> last_logits;
+    for (size_t j = 0; j < logits.cols(); j++) {
+        last_logits.push_back(logits(logits.rows() - 1, j));
+    }
+    
+    // Apply temperature scaling and compute probabilities
+    float temperature = 0.7f;
+    std::vector<std::pair<float, int>> token_probs;
+    float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
+    
     float sum_exp = 0.0f;
-    for (int j = 0; j < logits.cols(); j++) {
-        float scaled_logit = (logits(logits.rows() - 1, j) - max_logit) / temperature;
-        initial_logits.push_back(scaled_logit);
-        sum_exp += std::exp(scaled_logit);
+    for (size_t i = 0; i < last_logits.size(); i++) {
+        float scaled_logit = (last_logits[i] - max_logit) / temperature;
+        float prob = std::exp(scaled_logit);
+        sum_exp += prob;
+        token_probs.push_back({prob, i});
     }
     
-    // Normalize to get proper probabilities
-    for (float& logit : initial_logits) {
-        logit = std::exp(logit) / sum_exp;
-        logit = std::log(std::max(logit, 1e-10f));  // Convert back to log space for beam search
+    // Normalize probabilities
+    for (auto& [prob, _] : token_probs) {
+        prob /= sum_exp;
     }
-
-    // Function to get next token predictions with proper scaling
-    auto next_token_fn = [&transformer, &tokenizer, temperature](const std::vector<int>& tokens) {
-        Matrix hidden = transformer.forward(tokens, "", tokenizer);
-        Matrix next_logits = transformer.get_lm_head()->project_to_vocab(hidden);
-        std::vector<float> logits_vec;
-        logits_vec.reserve(next_logits.cols());
-        
-        // Apply same temperature scaling and normalization
-        float max_val = -std::numeric_limits<float>::infinity();
-        for (int j = 0; j < next_logits.cols(); j++) {
-            max_val = std::max(max_val, next_logits(next_logits.rows() - 1, j));
-        }
-        
-        float sum = 0.0f;
-        for (int j = 0; j < next_logits.cols(); j++) {
-            float scaled_logit = (next_logits(next_logits.rows() - 1, j) - max_val) / temperature;
-            logits_vec.push_back(scaled_logit);
-            sum += std::exp(scaled_logit);
-        }
-        
-        for (float& logit : logits_vec) {
-            logit = std::exp(logit) / sum;
-            logit = std::log(std::max(logit, 1e-10f));
-        }
-        
-        return logits_vec;
-    };
-
-    // Get predictions for each group
-    for (size_t group = 0; group < num_groups; group++) {
-        const size_t MAX_LENGTH = input_length + 4;
-        auto group_results = beam_search.search(
-            initial_logits, next_token_fn, MAX_LENGTH, tokenizer.get_eos_token_id());
-        group_hypotheses.push_back(group_results);
-    }
-
-    transformer.clear_kv_cache();
-
-    // Store all predictions
-    std::vector<std::pair<std::string, float>> predictions;
-    std::unordered_set<std::string> used_predictions;
-
-    // Process hypotheses from each group
-    for (const auto& group_results : group_hypotheses) {
-        for (const auto& hyp : group_results) {
-            try {
-                if (hyp.tokens.size() <= input_length) continue;
-                
-                std::vector<int> generated_tokens(
-                    hyp.tokens.begin() + input_length,
-                    hyp.tokens.end()
-                );
-                
-                // Decode tokens
-                std::string decoded = tokenizer.decode(generated_tokens);
-                
-                // Add initial space if needed
-                if (!decoded.empty() && decoded[0] != ' ') {
-                    decoded = " " + decoded;
-                }
-                
-                // Only add unique predictions
-                if (used_predictions.find(decoded) == used_predictions.end()) {
-                    used_predictions.insert(decoded);
-                    predictions.push_back({decoded, hyp.score});
-                    
-                    // Break if we have enough predictions
-                    if (predictions.size() >= k) break;
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "Error processing hypothesis: " << e.what() << std::endl;
-                continue;
-            }
-        }
-        if (predictions.size() >= k) break;
-    }
-
-    // Sort predictions by score
-    std::sort(predictions.begin(), predictions.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-
-    // Print predictions
-    std::cout << "\nQuery: \"" << original_query << "\"" << std::endl;
     
-    std::cout << "\nTop " << k << " predictions:" << std::endl;
-    for (size_t i = 0; i < std::min(predictions.size(), static_cast<size_t>(k)); i++) {
-        const auto& [prediction, score] = predictions[i];
-        std::cout << i + 1 << ". \"" << prediction << "\" (score=" 
-                 << std::fixed << std::setprecision(4) << score << ")" << std::endl;
-    }
-    if (predictions.empty()) {
-        std::cout << "No predictions found." << std::endl;
+    // Sort by probability
+    std::sort(token_probs.begin(), token_probs.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Print top k predictions with categories
+    std::cout << "\nTop " << k << " predictions:\n";
+    for (int i = 0; i < k && i < token_probs.size(); i++) {
+        int token_id = token_probs[i].second;
+        float prob = token_probs[i].first;
+        std::string token = tokenizer.decode({token_id});
+        std::string category = get_token_category(token, categories);
+        
+        std::cout << std::fixed << std::setprecision(4)
+                  << prob * 100 << "% - " << token << " [" << category << "]\n";
     }
 }
 
@@ -829,4 +775,16 @@ void from_json(const nlohmann::json& j, TransformerConfig::TokenizerConfig& t) {
     j.at("vocab_size").get_to(t.vocab_size);
     j.at("model_path").get_to(t.model_path);
     j.at("special_tokens").get_to(t.special_tokens);
+}
+
+void Utils::trim(std::string& s) {
+    // Trim from start
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }));
+
+    // Trim from end
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }).base(), s.end());
 }

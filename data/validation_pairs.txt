@@ -1,91 +1,106 @@
-She walks to the|mall
-He drives to the|restaurant
-I run to the|bus
-They go to the|museum
-We walk to the|cafe
-She drives to the|hospital
-He runs to the|train
-I went to the|cinema
-They drive to the|market
-We go to the|pool
-She walks to the|bank
-He went to the|pharmacy
-I drive to the|university
-They run to the|playground
-We went to the|theater
-She goes to the|salon
-He walks to the|dentist
-I went to the|bookstore
-They walk to the|garden
-We drive to the|stadium
-The tourists walk to the|castle
-She hurries to the|courthouse
-He travels to the|airport
-They rush to the|gallery
-We head to the|observatory
-I walk to the|bakery
-She runs to the|post office
-He drives to the|factory
-They go to the|aquarium
-We rush to the|arcade
-The children run to the|playground
-She walks to the|cathedral
-He hurries to the|clinic
-They drive to the|zoo
-We walk to the|pier
-I run to the|lighthouse
-She heads to the|mall
-He rushes to the|warehouse
-They walk to the|tower
-We drive to the|terminal
-# Additional diverse examples
-The weather is|sunny
-The weather is|cloudy
-The weather is|rainy
-The weather is|stormy
-The weather is|pleasant
-I want to|eat
-I want to|sleep
-I want to|study
-I want to|travel
-I want to|learn
-The cat is|sleeping
-The cat is|playing
-The cat is|eating
-The cat is|purring
-The cat is|hunting
-She likes to|read
-She likes to|dance
-She likes to|sing
-She likes to|paint
-She likes to|write
-They need to|work
-They need to|rest
-They need to|practice
-They need to|prepare
-They need to|focus
-We should|start
-We should|continue
-We should|finish
-We should|review
-We should|plan
-The students are|studying
-The students are|learning
-The students are|discussing
-The students are|presenting
-The students are|collaborating
-The project will|succeed
-The project will|expand
-The project will|improve
-The project will|continue
-The project will|grow
-The system can|process
-The system can|analyze
-The system can|compute
-The system can|predict
-The system can|learn
-The model should|train
-The model should|evaluate
-The model should|predict
-The model should|improve
-The model should|adapt 
+He runs to the|  train
+They walk to the|  garden
+I want to|  travel
+I want to|  learn
+The cat is|  sleeping
+The cat is|  playing
+The cat is|  eating
+The cat is|  purring
+The cat is|  hunting
+She likes to|  sing
+They need to|  work
+They need to|  rest
+They need to|  practice
+They need to|  prepare
+They need to|  focus
+We should|  start
+We should|  continue
+We should|  finish
+We should|  review
+We should|  plan
+The students are|  studying
+The students are|  learning
+The students are|  discussing
+The students are|  presenting
+The students are|  collaborating
+The project will|  succeed
+The project will|  improve
+The project will|  continue
+The system can|  process
+The system can|  analyze
+The system can|  compute
+The system can|  predict
+The system can|  learn
+The model should|  train
+The model should|  evaluate
+The model should|  predict
+The model should|  improve
+The model should|  adapt
+He runs to the#   train
+They walk to the#   garden
+I want to#   travel
+I want to#   learn
+The cat is#   sleeping
+The cat is#   playing
+The cat is#   eating
+The cat is#   purring
+The cat is#   hunting
+She likes to#   sing
+They need to#   work
+They need to#   rest
+They need to#   practice
+They need to#   prepare
+They need to#   focus
+We should#   start
+We should#   continue
+We should#   finish
+We should#   review
+We should#   plan
+The students are#   studying
+The students are#   learning
+The students are#   discussing
+The students are#   presenting
+The students are#   collaborating
+The project will#   succeed
+The project will#   improve
+The project will#   continue
+The system can#   process
+The system can#   analyze
+The system can#   compute
+The system can#   predict
+The system can#   learn
+The model should#   train
+The model should#   evaluate
+The model should#   predict
+The model should#   improve
+The model should#   adapt
+The sky looks* beautiful
+The weather feels* warm
+The soup tastes* delicious
+The music sounds* peaceful
+The flower smells* sweet
+The pillow feels* soft
+The road seems* endless
+The task appears* difficult
+The solution looks* simple
+The movie feels* exciting
+The story sounds* interesting
+The garden smells* fragrant
+The texture feels* smooth
+The problem seems* complex
+The answer appears* obvious
+The coffee tastes* bitter
+The bed feels* comfortable
+The journey seems* long
+The result appears* promising
+The design looks* elegant
+The atmosphere feels* cozy
+The melody sounds* harmonious
+The perfume smells* pleasant
+The surface feels* rough
+The challenge seems* manageable
+The outcome appears* positive
+The room looks* spacious
+The fabric feels* silky
+The situation seems* clear
+The environment feels* safe
