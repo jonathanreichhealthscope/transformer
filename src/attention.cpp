@@ -491,96 +491,53 @@ Matrix MultiHeadAttention::standard_attention(const Matrix& Q, const Matrix& K, 
     return final_output;
 }
 
-Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input,
-                                    const Matrix& target_distribution) {
-    // Get use_fp16 from member variable instead of global config
-    static const bool use_fp16 = use_fp16_;
-    
-    Matrix grad = grad_output;
-    Matrix input_matrix = input;
-    
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(grad);
-        HalfPrecisionTraining::convert_to_fp16(input_matrix);
+Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input, const Matrix& target) {
+    // Validate input dimensions
+    if (grad_output.cols() != hidden_size) {
+        throw std::runtime_error("Gradient output columns must match hidden size");
     }
 
-    validate_dimensions(grad, input_matrix, target_distribution);
+    // Get cached values from forward pass
+    Matrix query = GradientCheckpoint::get_activation("query");
+    Matrix key = GradientCheckpoint::get_activation("key");
+    Matrix value = GradientCheckpoint::get_activation("value");
+    Matrix attention_scores = GradientCheckpoint::get_activation("attention_scores");
 
-    // Initialize gradients if not already done
-    if (grads_.query_grad.empty()) {
-        grads_.query_grad = Matrix(params_.query_weights.rows(), params_.query_weights.cols(), 0.0f);
-        grads_.key_grad = Matrix(params_.key_weights.rows(), params_.key_weights.cols(), 0.0f);
-        grads_.value_grad = Matrix(params_.value_weights.rows(), params_.value_weights.cols(), 0.0f);
-        grads_.output_grad = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
-        
-        // Initialize bias gradients
-        grads_.query_bias_grad = FloatVector(params_.query_bias.size(), 0.0f);
-        grads_.key_bias_grad = FloatVector(params_.key_bias.size(), 0.0f);
-        grads_.value_bias_grad = FloatVector(params_.value_bias.size(), 0.0f);
-        grads_.output_bias_grad = FloatVector(params_.output_bias.size(), 0.0f);
-    }
-    
-    // Clip incoming gradients
-    const float grad_clip = 1.0f;
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < grad.rows(); i++) {
-        for (size_t j = 0; j < grad.cols(); j++) {
-            grad(i, j) = std::max(-grad_clip, std::min(grad_clip, grad(i, j)));
-        }
-    }
-    
-    // Compute gradients for attention mechanism
-    Matrix d_query = compute_query_gradients(grad, input_matrix);
-    std::cout << "d_query dimensions: " << d_query.rows() << "x" << d_query.cols() << std::endl;
-    Matrix d_key = compute_key_gradients(grad, input_matrix);
-    std::cout << "d_key dimensions: " << d_key.rows() << "x" << d_key.cols() << std::endl;
-    Matrix d_value = compute_value_gradients(grad, input_matrix);
-    std::cout << "d_value dimensions: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    // Compute gradients for output projection first
+    Matrix d_output = grad_output;  // [batch_size x hidden_size]
+    param_gradients().output_grad += d_output.transpose() * value;
+    param_gradients().output_bias_grad += d_output.row_sum();
 
-    // Combine gradients
-    Matrix d_input = combine_gradients(d_query, d_key, d_value);
-    std::cout << "d_input dimensions: " << d_input.rows() << "x" << d_input.cols() << std::endl;
-    
-    // Update projection gradients
-    std::cout << "Updating projection gradients..." << std::endl;
-    
-    // Project attention scores back to hidden dimensions for query
-    Matrix d_query_hidden(d_query.rows(), input_matrix.cols());  // [seq_len x hidden_dim]
-    cuda::matmul(d_query, params_.query_weights, d_query_hidden);
-    grads_.query_grad += matmul(input_matrix.transpose(), d_query_hidden);
-    std::cout << "query_weights_grad dimensions: " << grads_.query_grad.rows() << "x" << grads_.query_grad.cols() << std::endl;
+    // Backpropagate through output projection
+    Matrix d_value = d_output * params_.output_weights.transpose();  // [batch_size x head_dim]
 
-    // Project attention scores back to hidden dimensions for key
-    Matrix d_key_hidden(d_key.rows(), input_matrix.cols());
-    cuda::matmul(d_key, params_.key_weights, d_key_hidden);
-    grads_.key_grad += matmul(input_matrix.transpose(), d_key_hidden);
-    std::cout << "key_weights_grad dimensions: " << grads_.key_grad.rows() << "x" << grads_.key_grad.cols() << std::endl;
+    // Backpropagate through attention scores
+    Matrix d_scores = d_value * params_.value_weights.transpose();  // [batch_size x head_dim]
+    d_scores = (d_scores * attention_scores) / std::sqrt(static_cast<float>(head_dim));
 
-    // Project attention scores back to hidden dimensions for value
-    Matrix d_value_hidden(d_value.rows(), input_matrix.cols());
-    cuda::matmul(d_value, params_.value_weights, d_value_hidden);
-    grads_.value_grad += matmul(input_matrix.transpose(), d_value_hidden);
-    std::cout << "value_weights_grad dimensions: " << grads_.value_grad.rows() << "x" << grads_.value_grad.cols() << std::endl;
+    // Compute gradients for value projection
+    param_gradients().value_grad += input.transpose() * d_value;
+    param_gradients().value_bias_grad += d_value.row_sum();
 
-    // For output projection, we already have grad in hidden dimensions
-    grads_.output_grad += matmul(grad.transpose(), input_matrix);  // This one is already correct
-    std::cout << "output_weights_grad dimensions: " << grads_.output_grad.rows() << "x" << grads_.output_grad.cols() << std::endl;
+    // Compute gradients for key projection
+    Matrix d_key = d_scores * params_.query_weights.transpose();  // [batch_size x head_dim]
+    param_gradients().key_grad += input.transpose() * d_key;
+    param_gradients().key_bias_grad += d_key.row_sum();
 
-    // Update bias gradients element by element
-    std::cout << "Updating bias gradients..." << std::endl;
-    for (size_t i = 0; i < grads_.query_bias_grad.size(); ++i) {
-        grads_.query_bias_grad[i] += d_query.row_sum()[i];
-        grads_.key_bias_grad[i] += d_key.row_sum()[i];
-        grads_.value_bias_grad[i] += d_value.row_sum()[i];
-    }
-    std::cout << "Updated query bias gradients" << std::endl;
-    for (size_t i = 0; i < grads_.output_bias_grad.size(); ++i) {
-        grads_.output_bias_grad[i] += grad.row_sum()[i];
-    }
+    // Compute gradients for query projection
+    Matrix d_query = d_scores * params_.key_weights.transpose();  // [batch_size x head_dim]
+    param_gradients().query_grad += input.transpose() * d_query;
+    param_gradients().query_bias_grad += d_query.row_sum();
 
-    // Convert gradients back to FP32 before returning
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(grad);
+    // Combine gradients from all projections
+    Matrix d_input = Matrix(input.rows(), hidden_size, 0.0f);
+    d_input += d_query * params_.query_weights;
+    d_input += d_key * params_.key_weights;
+    d_input += d_value * params_.value_weights;
+
+    // Validate output dimensions
+    if (d_input.rows() != input.rows() || d_input.cols() != hidden_size) {
+        throw std::runtime_error("Attention backward pass output dimensions incorrect");
     }
 
     return d_input;
@@ -1070,4 +1027,19 @@ void MultiHeadAttention::initialize_weights() {
     params_.key_bias.initialize_constant(0.01f);
     params_.value_bias.initialize_constant(0.01f);
     params_.output_bias.initialize_constant(0.01f);
+}
+
+float compute_grad_norm(const Matrix& grad) {
+    float norm = 0.0f;
+    #pragma omp parallel for reduction(+:norm)
+    for (size_t i = 0; i < grad.rows(); ++i) {
+        for (size_t j = 0; j < grad.cols(); ++j) {
+            norm += grad(i, j) * grad(i, j);
+        }
+    }
+    return std::sqrt(norm);
+}
+
+size_t count_params(const Matrix& param) {
+    return param.rows() * param.cols();
 }

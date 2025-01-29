@@ -10,6 +10,10 @@
 #include <vector>
 using FloatVector = Vector;
 
+// Utility functions for gradient computation
+float compute_grad_norm(const Matrix& grad);
+size_t count_params(const Matrix& param);
+
 /**
  * @brief Class representing attention masks used in transformer attention mechanisms.
  * 

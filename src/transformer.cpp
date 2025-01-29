@@ -4,6 +4,7 @@
 #include "../include/logger.hpp"
 #include "../include/half_precision.hpp"
 #include "../include/training/dynamic_loss_scaler.hpp"
+#include "../include/utils.hpp"
 #include <cublas_v2.h>
 #include <fstream>
 #include <iostream>
@@ -16,18 +17,28 @@ extern cublasHandle_t cublas_handle;
 // LearningRateScheduler implementation
 class LearningRateScheduler {
 public:
-    LearningRateScheduler(float initial_lr = 0.0001f, float peak_lr = 0.001f, 
-                         int warmup_steps = 1000, float decay_factor = 0.9f)
+    LearningRateScheduler(float initial_lr = 0.00001f,  // Start smaller
+                         float peak_lr = 0.0001f,       // Peak lower
+                         int warmup_steps = 100,        // Shorter warmup
+                         float decay_factor = 0.95f)    // Slower decay
         : initial_lr_(initial_lr), peak_lr_(peak_lr), 
-          warmup_steps_(warmup_steps), decay_factor_(decay_factor) {}
+          warmup_steps_(warmup_steps), decay_factor_(decay_factor) {
+        std::cout << "LR Schedule: initial=" << initial_lr 
+                  << ", peak=" << peak_lr 
+                  << ", warmup_steps=" << warmup_steps << std::endl;
+    }
 
     float get_lr(int step) {
         if (step < warmup_steps_) {
-            // Linear warmup
-            return initial_lr_ + (peak_lr_ - initial_lr_) * (static_cast<float>(step) / warmup_steps_);
+            // Cosine warmup for smoother transition
+            float progress = static_cast<float>(step) / warmup_steps_;
+            float warmup_factor = (1.0f - std::cos(progress * M_PI)) * 0.5f;
+            return initial_lr_ + (peak_lr_ - initial_lr_) * warmup_factor;
         }
-        // Exponential decay after warmup
-        return peak_lr_ * std::pow(decay_factor_, (step - warmup_steps_) / 1000.0f);
+        // Cosine decay after warmup
+        float progress = static_cast<float>(step - warmup_steps_) / 1000.0f;
+        progress = std::min(1.0f, progress);
+        return peak_lr_ * (0.5f * (1.0f + std::cos(progress * M_PI))) * decay_factor_;
     }
 
 private:
@@ -325,9 +336,18 @@ Matrix TransformerLayer::backward(const Matrix& grad_output, const Matrix& input
             throw std::runtime_error("Attention dropout gradient columns must match input columns");
         }
 
+        // Project attention gradients to correct dimension before addition
         Matrix attention_grad = self_attention->backward(attn_dropout_grad, attn_normalized, target_distribution);
         if (attention_grad.cols() != input.cols()) {
             throw std::runtime_error("Attention gradient columns must match input columns");
+        }
+
+        // Ensure attention gradients have correct dimensions
+        if (attention_grad.rows() != residual_grad.rows() || attention_grad.cols() != residual_grad.cols()) {
+            throw std::runtime_error("Attention gradient dimensions (" + 
+                std::to_string(attention_grad.rows()) + "x" + std::to_string(attention_grad.cols()) + 
+                ") must match residual gradient dimensions (" +
+                std::to_string(residual_grad.rows()) + "x" + std::to_string(residual_grad.cols()) + ")");
         }
 
         // Backward through attention layer norm
@@ -658,51 +678,67 @@ void Transformer::train_step(const std::vector<std::vector<int>>& input_tokens,
                            const Matrix& target_distribution,
                            const Tokenizer& tokenizer) {
     static int current_step = 0;
-    const int gradient_accumulation_steps = 4;  // Accumulate over 4 steps
-    static LearningRateScheduler lr_scheduler;  // Use our new scheduler
+    const int gradient_accumulation_steps = 4;
+    static LearningRateScheduler lr_scheduler;
     
     try {
-        // Clear accumulated gradients at the start of accumulation
         if (current_step % gradient_accumulation_steps == 0) {
             clear_gradients();
         }
         
-        // Compute batch size for proper scaling
         size_t effective_batch_size = input_tokens.size();
         float scale_factor = 1.0f / (gradient_accumulation_steps * effective_batch_size);
         
-        // Forward and backward passes with gradient accumulation
         std::vector<Matrix> batch_outputs;
         float total_loss = 0.0f;
         
+        // Track gradient statistics
+        struct GradStats {
+            float norm = 0.0f;
+            float max_abs = 0.0f;
+            size_t num_params = 0;
+            void update(const Matrix& grad) {
+                norm += Utils::compute_grad_norm(grad);
+                num_params += Utils::count_params(grad);
+                for (size_t i = 0; i < grad.rows(); ++i) {
+                    for (size_t j = 0; j < grad.cols(); ++j) {
+                        max_abs = std::max(max_abs, std::abs(grad(i, j)));
+                    }
+                }
+            }
+        };
+        GradStats grad_stats;
+        
         for (size_t i = 0; i < input_tokens.size(); ++i) {
-            // Forward pass
             Matrix output = forward(input_tokens[i], "", tokenizer);
             batch_outputs.push_back(output);
             
-            // Compute loss
-            float batch_loss = compute_loss(output, target_distribution);
+            float batch_loss = Utils::compute_loss(output, target_distribution);
             total_loss += batch_loss;
             
-            // Scale gradients for accumulation
-            Matrix scaled_grad = compute_loss_gradient(output, target_distribution);
+            Matrix scaled_grad = Utils::compute_loss_gradient(output, target_distribution);
             scaled_grad *= scale_factor;
             
-            // Backward pass with scaled gradients
-            backward(scaled_grad, input_tokens[i], 0.0f);  // Don't apply updates yet
+            // Track gradient statistics before scaling
+            grad_stats.update(scaled_grad);
+            
+            backward(scaled_grad, input_tokens[i], 0.0f);
         }
         
-        // Update parameters only after accumulating gradients
         if ((current_step + 1) % gradient_accumulation_steps == 0) {
             float current_lr = lr_scheduler.get_lr(current_step / gradient_accumulation_steps);
-            std::cout << "Step " << current_step / gradient_accumulation_steps 
-                      << ", Learning Rate: " << current_lr << std::endl;
             
-            // Apply accumulated gradients
-            update_parameters(current_lr);
-            
-            // Log training statistics
+            // Log detailed statistics
+            std::cout << "\nTraining Statistics:" << std::endl;
+            std::cout << "Step: " << current_step / gradient_accumulation_steps << std::endl;
+            std::cout << "Learning Rate: " << current_lr << std::endl;
             std::cout << "Average Loss: " << (total_loss / effective_batch_size) << std::endl;
+            std::cout << "Gradient Statistics:" << std::endl;
+            std::cout << "- Average Gradient Norm: " << (grad_stats.norm / std::sqrt(grad_stats.num_params)) << std::endl;
+            std::cout << "- Max Absolute Gradient: " << grad_stats.max_abs << std::endl;
+            std::cout << "- Total Parameters Updated: " << grad_stats.num_params << std::endl;
+            
+            update_parameters(current_lr);
         }
         
         current_step++;
@@ -724,16 +760,16 @@ void Transformer::update_parameters(float learning_rate) {
             auto& attn_grads = attention->param_gradients();
 
             // Update weights
-            ::update_parameter_with_clip(attn_params.query_weights, attn_grads.query_grad, learning_rate, config);
-            ::update_parameter_with_clip(attn_params.key_weights, attn_grads.key_grad, learning_rate, config);
-            ::update_parameter_with_clip(attn_params.value_weights, attn_grads.value_grad, learning_rate, config);
-            ::update_parameter_with_clip(attn_params.output_weights, attn_grads.output_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.query_weights, attn_grads.query_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.key_weights, attn_grads.key_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.value_weights, attn_grads.value_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.output_weights, attn_grads.output_grad, learning_rate, config);
 
             // Update biases
-            ::update_parameter_with_clip(attn_params.query_bias, attn_grads.query_bias_grad, learning_rate, config);
-            ::update_parameter_with_clip(attn_params.key_bias, attn_grads.key_bias_grad, learning_rate, config);
-            ::update_parameter_with_clip(attn_params.value_bias, attn_grads.value_bias_grad, learning_rate, config);
-            ::update_parameter_with_clip(attn_params.output_bias, attn_grads.output_bias_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.query_bias, attn_grads.query_bias_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.key_bias, attn_grads.key_bias_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.value_bias, attn_grads.value_bias_grad, learning_rate, config);
+            update_parameter_with_clip(attn_params.output_bias, attn_grads.output_bias_grad, learning_rate, config);
         }
 
         // Update feed forward parameters
@@ -742,12 +778,12 @@ void Transformer::update_parameters(float learning_rate) {
             auto& ffn_grads = ffn->param_gradients();
 
             // Update weights
-            ::update_parameter_with_clip(ffn_params.ff1_weights, ffn_grads.ff1_grad, learning_rate, config);
-            ::update_parameter_with_clip(ffn_params.ff2_weights, ffn_grads.ff2_grad, learning_rate, config);
+            update_parameter_with_clip(ffn_params.ff1_weights, ffn_grads.ff1_grad, learning_rate, config);
+            update_parameter_with_clip(ffn_params.ff2_weights, ffn_grads.ff2_grad, learning_rate, config);
 
             // Update biases
-            ::update_parameter_with_clip(ffn_params.ff1_bias, ffn_grads.ff1_bias_grad, learning_rate, config);
-            ::update_parameter_with_clip(ffn_params.ff2_bias, ffn_grads.ff2_bias_grad, learning_rate, config);
+            update_parameter_with_clip(ffn_params.ff1_bias, ffn_grads.ff1_bias_grad, learning_rate, config);
+            update_parameter_with_clip(ffn_params.ff2_bias, ffn_grads.ff2_bias_grad, learning_rate, config);
         }
 
         // Update layer norm parameters
@@ -755,8 +791,8 @@ void Transformer::update_parameters(float learning_rate) {
             auto& ln_params = ln->parameters();
             auto& ln_grads = ln->param_gradients();
             
-            ::update_parameter_with_clip(ln_params.gamma, ln_grads.gamma_grad, learning_rate, config);
-            ::update_parameter_with_clip(ln_params.beta, ln_grads.beta_grad, learning_rate, config);
+            update_parameter_with_clip(ln_params.gamma, ln_grads.gamma_grad, learning_rate, config);
+            update_parameter_with_clip(ln_params.beta, ln_grads.beta_grad, learning_rate, config);
         }
     }
 
@@ -1173,8 +1209,8 @@ bool Transformer::is_likely_adjective(const std::string& token) {
 }
 
 void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate, const TransformerConfig& config) {
-    const float clip_threshold = 1.0f;  // Gradient clipping threshold
-    const float weight_decay = config.weight_decay;  // Get weight decay from config
+    const float clip_threshold = 5.0f;  // Increased from 1.0f to allow more gradient signal
+    const float weight_decay = config.weight_decay;
     
     // Calculate gradient norm
     float grad_norm = 0.0f;
@@ -1186,24 +1222,29 @@ void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learnin
     }
     grad_norm = std::sqrt(grad_norm);
     
-    // Apply clipping if necessary
-    float scaling_factor = grad_norm > clip_threshold ? clip_threshold / grad_norm : 1.0f;
+    // Apply clipping with a softer threshold using tanh
+    float scaling_factor = clip_threshold / (grad_norm + 1e-6f);
+    if (scaling_factor < 1.0f) {
+        scaling_factor = std::tanh(scaling_factor) * 0.99f + 0.01f; // Ensure some gradient always passes
+    }
     
     // Update parameters with clipped gradients and weight decay
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < param.rows(); ++i) {
         for (size_t j = 0; j < param.cols(); ++j) {
             float decay = weight_decay * param(i, j);
-            param(i, j) -= learning_rate * (grad(i, j) * scaling_factor + decay);
+            float update = grad(i, j) * scaling_factor + decay;
+            // Add update clipping for stability
+            update = std::clamp(update, -10.0f, 10.0f);
+            param(i, j) -= learning_rate * update;
         }
     }
 }
 
 void update_parameter_with_clip(Vector& param, const Vector& grad, float learning_rate, const TransformerConfig& config) {
-    const float clip_threshold = 1.0f;  // Gradient clipping threshold
-    const float weight_decay = config.weight_decay;  // Get weight decay from config
+    const float clip_threshold = 5.0f;  // Increased from 1.0f
+    const float weight_decay = config.weight_decay;
     
-    // Calculate gradient norm
     float grad_norm = 0.0f;
     #pragma omp parallel for reduction(+:grad_norm)
     for (size_t i = 0; i < grad.size(); ++i) {
@@ -1211,89 +1252,19 @@ void update_parameter_with_clip(Vector& param, const Vector& grad, float learnin
     }
     grad_norm = std::sqrt(grad_norm);
     
-    // Apply clipping if necessary
-    float scaling_factor = grad_norm > clip_threshold ? clip_threshold / grad_norm : 1.0f;
+    // Apply clipping with a softer threshold using tanh
+    float scaling_factor = clip_threshold / (grad_norm + 1e-6f);
+    if (scaling_factor < 1.0f) {
+        scaling_factor = std::tanh(scaling_factor) * 0.99f + 0.01f;
+    }
     
-    // Update parameters with clipped gradients and weight decay
     #pragma omp parallel for
     for (size_t i = 0; i < param.size(); ++i) {
         float decay = weight_decay * param[i];
-        param[i] -= learning_rate * (grad[i] * scaling_factor + decay);
+        float update = grad[i] * scaling_factor + decay;
+        update = std::clamp(update, -10.0f, 10.0f);
+        param[i] -= learning_rate * update;
     }
-}
-
-float compute_loss(const Matrix& output, const Matrix& target_distribution) {
-    if (output.size() != target_distribution.size()) {
-        throw std::runtime_error("Output and target distribution must have the same size");
-    }
-
-    const size_t batch_size = output.rows();
-    const size_t vocab_size = output.cols();
-    float total_loss = 0.0f;
-
-    // Compute cross-entropy loss for each item in the batch
-    #pragma omp parallel for reduction(+:total_loss)
-    for (size_t i = 0; i < batch_size; ++i) {
-        for (size_t j = 0; j < vocab_size; ++j) {
-            if (target_distribution(i, j) > 0.0f) {  // Only compute loss for actual targets
-                // Add small epsilon to prevent log(0)
-                const float epsilon = 1e-10f;
-                float pred = std::clamp(output(i, j), epsilon, 1.0f - epsilon);
-                total_loss -= target_distribution(i, j) * std::log(pred);
-            }
-        }
-    }
-
-    // Average the loss over the batch
-    float avg_loss = total_loss / static_cast<float>(batch_size);
-
-    // Check for NaN or Inf
-    if (!std::isfinite(avg_loss)) {
-        throw std::runtime_error("Loss computation resulted in non-finite value");
-    }
-
-    return avg_loss;
-}
-
-Matrix compute_loss_gradient(const Matrix& output, const Matrix& target_distribution) {
-    if (output.size() != target_distribution.size()) {
-        throw std::runtime_error("Output and target distribution must have the same size");
-    }
-
-    const size_t batch_size = output.rows();
-    const size_t vocab_size = output.cols();
-    Matrix gradient(batch_size, vocab_size);
-
-    // Compute gradient of cross-entropy loss with numerical stability
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < batch_size; ++i) {
-        for (size_t j = 0; j < vocab_size; ++j) {
-            if (target_distribution(i, j) > 0.0f) {
-                // Add small epsilon to prevent division by zero
-                const float epsilon = 1e-10f;
-                float pred = std::clamp(output(i, j), epsilon, 1.0f - epsilon);
-                // Gradient for cross-entropy loss: (prediction - target) / (prediction * (1 - prediction))
-                gradient(i, j) = (pred - target_distribution(i, j)) / (pred * (1.0f - pred));
-            } else {
-                gradient(i, j) = 0.0f;  // No gradient for padding/unused tokens
-            }
-        }
-    }
-
-    // Check for NaN or Inf in gradients
-    bool has_bad_values = false;
-    #pragma omp parallel for collapse(2) reduction(||:has_bad_values)
-    for (size_t i = 0; i < batch_size; ++i) {
-        for (size_t j = 0; j < vocab_size; ++j) {
-            has_bad_values = has_bad_values || !std::isfinite(gradient(i, j));
-        }
-    }
-
-    if (has_bad_values) {
-        throw std::runtime_error("Gradient computation resulted in non-finite values");
-    }
-
-    return gradient;
 }
 
 // Add helper function declarations
@@ -1337,7 +1308,7 @@ static DynamicLossScaler loss_scaler;
 // Add learning_rate parameter to backward_pass
 void Transformer::backward_pass(const Matrix& output, const Matrix& target_distribution, float learning_rate) {
     // Compute loss gradient with proper sequence handling
-    Matrix loss_grad = compute_loss_gradient(output, target_distribution);
+    Matrix loss_grad = Utils::compute_loss_gradient(output, target_distribution);
     
     // Retrieve sequence boundaries
     const auto& seq_boundaries = last_seq_boundaries;
