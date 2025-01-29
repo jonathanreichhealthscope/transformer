@@ -214,6 +214,70 @@ float adjective_gradient_factor(size_t position, const std::vector<int>& tokens,
     return 1.0f; // Default implementation
 }
 
+// Make predictions after each batch
+void generate_predictions(Transformer& transformer, const std::string& input_text, const Tokenizer* tokenizer) {
+    std::cout << "\n=== Batch " << global_step << " Predictions for '" << input_text << "' ===" << std::endl;
+    
+    // Process input
+    std::string processed_input = input_text;
+    tokenizer->preprocess_text(processed_input);
+    std::vector<int> input_tokens = tokenizer->encode(processed_input);
+    
+    // Generate prediction
+    transformer.set_training(false);
+    Matrix hidden_states = transformer.forward(input_tokens, input_text, *tokenizer);
+    Matrix logits = transformer.get_lm_head()->forward(hidden_states);
+    
+    // Get probabilities for last token
+    Vector last_row = logits.row(logits.rows() - 1);
+    Matrix final_logits(1, last_row.size());  // Create 1 x N matrix
+    for (size_t i = 0; i < last_row.size(); ++i) {
+        final_logits(0, i) = last_row[i];
+    }
+    std::vector<std::pair<float, int>> token_probs;
+    
+    // Convert logits to probabilities with softmax
+    float max_logit = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < final_logits.cols(); ++i) {
+        max_logit = std::max(max_logit, final_logits(0, i));
+    }
+    
+    float sum_exp = 0.0f;
+    std::vector<float> exps(final_logits.cols());
+    for (size_t i = 0; i < final_logits.cols(); ++i) {
+        exps[i] = std::exp(final_logits(0, i) - max_logit);
+        sum_exp += exps[i];
+    }
+    
+    // Create probability pairs
+    for (size_t i = 0; i < final_logits.cols(); ++i) {
+        float prob = exps[i] / sum_exp;
+        if (prob > 1e-4) {  // Filter out very low probability tokens
+            token_probs.emplace_back(prob, i);
+        }
+    }
+    
+    // Sort by probability
+    std::sort(token_probs.begin(), token_probs.end(), 
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Print top predictions
+    std::cout << "\nTop 5 predictions:" << std::endl;
+    for (size_t i = 0; i < std::min(size_t(5), token_probs.size()); ++i) {
+        int token_id = token_probs[i].second;
+        float prob = token_probs[i].first;
+        std::string token_text = tokenizer->decode({token_id});
+        std::cout << " " << token_text << " (" << (prob * 100) << "%)" << std::endl;
+    }
+    
+    // Print statistics
+    size_t nonzero_probs = std::count_if(token_probs.begin(), token_probs.end(),
+                                        [](const auto& p) { return p.first > 1e-4; });
+    std::cout << "--\nNonzero final: " << nonzero_probs << "/" << token_probs.size() << "\n" << std::endl;
+    
+    transformer.set_training(true);
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "entering main" << std::endl;
     Logger& logger = Logger::getInstance();
@@ -606,51 +670,11 @@ int main(int argc, char* argv[]) {
                 metrics.stop_timer("batch_processing");
 
                 // Make predictions after each batch
-                    std::string test_input = "I go to";
-                    std::string processed_input = test_input;
-                    std::cout << "Processing input: " << processed_input << std::endl;
-                    tokenizer->preprocess_text(processed_input);
-                    std::cout << "Tokenizing input: " << processed_input << std::endl;
-                    std::vector<int> test_tokens = tokenizer->encode(processed_input);
-                    std::cout << "Encoded tokens: " << test_tokens.size() << std::endl;
-                    
-                    // Get model prediction (in evaluation mode)
-                    transformer.set_training(false);
-                    std::cout << "Setting training mode to false" << std::endl;
-                    Matrix test_hidden = transformer.forward(test_tokens, test_input, *tokenizer);
-                    std::cout << "Forward pass completed" << std::endl;
-                    Matrix pred_logits = lm_head->project_to_vocab(test_hidden);
-                    std::cout << "Projected to vocab" << std::endl;
-                    transformer.set_training(true);  // Set back to training mode
-                    std::cout << "Setting training mode to true" << std::endl;
-                    
-                    // Show the top predictions
-                    std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << test_input << "' ===\n";
-                    Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
-                    std::cout << "================================================\n";
-
-                    // Test additional queries
-                    std::vector<std::string> additional_queries = {
-                        "The weather is",
-                        "I want to",
-                        "The cat",
-                        "She likes to"
-                    };
-
-                    for (const auto& query : additional_queries) {
-                        processed_input = query;
-                        tokenizer->preprocess_text(processed_input);
-                        test_tokens = tokenizer->encode(processed_input);
-                        
-                        transformer.set_training(false);
-                        test_hidden = transformer.forward(test_tokens, query, *tokenizer);
-                        pred_logits = lm_head->project_to_vocab(test_hidden);
-                        transformer.set_training(true);
-                        
-                        std::cout << "\n=== Batch " << batch + 1 << " Predictions for '" << query << "' ===\n";
-                        Utils::print_top_predictions(pred_logits, *tokenizer, transformer, 5);
-                        std::cout << "================================================\n";
-                }
+                generate_predictions(transformer, "I go to", tokenizer.get());
+                generate_predictions(transformer, "The weather is", tokenizer.get());
+                generate_predictions(transformer, "I want to", tokenizer.get());
+                generate_predictions(transformer, "The cat", tokenizer.get());
+                generate_predictions(transformer, "She likes to", tokenizer.get());
 
                 // Print progress and metrics every 10 batches
                 if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {

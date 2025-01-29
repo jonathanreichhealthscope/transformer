@@ -143,20 +143,38 @@ Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
 
 Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
     try {
-        // Ensure UNK token is never active
-        active_tokens[tokens::UNK_ID] = 0;  // Explicitly deactivate UNK token
-        
         // Project hidden states to vocabulary space
-        Matrix logits = matmul(hidden_states, projection);  // Using standalone matmul function
+        Matrix logits = matmul(hidden_states, projection);
         
-        // Add bias
+        // Add bias with proper token activation
+        #pragma omp parallel for collapse(2)
         for (size_t i = 0; i < logits.rows(); ++i) {
             for (size_t j = 0; j < logits.cols(); ++j) {
-                if (active_tokens[j]) {  // Only add bias for active tokens
-                    logits(i, j) += bias[j];
-                } else {
-                    logits(i, j) = -std::numeric_limits<float>::infinity();  // Set inactive tokens to -inf
-                }
+                logits(i, j) += bias[j];
+            }
+        }
+        
+        // Apply dynamic temperature scaling based on logit distribution
+        float max_logit = -std::numeric_limits<float>::infinity();
+        float min_logit = std::numeric_limits<float>::infinity();
+        
+        #pragma omp parallel for collapse(2) reduction(max:max_logit) reduction(min:min_logit)
+        for (size_t i = 0; i < logits.rows(); ++i) {
+            for (size_t j = 0; j < logits.cols(); ++j) {
+                max_logit = std::max(max_logit, logits(i, j));
+                min_logit = std::min(min_logit, logits(i, j));
+            }
+        }
+        
+        // Dynamic temperature based on logit range
+        float logit_range = max_logit - min_logit;
+        float dynamic_temp = std::max(0.1f, std::min(2.0f, logit_range / 10.0f));
+        
+        // Apply temperature scaling
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < logits.rows(); ++i) {
+            for (size_t j = 0; j < logits.cols(); ++j) {
+                logits(i, j) /= dynamic_temp;
             }
         }
         

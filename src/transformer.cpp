@@ -376,51 +376,23 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
 }
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer, bool use_cache) {
-    static const bool use_fp16 = config.use_fp16;
-
-    // Store the input tokens and query
-    last_input_tokens_ = input_tokens;
-    last_input_query_ = original_query.empty() ? tokenizer.decode(input_tokens) : original_query;
-
+    // Remove static variables and use instance variables
+    const bool use_fp16 = config.use_fp16;
+    
     // Get embeddings and add positional encodings
     Matrix embeddings = token_embedding->forward(input_tokens);
     
-    // Debug embeddings
-    float min_emb = std::numeric_limits<float>::infinity();
-    float max_emb = -std::numeric_limits<float>::infinity();
-    float sum_emb = 0.0f;
-    size_t nonzero_emb = 0;
-    
-    #pragma omp parallel for collapse(2) reduction(min:min_emb) reduction(max:max_emb) \
-                             reduction(+:sum_emb,nonzero_emb)
-    for (size_t i = 0; i < embeddings.rows(); i++) {
-        for (size_t j = 0; j < embeddings.cols(); j++) {
-            float val = embeddings(i, j);
-            min_emb = std::min(min_emb, val);
-            max_emb = std::max(max_emb, val);
-            sum_emb += val;
-            if (std::abs(val) > 1e-6) nonzero_emb++;
-        }
-    }
-    
-    std::cout << "\nEmbedding Statistics:\n"
-              << "Min emb: " << min_emb << "\n"
-              << "Max emb: " << max_emb << "\n"
-              << "Mean emb: " << sum_emb / (embeddings.rows() * embeddings.cols()) << "\n"
-              << "Nonzero emb: " << nonzero_emb << "/" 
-              << (embeddings.rows() * embeddings.cols()) << "\n\n";
-    
-    // Create position_ids
+    // Create position_ids dynamically
     Matrix position_ids(input_tokens.size(), 1);
     #pragma omp parallel for
     for (size_t i = 0; i < input_tokens.size(); ++i) {
         position_ids(i, 0) = static_cast<float>(i);
     }
     
-    // Batch process embeddings
+    // Get positional encodings
     Matrix pos_encodings = pos_encoding->forward(position_ids);
     
-    // Center positional encodings around zero
+    // Center positional encodings dynamically
     float pos_mean = 0.0f;
     #pragma omp parallel for reduction(+:pos_mean)
     for (size_t i = 0; i < pos_encodings.rows(); i++) {
@@ -429,8 +401,8 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
         }
     }
     pos_mean /= (pos_encodings.rows() * pos_encodings.cols());
-
-    // Subtract mean to center around zero
+    
+    // Subtract mean
     #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < pos_encodings.rows(); i++) {
         for (size_t j = 0; j < pos_encodings.cols(); j++) {
@@ -438,160 +410,49 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
         }
     }
     
-    // Debug positional encodings
-    float min_pos = std::numeric_limits<float>::infinity();
-    float max_pos = -std::numeric_limits<float>::infinity();
-    float sum_pos = 0.0f;
-    size_t nonzero_pos = 0;
-    
-    for (size_t i = 0; i < pos_encodings.rows(); i++) {
-        for (size_t j = 0; j < pos_encodings.cols(); j++) {
-            float val = pos_encodings(i, j);
-            min_pos = std::min(min_pos, val);
-            max_pos = std::max(max_pos, val);
-            sum_pos += val;
-            if (std::abs(val) > 1e-6) nonzero_pos++;
-        }
-    }
-    
-    std::cout << "Positional Encoding Statistics:\n"
-              << "Min pos: " << min_pos << "\n"
-              << "Max pos: " << max_pos << "\n"
-              << "Mean pos: " << sum_pos / (pos_encodings.rows() * pos_encodings.cols()) << "\n"
-              << "Nonzero pos: " << nonzero_pos << "/" 
-              << (pos_encodings.rows() * pos_encodings.cols()) << "\n\n";
-    
     if (use_fp16) {
         HalfPrecisionTraining::convert_to_fp16(embeddings);
         HalfPrecisionTraining::convert_to_fp16(pos_encodings);
     }
+    
+    // Add positional encodings
     embeddings += pos_encodings;
     
-    // Create causal mask for next-token prediction
+    // Create attention mask
     AttentionMask mask = AttentionMask::create_causal_mask(input_tokens.size());
     
-    // Forward through layers with minimal synchronization
+    // Forward through layers
     hidden_states = embeddings;
     m_layer_activations.clear();
     m_layer_activations.reserve(layers.size());
-
+    
+    // Apply dropout if in training mode
     if (training && dropout) {
-        hidden_states = dropout->forward(hidden_states, true);
+        hidden_states = dropout->forward(hidden_states, training);
     }
-
-    // Normalize hidden states before processing
-    float hidden_mean = 0.0f;
-    float hidden_var = 0.0f;
     
-    // Calculate mean
-    #pragma omp parallel for reduction(+:hidden_mean)
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            hidden_mean += hidden_states(i, j);
-        }
-    }
-    hidden_mean /= (hidden_states.rows() * hidden_states.cols());
-    
-    // Calculate variance
-    #pragma omp parallel for reduction(+:hidden_var)
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            float diff = hidden_states(i, j) - hidden_mean;
-            hidden_var += diff * diff;
-        }
-    }
-    hidden_var /= (hidden_states.rows() * hidden_states.cols());
-    
-    // Normalize with scaling factor to keep values in reasonable range
-    const float eps = 1e-5f;
-    const float scale = std::sqrt(2.0f);  // Scale to get variance closer to 1
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            hidden_states(i, j) = scale * (hidden_states(i, j) - hidden_mean) / std::sqrt(hidden_var + eps);
-        }
-    }
-
-    // Add gradient clipping for stability
-    const float clip_threshold = 1.0f;
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            hidden_states(i, j) = std::max(-clip_threshold, 
-                                         std::min(clip_threshold, hidden_states(i, j)));
-        }
-    }
-
-    // Process layers with minimal synchronization
+    // Process through transformer layers
     for (size_t i = 0; i < layers.size(); ++i) {
-        try {
+        if (!layers[i]) continue;
+        
+        std::optional<KVCache> cache_opt = use_cache ? 
+            std::make_optional<KVCache>(m_kv_caches[i]) : std::nullopt;
+            
+        hidden_states = layers[i]->forward(hidden_states, mask, cache_opt);
+        
+        if (training) {
             m_layer_activations.push_back(hidden_states);
-            
-            // Debug hidden states before layer
-            float min_hidden = std::numeric_limits<float>::infinity();
-            float max_hidden = -std::numeric_limits<float>::infinity();
-            float sum_hidden = 0.0f;
-            size_t nonzero_hidden = 0;
-            
-            #pragma omp parallel for collapse(2) reduction(min:min_hidden) reduction(max:max_hidden) \
-                                 reduction(+:sum_hidden,nonzero_hidden)
-            for (size_t r = 0; r < hidden_states.rows(); r++) {
-                for (size_t c = 0; c < hidden_states.cols(); c++) {
-                    float val = hidden_states(r, c);
-                    min_hidden = std::min(min_hidden, val);
-                    max_hidden = std::max(max_hidden, val);
-                    sum_hidden += val;
-                    if (std::abs(val) > 1e-6) nonzero_hidden++;
-                }
-            }
-            
-            // Apply residual scaling to prevent value explosion
-            const float residual_scale = 0.7071f; // 1/√2
-            #pragma omp parallel for collapse(2)
-            for (size_t r = 0; r < hidden_states.rows(); r++) {
-                for (size_t c = 0; c < hidden_states.cols(); c++) {
-                    hidden_states(r, c) *= residual_scale;
-                }
-            }
-
-            hidden_states = layers[i]->forward(hidden_states, mask,
-                                             use_cache ? std::optional<KVCache>(m_kv_caches[i])
-                                                     : std::nullopt);
-        } catch (const std::exception& e) {
-            std::cerr << "Error in layer " << i << ": " << e.what() << std::endl;
-            throw;
-        }
-    }
-
-    // Final normalization
-    hidden_states = final_ln->forward(hidden_states);
-    
-    // Debug final hidden states
-    float min_final = std::numeric_limits<float>::infinity();
-    float max_final = -std::numeric_limits<float>::infinity();
-    float sum_final = 0.0f;
-    size_t nonzero_final = 0;
-    
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            float val = hidden_states(i, j);
-            min_final = std::min(min_final, val);
-            max_final = std::max(max_final, val);
-            sum_final += val;
-            if (std::abs(val) > 1e-6) nonzero_final++;
         }
     }
     
-    std::cout << "Final Hidden States Statistics:\n"
-              << "Min final: " << min_final << "\n"
-              << "Max final: " << max_final << "\n"
-              << "Mean final: " << sum_final / (hidden_states.rows() * hidden_states.cols()) << "\n"
-              << "Nonzero final: " << nonzero_final << "/" 
-              << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
+    // Apply final layer norm
+    if (final_ln) {
+        hidden_states = final_ln->forward(hidden_states);
+    }
     
-    // Single sync point at the end
-    CUDA_CHECK(cudaGetLastError());
-    cudaDeviceSynchronize();
+    // Store input for potential backward pass
+    last_input_tokens_ = input_tokens;
+    last_input_query_ = original_query;
     
     return hidden_states;
 }
