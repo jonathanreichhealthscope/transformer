@@ -6,6 +6,8 @@
 #include "tensor.hpp"
 #include "config.hpp"
 #include <optional>
+#include <memory>
+#include <vector>
 using FloatVector = Vector;
 
 /**
@@ -50,6 +52,8 @@ class AttentionMask {
     Matrix mask_;
     bool has_mask_ = false;
 };
+
+class KVCache;
 
 /**
  * @brief Implementation of Multi-Head Attention mechanism with various optimizations.
@@ -239,6 +243,14 @@ class MultiHeadAttention {
     const Matrix& get_key_weights() const { return params_.key_weights; }
     const Matrix& get_value_weights() const { return params_.value_weights; }
     const Matrix& get_output_weights() const { return params_.output_weights; }
+
+    // Add the direct matrix version of forward
+    Matrix forward(const Matrix& input, const Matrix& attention_mask);
+
+    // Add the 5-parameter version of compute_attention_scores
+    Matrix compute_attention_scores(const Matrix& Q, const Matrix& K, 
+                                  const Matrix& attention_mask,
+                                  size_t batch_size, size_t seq_len);
 
   private:
     Parameters params_;

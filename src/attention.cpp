@@ -215,113 +215,105 @@ Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, con
     return O;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask, 
+Matrix MultiHeadAttention::forward(const Matrix& input, const Matrix& attention_mask) {
+    // Convert Matrix attention mask to AttentionMask
+    AttentionMask mask(attention_mask);
+    return forward(input, mask, std::nullopt);
+}
+
+Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask,
                                  const std::optional<KVCache>& kv_cache) {
+    // Original implementation remains the same
     try {
         // Project input to Q, K, V
         Matrix Q = matmul(input, params_.query_weights);
         Matrix K = matmul(input, params_.key_weights);
         Matrix V = matmul(input, params_.value_weights);
         
-        // Debug Q, K, V projections
-        auto debug_matrix = [](const std::string& name, const Matrix& mat) {
-            float min_val = std::numeric_limits<float>::infinity();
-            float max_val = -std::numeric_limits<float>::infinity();
-            float sum_val = 0.0f;
-            size_t nonzero_val = 0;
-            
-            for (size_t i = 0; i < mat.rows(); i++) {
-                for (size_t j = 0; j < mat.cols(); j++) {
-                    float val = mat(i, j);
-                    min_val = std::min(min_val, val);
-                    max_val = std::max(max_val, val);
-                    sum_val += val;
-                    if (std::abs(val) > 1e-6) nonzero_val++;
-                }
-            }
-            
-            std::cout << name << " Statistics:\n"
-                      << "Min: " << min_val << "\n"
-                      << "Max: " << max_val << "\n"
-                      << "Mean: " << sum_val / (mat.rows() * mat.cols()) << "\n"
-                      << "Nonzero: " << nonzero_val << "/" 
-                      << (mat.rows() * mat.cols()) << "\n\n";
-        };
-        
-        debug_matrix("Query Projection", Q);
-        debug_matrix("Key Projection", K);
-        debug_matrix("Value Projection", V);
-        
         // Get dimensions
         size_t batch_size = input.rows();
-        size_t hidden_size = input.cols();  // This should be the model's hidden_size
-        size_t seq_len = batch_size;  // For self-attention, sequence length equals batch size
+        size_t hidden_size = input.cols();
+        size_t seq_len = batch_size;
         
-#ifdef USE_CUDA
-        try {
-            // Use CUDA for attention computation
-            Matrix scores(batch_size, batch_size);  // Full sequence length for attention
-            
-            // Batch compute attention scores and softmax
-            cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
-            debug_matrix("Raw Attention Scores", scores);
-            
-            if (mask) {
-                scores += mask.value();
-                debug_matrix("Masked Attention Scores", scores);
-            }
-            cuda::apply_softmax(scores);
-            debug_matrix("Softmax Attention Scores", scores);
-            
-            // Single synchronization point after main computation
-            Matrix output(batch_size, hidden_size);
-            cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
-            debug_matrix("Attention Output", output);
-            
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();  // Single sync point
-            
-            // Final projection
-            Matrix final_output = params_.output_weights.forward(output);
-            debug_matrix("Final Output", final_output);
-            
-            return final_output;
-            
-        } catch (const std::runtime_error& e) {
-            std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
-#endif
-            // CPU fallback implementation
-            Matrix scores = matmul(Q, K.transpose());
-            scores *= (1.0f / std::sqrt(head_dim));
-            debug_matrix("Raw Attention Scores", scores);
-
-            if (mask) {
-                scores += mask.value();
-                debug_matrix("Masked Attention Scores", scores);
-            }
-
-            scores.apply_softmax();
-            debug_matrix("Softmax Attention Scores", scores);
-            
-            Matrix output = matmul(scores, V);
-            debug_matrix("Attention Output", output);
-            
-            // Ensure output has correct dimensions before projection
-            if (output.cols() != hidden_size) {
-                throw std::runtime_error("Attention output has wrong dimensions: " + 
-                    std::to_string(output.cols()) + " vs expected " + std::to_string(hidden_size));
-            }
-            
-            Matrix final_output = params_.output_weights.forward(output);
-            debug_matrix("Final Output", final_output);
-            
-            return final_output;
-#ifdef USE_CUDA
+        // Use either flash attention or standard attention
+        Matrix attention_output;
+        if (use_flash) {
+            attention_output = flash_attention(Q, K, V, mask);
+        } else {
+            attention_output = standard_attention(Q, K, V, mask);
         }
-#endif
+        
+        // Final projection
+        return matmul(attention_output, params_.output_weights);
+        
     } catch (const std::exception& e) {
         throw std::runtime_error("MultiHeadAttention forward failed: " + std::string(e.what()));
     }
+}
+
+Matrix MultiHeadAttention::compute_attention_scores(
+    const Matrix& Q, const Matrix& K, const Matrix& attention_mask,
+    size_t batch_size, size_t seq_len) {
+    
+    // Compute QK^T while maintaining batch and head dimensions
+    Matrix scores(Q.rows(), K.rows());  // [batch_size * num_heads * seq_len, seq_len]
+    
+    const float scale = 1.0f / std::sqrt(static_cast<float>(K.cols()));
+    
+    // Compute attention scores for each batch and head separately
+    for (size_t b = 0; b < batch_size; b++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            size_t start_idx = (b * num_heads + h) * seq_len;
+            size_t end_idx = start_idx + seq_len;
+            
+            // Extract this batch and head's queries and keys
+            Matrix Q_bh = Q.block(start_idx, 0, seq_len, Q.cols());
+            Matrix K_bh = K.block(start_idx, 0, seq_len, K.cols());
+            
+            // Compute attention scores for this batch and head
+            Matrix scores_bh = matmul(Q_bh, K_bh.transpose());
+            scores_bh *= scale;
+            
+            // Apply attention mask
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t j = 0; j < seq_len; j++) {
+                    if (attention_mask(i, j) == 0.0f) {
+                        scores_bh(i, j) = -std::numeric_limits<float>::infinity();
+                    }
+                }
+            }
+            
+            // Apply softmax with improved numerical stability
+            for (size_t i = 0; i < seq_len; i++) {
+                float max_val = -std::numeric_limits<float>::infinity();
+                for (size_t j = 0; j < seq_len; j++) {
+                    max_val = std::max(max_val, scores_bh(i, j));
+                }
+                
+                float sum_exp = 0.0f;
+                for (size_t j = 0; j < seq_len; j++) {
+                    scores_bh(i, j) = std::exp(scores_bh(i, j) - max_val);
+                    sum_exp += scores_bh(i, j);
+                }
+                
+                // Normalize with numerical stability
+                const float eps = 1e-6f;
+                sum_exp = std::max(sum_exp, eps);
+                for (size_t j = 0; j < seq_len; j++) {
+                    scores_bh(i, j) /= sum_exp;
+                }
+            }
+            
+            // Copy scores back to the full scores matrix
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t j = 0; j < seq_len; j++) {
+                    scores(start_idx + i, start_idx + j) = scores_bh(i, j);
+                }
+            }
+        }
+    }
+    
+    return scores;
 }
 
 void MultiHeadAttention::save(std::ostream& os) const {

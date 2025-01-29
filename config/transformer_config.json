@@ -15,7 +15,7 @@
         "weight_decay": 0.01
     },
     "attention": {
-        "use_flash_attention": true,
+        "use_flash_attention": false,
         "use_rope": true,
         "use_sliding_window": true,
         "window_size": 16,

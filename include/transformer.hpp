@@ -28,6 +28,21 @@ class KVCache;
 class Matrix;
 class Tokenizer;
 
+class MultiHeadAttention;
+class FeedForward;
+
+// Add helper function declarations
+void update_attention_parameters(MultiHeadAttention* attention, float learning_rate, const TransformerConfig& config);
+void update_ffn_parameters(FeedForward* ffn, float learning_rate, const TransformerConfig& config);
+
+// Add loss computation declarations
+float compute_loss(const Matrix& output, const Matrix& target_distribution);
+Matrix compute_loss_gradient(const Matrix& output, const Matrix& target_distribution);
+
+// Make update_parameter_with_clip global functions instead of member functions
+void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate, const TransformerConfig& config);
+void update_parameter_with_clip(Vector& param, const Vector& grad, float learning_rate, const TransformerConfig& config);
+
 /**
  * @brief A single layer of the Transformer model implementing the standard Transformer architecture.
  * 
@@ -188,93 +203,49 @@ class TransformerLayer {
  * - Various optimization algorithms
  */
 class Transformer {
-  private:
-    TransformerConfig config;                          ///< Model configuration parameters
-    std::unique_ptr<TokenEmbedding> token_embedding;   ///< Token embedding layer
-    std::unique_ptr<PositionalEncoding> pos_encoding;  ///< Positional encoding layer
-    std::vector<std::unique_ptr<TransformerLayer>> layers;  ///< Stack of transformer layers
-    std::unique_ptr<LayerNorm> final_ln;              ///< Final layer normalization
-    std::unique_ptr<LanguageModelHead> lm_head;       ///< Output layer for token prediction
-    std::unique_ptr<Dropout> dropout;                 ///< Dropout layer
-    bool cuda_initialized = false;                    ///< Whether CUDA has been initialized
-    std::vector<int> last_input_tokens_;             ///< Store the last input tokens
-    std::string last_input_query_;                   ///< Store the original input query
+private:
+    // Configuration
+    const TransformerConfig& config;
 
-    // Cached states for backward pass
+    // Components
+    std::unique_ptr<TokenEmbedding> token_embedding;
+    std::unique_ptr<PositionalEncoding> pos_encoding;
+    std::vector<std::unique_ptr<TransformerLayer>> layers;
+    std::unique_ptr<LayerNorm> final_ln;
+    std::unique_ptr<LanguageModelHead> lm_head;
+    std::unique_ptr<Dropout> dropout;
+
+    // State
+    bool training = true;
     Matrix hidden_states;
     Matrix last_hidden_states;
     std::vector<Matrix> m_layer_activations;
-
-    // KV cache for inference
     std::vector<KVCache> m_kv_caches;
+    std::vector<std::pair<size_t, size_t>> last_seq_boundaries;
+    std::vector<int> last_input_tokens_;
+    std::string last_input_query_;
 
     // Optimizer state
     std::vector<Matrix> momentum_buffers;
     std::vector<Matrix> velocity_buffers;
     size_t update_step = 0;
-
-    // Parameter gradients
     std::optional<std::vector<Matrix>> parameter_grads;
 
     // Private methods
+    void unscale_gradients(MultiHeadAttention::Gradients& grads, float scale);
+    void unscale_gradients(FeedForward::Gradients& grads, float scale);
     Matrix compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets);
-    void backward_pass(const std::vector<Matrix>& activations, const Matrix& loss_grad);
-
-    // Get parameter gradients
+    void backward_pass(const Matrix& output, const Matrix& target_distribution, float learning_rate);
     std::vector<Matrix>& parameter_gradients();
-
-    bool training = true;
-
-    /**
-     * @brief Updates a parameter matrix with gradient clipping
-     * @param param Parameter matrix to update
-     * @param grad Gradient matrix
-     * @param learning_rate Learning rate for the update
-     */
-    void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate);
-
-    /**
-     * @brief Updates a parameter vector with gradient clipping
-     * @param param Parameter vector to update
-     * @param grad Gradient vector
-     * @param learning_rate Learning rate for the update
-     */
-    void update_parameter_with_clip(Vector& param, const Vector& grad, float learning_rate);
-
-    /**
-     * @brief Clears all gradients in the model
-     */
     void clear_gradients();
 
-    /**
-     * @brief Boosts probabilities for tokens that are likely verbs
-     * @param probabilities Vector of token probabilities to modify
-     * @param tokenizer Tokenizer for decoding tokens
-     */
+    // Helper methods for phrase prediction
     void boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
-
-    /**
-     * @brief Boosts probabilities for tokens that are likely adjectives
-     * @param probabilities Vector of token probabilities to modify
-     * @param tokenizer Tokenizer for decoding tokens
-     */
     void boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
-
-    /**
-     * @brief Checks if a token is likely a verb based on common endings
-     * @param token Token to check
-     * @return True if the token is likely a verb
-     */
     bool is_likely_verb(const std::string& token);
-
-    /**
-     * @brief Checks if a token is likely an adjective based on common endings
-     * @param token Token to check
-     * @return True if the token is likely an adjective
-     */
     bool is_likely_adjective(const std::string& token);
 
-  public:
+public:
     Transformer() = default;
 
     /**
@@ -302,7 +273,7 @@ class Transformer {
      * @param use_cache Whether to use key-value caching for inference
      * @return Output logits for each position
      */
-    Matrix forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer, bool use_cache = false);
+    Matrix forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer);
 
     /**
      * @brief Trains the transformer on the given dataset.

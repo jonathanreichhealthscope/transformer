@@ -1,4 +1,6 @@
 #pragma once
+#include "matrix.hpp"
+#include "vector.hpp"
 #include "components.hpp"
 #ifdef USE_CUDA
 #include "cuda/cuda_utils.cuh"
@@ -20,6 +22,15 @@ using FloatVector = Vector;
  * - Gradient computation for training
  */
 class FeedForward {
+  public:
+    // Make Gradients public
+    struct Gradients {
+        Matrix ff1_grad;         // Gradient for first layer weights
+        Matrix ff2_grad;         // Gradient for second layer weights
+        FloatVector ff1_bias_grad;  // Gradient for first layer bias
+        FloatVector ff2_bias_grad;  // Gradient for second layer bias
+    };
+
   private:
     // Parameter structure to hold all weights and biases
     struct Parameters {
@@ -27,14 +38,6 @@ class FeedForward {
         Matrix ff2_weights;
         FloatVector ff1_bias;
         FloatVector ff2_bias;
-    };
-
-    // Gradient structure to hold all gradients
-    struct Gradients {
-        Matrix ff1_grad;         // Gradient for first layer weights
-        Matrix ff2_grad;         // Gradient for second layer weights
-        FloatVector ff1_bias_grad;  // Gradient for first layer bias
-        FloatVector ff2_bias_grad;  // Gradient for second layer bias
     };
 
     Parameters params_;
@@ -148,6 +151,7 @@ class FeedForward {
      */
     void initialize_weights();
 
+    // Add Transformer as friend
     friend class Transformer;
     friend class TransformerLayer;
 };
