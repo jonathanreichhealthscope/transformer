@@ -1223,34 +1223,76 @@ void update_parameter_with_clip(Vector& param, const Vector& grad, float learnin
 }
 
 float compute_loss(const Matrix& output, const Matrix& target_distribution) {
-    float loss = 0.0f;
-    const float epsilon = 1e-10f;  // Small value to prevent log(0)
-    
-    // Compute cross-entropy loss
-    for (size_t i = 0; i < output.rows(); i++) {
-        for (size_t j = 0; j < output.cols(); j++) {
-            if (target_distribution(i, j) > 0.0f) {
+    if (output.size() != target_distribution.size()) {
+        throw std::runtime_error("Output and target distribution must have the same size");
+    }
+
+    const size_t batch_size = output.rows();
+    const size_t vocab_size = output.cols();
+    float total_loss = 0.0f;
+
+    // Compute cross-entropy loss for each item in the batch
+    #pragma omp parallel for reduction(+:total_loss)
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < vocab_size; ++j) {
+            if (target_distribution(i, j) > 0.0f) {  // Only compute loss for actual targets
                 // Add small epsilon to prevent log(0)
-                loss -= target_distribution(i, j) * std::log(output(i, j) + epsilon);
+                const float epsilon = 1e-10f;
+                float pred = std::clamp(output(i, j), epsilon, 1.0f - epsilon);
+                total_loss -= target_distribution(i, j) * std::log(pred);
             }
         }
     }
-    
-    return loss / output.rows();  // Average loss per sequence
+
+    // Average the loss over the batch
+    float avg_loss = total_loss / static_cast<float>(batch_size);
+
+    // Check for NaN or Inf
+    if (!std::isfinite(avg_loss)) {
+        throw std::runtime_error("Loss computation resulted in non-finite value");
+    }
+
+    return avg_loss;
 }
 
 Matrix compute_loss_gradient(const Matrix& output, const Matrix& target_distribution) {
-    Matrix gradient(output.rows(), output.cols());
-    
-    // Compute gradient of cross-entropy loss
+    if (output.size() != target_distribution.size()) {
+        throw std::runtime_error("Output and target distribution must have the same size");
+    }
+
+    const size_t batch_size = output.rows();
+    const size_t vocab_size = output.cols();
+    Matrix gradient(batch_size, vocab_size);
+
+    // Compute gradient of cross-entropy loss with numerical stability
     #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < output.rows(); i++) {
-        for (size_t j = 0; j < output.cols(); j++) {
-            // Gradient is (output - target) for cross-entropy with softmax
-            gradient(i, j) = output(i, j) - target_distribution(i, j);
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < vocab_size; ++j) {
+            if (target_distribution(i, j) > 0.0f) {
+                // Add small epsilon to prevent division by zero
+                const float epsilon = 1e-10f;
+                float pred = std::clamp(output(i, j), epsilon, 1.0f - epsilon);
+                // Gradient for cross-entropy loss: (prediction - target) / (prediction * (1 - prediction))
+                gradient(i, j) = (pred - target_distribution(i, j)) / (pred * (1.0f - pred));
+            } else {
+                gradient(i, j) = 0.0f;  // No gradient for padding/unused tokens
+            }
         }
     }
-    
+
+    // Check for NaN or Inf in gradients
+    bool has_bad_values = false;
+    #pragma omp parallel for collapse(2) reduction(||:has_bad_values)
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < vocab_size; ++j) {
+            has_bad_values = has_bad_values || !std::isfinite(gradient(i, j));
+        }
+    }
+
+    if (has_bad_values) {
+        throw std::runtime_error("Gradient computation resulted in non-finite values");
+    }
+
     return gradient;
 }
 

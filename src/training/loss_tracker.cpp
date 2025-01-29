@@ -1,6 +1,7 @@
 #include "../../include/training/loss_tracker.hpp"
 #include "../../include/tensor.hpp"
 #include <numeric>  // For std::accumulate
+#include <cmath>   // For std::log
 
 void LossTracker::add_loss(float loss) {
     if (std::isfinite(loss)) {
@@ -41,7 +42,34 @@ void LossTracker::update_statistics() {
 }
 
 float LossTracker::compute_loss(const Tensor& predictions, const Tensor& targets) {
-    float loss = 0.0f;
-    // TODO: Implement actual loss computation
-    return loss;
+    if (predictions.size() != targets.size()) {
+        throw std::runtime_error("Predictions and targets must have the same size");
+    }
+
+    const size_t batch_size = predictions.rows();
+    const size_t vocab_size = predictions.cols();
+    float total_loss = 0.0f;
+
+    // Compute cross-entropy loss for each item in the batch
+    #pragma omp parallel for reduction(+:total_loss)
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < vocab_size; ++j) {
+            if (targets(i, j) > 0.0f) {  // Only compute loss for actual targets
+                // Add small epsilon to prevent log(0)
+                const float epsilon = 1e-10f;
+                float pred = std::clamp(predictions(i, j), epsilon, 1.0f - epsilon);
+                total_loss -= targets(i, j) * std::log(pred);
+            }
+        }
+    }
+
+    // Average the loss over the batch
+    float avg_loss = total_loss / static_cast<float>(batch_size);
+
+    // Check for NaN or Inf
+    if (!std::isfinite(avg_loss)) {
+        throw std::runtime_error("Loss computation resulted in non-finite value");
+    }
+
+    return avg_loss;
 }

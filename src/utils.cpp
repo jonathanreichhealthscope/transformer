@@ -104,8 +104,13 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
 }
 
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution, const Tokenizer& tokenizer) {
+    // Input validation
     if (logits.empty() || target_distribution.empty()) {
-        return 0.0f;
+        throw std::runtime_error("Empty logits or target distribution in compute_batch_loss");
+    }
+
+    if (logits.size() != target_distribution.size()) {
+        throw std::runtime_error("Dimension mismatch between logits and target distribution");
     }
 
     float total_loss = 0.0f;
@@ -159,7 +164,14 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
         total_loss += sequence_loss;
     }
 
-    return total_loss / batch_size;
+    float avg_loss = total_loss / static_cast<float>(batch_size);
+
+    // Check for NaN/Inf
+    if (!std::isfinite(avg_loss)) {
+        throw std::runtime_error("Loss computation resulted in non-finite value");
+    }
+
+    return avg_loss;
 }
 
 TransformerConfig Utils::load_config(const std::string& config_path) {
