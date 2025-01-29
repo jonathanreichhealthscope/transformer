@@ -11,6 +11,7 @@
 #include "layer_norm.hpp"
 #include "lm_head.hpp"
 #include "memory_pool.hpp"
+#include "phrase_types.hpp"
 #include "../include/tokenizer.hpp"
 #include <functional>
 #include <memory>
@@ -358,4 +359,51 @@ class Transformer {
      * @param learning_rate Learning rate for the update
      */
     void update_parameters(float learning_rate);
+
+    /**
+     * @brief Predicts the final phrase for a given input text without delimiters
+     * @param input_text The input text without delimiters
+     * @param tokenizer The tokenizer instance
+     * @return A pair containing the predicted phrase and its type
+     */
+    std::pair<std::string, PhraseType> predict_final_phrase(
+        const std::string& input_text,
+        const Tokenizer& tokenizer
+    );
+
+    /**
+     * @brief Predicts the most likely phrase type for the given input
+     * @param input_text The input text
+     * @param tokenizer The tokenizer instance
+     * @return The predicted phrase type
+     */
+    PhraseType predict_phrase_type(
+        const std::string& input_text,
+        const Tokenizer& tokenizer
+    );
+
+private:
+    /**
+     * @brief Analyzes logits to determine the most likely phrase type
+     * @param logits The output logits from the model
+     * @param tokenizer The tokenizer instance
+     * @return The predicted phrase type
+     */
+    PhraseType analyze_phrase_type(
+        const Matrix& logits,
+        const Tokenizer& tokenizer
+    );
+
+    /**
+     * @brief Extracts the final phrase prediction from logits
+     * @param logits The output logits from the model
+     * @param phrase_type The predicted phrase type
+     * @param tokenizer The tokenizer instance
+     * @return The predicted final phrase
+     */
+    std::string extract_prediction(
+        const Matrix& logits,
+        PhraseType phrase_type,
+        const Tokenizer& tokenizer
+    );
 };

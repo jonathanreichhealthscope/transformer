@@ -952,3 +952,104 @@ void Transformer::set_training(bool training_mode) {
         lm_head->set_training(training_mode);
     }
 }
+
+std::pair<std::string, PhraseType> Transformer::predict_final_phrase(
+    const std::string& input_text,
+    const Tokenizer& tokenizer
+) {
+    // First predict the phrase type
+    PhraseType predicted_type = predict_phrase_type(input_text, tokenizer);
+    
+    // Tokenize input without delimiter
+    std::vector<int> tokens = tokenizer.encode(input_text);
+    
+    // Forward pass
+    Matrix logits = forward(tokens, input_text, tokenizer);
+    
+    // Extract the prediction based on the predicted type
+    std::string predicted_phrase = extract_prediction(logits, predicted_type, tokenizer);
+    
+    return {predicted_phrase, predicted_type};
+}
+
+PhraseType Transformer::predict_phrase_type(
+    const std::string& input_text,
+    const Tokenizer& tokenizer
+) {
+    // Tokenize input
+    std::vector<int> tokens = tokenizer.encode(input_text);
+    
+    // Forward pass
+    Matrix logits = forward(tokens, input_text, tokenizer);
+    
+    // Analyze logits to determine phrase type
+    return analyze_phrase_type(logits, tokenizer);
+}
+
+PhraseType Transformer::analyze_phrase_type(
+    const Matrix& logits,
+    const Tokenizer& tokenizer
+) {
+    // Get the final token predictions
+    Matrix final_logits = Matrix(logits.row(logits.rows() - 1));  // Explicit conversion
+    
+    // Calculate scores for each phrase type based on token probabilities
+    float verb_score = 0.0f;
+    float adj_score = 0.0f;
+    float general_score = 0.0f;
+    
+    // Analyze token probabilities to determine the most likely phrase type
+    // This would involve checking against known verb and adjective patterns
+    // in the vocabulary
+    
+    // For now, using a simple heuristic based on highest probability tokens
+    // This should be replaced with a more sophisticated analysis based on
+    // your specific vocabulary and token patterns
+    
+    if (verb_score > adj_score && verb_score > general_score) {
+        return PhraseType::VERB;
+    } else if (adj_score > verb_score && adj_score > general_score) {
+        return PhraseType::ADJECTIVE;
+    }
+    
+    return PhraseType::GENERAL;
+}
+
+std::string Transformer::extract_prediction(
+    const Matrix& logits,
+    PhraseType phrase_type,
+    const Tokenizer& tokenizer
+) {
+    // Get the final token predictions
+    Matrix final_logits = Matrix(logits.row(logits.rows() - 1));  // Explicit conversion
+    
+    // Apply type-specific constraints to the predictions
+    switch (phrase_type) {
+        case PhraseType::VERB:
+            // Boost probabilities of verb-like tokens
+            // This would involve identifying verb tokens in your vocabulary
+            break;
+            
+        case PhraseType::ADJECTIVE:
+            // Boost probabilities of adjective-like tokens
+            // This would involve identifying adjective tokens in your vocabulary
+            break;
+            
+        default:
+            // No special constraints for general phrases
+            break;
+    }
+    
+    // Get the most likely token
+    int predicted_token = 0;
+    float max_prob = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < final_logits.cols(); i++) {
+        if (final_logits(0, i) > max_prob) {
+            max_prob = final_logits(0, i);
+            predicted_token = i;
+        }
+    }
+    
+    // Decode the predicted token
+    return tokenizer.decode({predicted_token});
+}

@@ -18,6 +18,7 @@ public:
     Vector();
     Vector(size_t size, float default_value = 0.0f);
     Vector(const std::initializer_list<float>& list);
+    Vector(const Matrix& matrix);
     
     template <typename Iterator>
     Vector(Iterator first, Iterator last) : data_(first, last), size_(std::distance(first, last)) {}

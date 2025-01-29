@@ -417,9 +417,9 @@ void gelu(Matrix& x) {
     // Original CPU implementation
     constexpr float sqrt_2_over_pi = 0.7978845608028654f;
     for (size_t i = 0; i < x.size(); i++) {
-        float val = x.data_[i];
+        float val = x.at(i / x.cols(), i % x.cols());
         float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * (val + 0.044715f * val * val * val)));
-        x.data_[i] = val * cdf;
+        x.at(i / x.cols(), i % x.cols()) = val * cdf;
     }
     #endif
 }

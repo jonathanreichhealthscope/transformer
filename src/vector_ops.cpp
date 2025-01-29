@@ -1,4 +1,5 @@
 #include "../include/vector.hpp"
+#include "../include/matrix.hpp"
 
 // Constructor implementations
 Vector::Vector() : size_(0) {}
@@ -6,6 +7,12 @@ Vector::Vector() : size_(0) {}
 Vector::Vector(size_t size, float default_value) : data_(size, default_value), size_(size) {}
 
 Vector::Vector(const std::initializer_list<float>& list) : data_(list), size_(list.size()) {}
+
+Vector::Vector(const Matrix& matrix) : data_(matrix.data(), matrix.data() + matrix.size()), size_(matrix.size()) {
+    for (size_t i = 0; i < matrix.size(); ++i) {
+        data_[i] = matrix.at(i / matrix.cols(), i % matrix.cols());
+    }
+}
 
 // Member function implementations
 void Vector::resize(size_t new_size) {
@@ -89,3 +96,4 @@ Vector operator*(const Vector& v, float scalar) {
 Vector operator*(float scalar, const Vector& v) {
     return v * scalar;
 }
+

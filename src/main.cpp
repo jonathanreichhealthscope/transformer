@@ -4,6 +4,7 @@
 #include <random>
 #include "../include/tokenizer.hpp"
 #include "../include/utils.hpp"  // Add include for Utils
+#include "../include/phrase_analysis.hpp"  // Add this line
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -70,24 +71,59 @@ float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, 
 void train_epoch(Transformer& model, const std::vector<std::pair<std::string, std::string>>& training_pairs,
                 float learning_rate, const Tokenizer& tokenizer) {
     for (const auto& [context, target] : training_pairs) {
-        // Combine context and target with separator
-        std::string full_text = context + "|" + target;  // Use literal separator token
+        // Determine the phrase type based on the target
+        PhraseType phrase_type = PhraseTypeHandler::detect_phrase_type(target);
+        std::string delimiter = PhraseTypeHandler::get_delimiter(phrase_type);
+        
+        // Combine context and target with appropriate delimiter
+        std::string full_text = context + delimiter + target;
+        
+        // Extract the final phrase for special handling during training
+        std::string final_phrase = PhraseTypeHandler::extract_final_phrase(full_text);
         
         // Tokenize
         std::vector<int> tokens = tokenizer.encode(full_text);
+        std::vector<int> final_phrase_tokens = tokenizer.encode(final_phrase);
         
-        // Forward pass with original text
+        // Forward pass with original text and phrase type information
         Matrix logits = model.forward(tokens, full_text, tokenizer);
         
         // Compute loss with format-specific penalties
         float loss = compute_loss(logits, tokens, tokenizer);
         
-        // Create loss gradients matrix
+        // Add phrase type-specific loss components
+        switch (phrase_type) {
+            case PhraseType::VERB:
+                // Add penalty for non-verb predictions in verb contexts
+                loss += compute_verb_penalty(logits, final_phrase_tokens, tokenizer);
+                break;
+            case PhraseType::ADJECTIVE:
+                // Add penalty for non-adjective predictions in adjective contexts
+                loss += compute_adjective_penalty(logits, final_phrase_tokens, tokenizer);
+                break;
+            default:
+                break;
+        }
+        
+        // Create loss gradients matrix with phrase type-specific gradients
         Matrix loss_gradients(logits.rows(), logits.cols());
-        // Fill loss_gradients based on the computed loss
         for (size_t i = 0; i < logits.rows(); i++) {
             for (size_t j = 0; j < logits.cols(); j++) {
-                loss_gradients(i, j) = logits(i, j) - (j < tokens.size() ? 1.0f : 0.0f);
+                float base_gradient = logits(i, j) - (j < tokens.size() ? 1.0f : 0.0f);
+                
+                // Add phrase type-specific gradient components
+                switch (phrase_type) {
+                    case PhraseType::VERB:
+                        base_gradient *= verb_gradient_factor(j, tokens, tokenizer);
+                        break;
+                    case PhraseType::ADJECTIVE:
+                        base_gradient *= adjective_gradient_factor(j, tokens, tokenizer);
+                        break;
+                    default:
+                        break;
+                }
+                
+                loss_gradients(i, j) = base_gradient;
             }
         }
         
@@ -95,9 +131,39 @@ void train_epoch(Transformer& model, const std::vector<std::pair<std::string, st
         model.backward(loss_gradients, tokens, learning_rate);
         model.update_parameters(learning_rate);
         
-        // Log progress
-        std::cout << "Loss: " << loss << std::endl;
+        // Log progress with phrase type information
+        std::cout << "Loss: " << loss << " (Type: " 
+                  << static_cast<int>(phrase_type) << ")" << std::endl;
     }
+}
+
+// Helper functions for phrase type-specific loss components
+float compute_verb_penalty(const Matrix& logits, const std::vector<int>& final_tokens,
+                         const Tokenizer& tokenizer) {
+    // Add penalty for predictions that are unlikely to be verbs
+    float penalty = 0.0f;
+    // Implementation details for verb-specific penalties
+    return penalty;
+}
+
+float compute_adjective_penalty(const Matrix& logits, const std::vector<int>& final_tokens,
+                              const Tokenizer& tokenizer) {
+    // Add penalty for predictions that are unlikely to be adjectives
+    float penalty = 0.0f;
+    // Implementation details for adjective-specific penalties
+    return penalty;
+}
+
+float verb_gradient_factor(size_t position, const std::vector<int>& tokens,
+                         const Tokenizer& tokenizer) {
+    // Adjust gradients for verb-specific learning
+    return 1.0f; // Default implementation
+}
+
+float adjective_gradient_factor(size_t position, const std::vector<int>& tokens,
+                              const Tokenizer& tokenizer) {
+    // Adjust gradients for adjective-specific learning
+    return 1.0f; // Default implementation
 }
 
 int main(int argc, char* argv[]) {

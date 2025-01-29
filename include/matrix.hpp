@@ -74,6 +74,15 @@ class Matrix {
     Matrix(size_t rows, size_t cols, float* external_data, bool is_owner);
 
     /**
+     * @brief Constructs a single-row matrix from a vector.
+     * @param vec Vector to convert to matrix
+     */
+    explicit Matrix(const Vector& vec) : rows_(1), cols_(vec.size()), shape_(std::make_tuple(1, vec.size())) {
+        data_.resize(vec.size());
+        std::copy(vec.begin(), vec.end(), data_.begin());
+    }
+
+    /**
      * @brief Gets the number of rows.
      * @return Number of rows
      */
