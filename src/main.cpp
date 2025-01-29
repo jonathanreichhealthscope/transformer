@@ -21,6 +21,45 @@ size_t global_step = 0;
 TrainingStateManagerPtr training_manager;
 TrainingMonitorPtr training_monitor;
 
+// Data structure for preprocessing
+struct Data {
+    std::vector<std::vector<float>> samples;
+    std::vector<int> labels;
+};
+
+// Normalization helper function
+std::vector<float> normalize(const std::vector<float>& sample) {
+    if (sample.empty()) return sample;
+    
+    float mean = 0.0f;
+    float std_dev = 0.0f;
+    
+    // Calculate mean
+    for (float val : sample) {
+        mean += val;
+    }
+    mean /= sample.size();
+    
+    // Calculate standard deviation
+    for (float val : sample) {
+        float diff = val - mean;
+        std_dev += diff * diff;
+    }
+    std_dev = std::sqrt(std_dev / sample.size());
+    
+    // Normalize
+    std::vector<float> normalized(sample.size());
+    if (std_dev > 0.0f) {
+        for (size_t i = 0; i < sample.size(); i++) {
+            normalized[i] = (sample[i] - mean) / std_dev;
+        }
+    } else {
+        normalized = sample;  // If std_dev is 0, keep original values
+    }
+    
+    return normalized;
+}
+
 float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, const Tokenizer& tokenizer) {
     float loss = 0.0f;
     const int sep_token_id = tokenizer.get_sep_token_id();
@@ -242,17 +281,28 @@ void generate_predictions(Transformer& transformer, const std::string& input_tex
         max_logit = std::max(max_logit, final_logits(0, i));
     }
     
+    // Compute exponentials with numerical stability
     float sum_exp = 0.0f;
     std::vector<float> exps(final_logits.cols());
+    const float scale_factor = 1.0f;  // Can be adjusted for temperature scaling
+    
+    #pragma omp parallel for reduction(+:sum_exp)
     for (size_t i = 0; i < final_logits.cols(); ++i) {
-        exps[i] = std::exp(final_logits(0, i) - max_logit);
+        float scaled_logit = (final_logits(0, i) - max_logit) * scale_factor;
+        exps[i] = std::exp(scaled_logit);
         sum_exp += exps[i];
     }
     
-    // Create probability pairs
+    // Ensure sum_exp is not zero
+    sum_exp = std::max(sum_exp, 1e-10f);
+    
+    // Create probability pairs with proper normalization
+    token_probs.clear();
+    token_probs.reserve(final_logits.cols());
     for (size_t i = 0; i < final_logits.cols(); ++i) {
         float prob = exps[i] / sum_exp;
-        if (prob > 1e-4) {  // Filter out very low probability tokens
+        // Only include non-trivial probabilities and valid tokens
+        if (prob > 1e-4 && i != tokenizer->get_pad_token_id() && i != tokenizer->get_unk_token_id()) {
             token_probs.emplace_back(prob, i);
         }
     }
@@ -276,6 +326,83 @@ void generate_predictions(Transformer& transformer, const std::string& input_tex
     std::cout << "--\nNonzero final: " << nonzero_probs << "/" << token_probs.size() << "\n" << std::endl;
     
     transformer.set_training(true);
+}
+
+void preprocess_data(Data& data) {
+    // Check normalization and augmentation
+    // Ensure data is varied and correctly normalized
+    for (auto& sample : data.samples) {
+        sample = normalize(sample); // Ensure normalization is applied correctly
+    }
+}
+
+// Add this function before the main training loop
+void reinitialize_batch_weights(Transformer& transformer, const TransformerConfig& config, size_t global_step) {
+    // Get a random seed based on time and batch number
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    
+    // Dynamic temperature scaling
+    float temperature = 1.0f + (5.0f * std::exp(-global_step / 500.0f));  // Starts at 6.0, decays to 1.0
+    
+    // Multiple scales for different layers
+    float attention_scale = 0.15f * std::exp(-global_step / 2000.0f);  // Slower decay for attention
+    float ffn_scale = 0.1f * std::exp(-global_step / 1000.0f);        // Faster decay for feed-forward
+    float output_scale = 0.05f * std::exp(-global_step / 800.0f);     // Even faster for output layer
+    
+    // Minimum scales to maintain exploration
+    attention_scale = std::max(0.02f, attention_scale);
+    ffn_scale = std::max(0.01f, ffn_scale);
+    output_scale = std::max(0.005f, output_scale);
+    
+    // Get all parameters that need reinitialization
+    auto& params = transformer.parameters();
+    
+    // Reinitialize each parameter matrix with controlled randomness
+    for (size_t p = 0; p < params.size(); p++) {
+        Matrix& current_param = params[p];
+        const size_t rows = current_param.rows();
+        const size_t cols = current_param.cols();
+        
+        // Choose scale based on layer type (inferred from matrix dimensions)
+        float scale;
+        if (cols == config.hidden_size) {
+            scale = attention_scale;  // Attention layers
+        } else if (cols == config.intermediate_size) {
+            scale = ffn_scale;        // Feed-forward layers
+        } else {
+            scale = output_scale;     // Output layers
+        }
+        
+        // Process each matrix in parallel
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < rows; i++) {
+            for (size_t j = 0; j < cols; j++) {
+                // Thread-local random generators
+                std::mt19937 local_gen(rd() + i * cols + j);  // Unique seed per element
+                
+                // Add temperature-based sampling
+                std::normal_distribution<float> dist(0.0f, scale * temperature);
+                float perturbation = dist(local_gen);
+                
+                // Current weight magnitude affects perturbation
+                float current_value = std::abs(current_param(i, j));
+                float adaptive_scale = scale / (1.0f + current_value * temperature);
+                
+                // Apply perturbation with probability decay
+                float apply_prob = std::exp(-global_step / 3000.0f);  // Probability of applying perturbation
+                if (std::uniform_real_distribution<float>(0.0f, 1.0f)(local_gen) < apply_prob) {
+                    current_param(i, j) += perturbation * adaptive_scale;
+                }
+                
+                // Occasionally flip sign of small weights to explore different patterns
+                if (std::abs(current_param(i, j)) < 0.01f && 
+                    std::uniform_real_distribution<float>(0.0f, 1.0f)(local_gen) < 0.1f) {
+                    current_param(i, j) *= -1.0f;
+                }
+            }
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -419,6 +546,9 @@ int main(int argc, char* argv[]) {
             for (size_t batch = 0; batch < total_batches; ++batch) {
                 metrics.start_timer("batch_processing");
 
+                // Add random perturbations to weights before processing batch
+                reinitialize_batch_weights(transformer, config, global_step);
+
                 size_t start_idx = batch * config.batch_size;
                 size_t end_idx = std::min(start_idx + config.batch_size, training_pairs.size());
                 size_t current_batch_size = end_idx - start_idx;
@@ -542,126 +672,72 @@ int main(int argc, char* argv[]) {
                     std::vector<float> token_logits;
                     float max_logit = -std::numeric_limits<float>::infinity();
 
-                    for (size_t j = 0; j < config.vocab_size; j++) {
+                    // First pass: find max logit
+                    for (size_t j = 0; j < logits.cols(); j++) {
                         float logit = logits(i, j);
                         token_logits.push_back(logit);
                         max_logit = std::max(max_logit, logit);
                     }
 
+                    // Second pass: compute softmax and gradients
                     float sum_exp = 0.0f;
-                    std::vector<float> exp_logits(config.vocab_size);
-
-                    for (size_t j = 0; j < config.vocab_size; j++) {
-                        exp_logits[j] = std::exp(token_logits[j] - max_logit);
-                        sum_exp += exp_logits[j];
+                    std::vector<float> softmax_probs(logits.cols());
+                    
+                    for (size_t j = 0; j < logits.cols(); j++) {
+                        softmax_probs[j] = std::exp(token_logits[j] - max_logit);
+                        sum_exp += softmax_probs[j];
                     }
 
-                    // Compute gradients for cross-entropy loss
-                    float scaling_factor = 100.0f;  // Base scaling factor
-                    size_t non_pad_tokens = 0;
-
-                    // First pass to count non-padding tokens
-                    for (size_t j = 0; j < config.vocab_size; j++) {
-                        if (target_distribution(i, j) > 0.0f && j != tokenizer->get_pad_token_id()) {
-                            non_pad_tokens++;
-                        }
-                    }
-
-                    // Adjust scaling factor based on token density
-                    if (non_pad_tokens > 0) {
-                        scaling_factor *= std::sqrt(float(config.vocab_size) / non_pad_tokens);
-                    }
-
-                    for (size_t j = 0; j < config.vocab_size; j++) {
-                        float softmax_output = exp_logits[j] / sum_exp;
-                        float gradient = 0.0f;
-                        
-                        // Only compute meaningful gradients for non-padding tokens
-                        if (j != tokenizer->get_pad_token_id()) {
-                            gradient = (softmax_output - target_distribution(i, j)) * scaling_factor;
-                            // Clip gradients to reasonable range
-                            gradient = std::max(std::min(gradient, 1.0f), -1.0f);
-                        }
-                        loss_gradients(i, j) = gradient;
+                    // Normalize and compute gradients
+                    for (size_t j = 0; j < logits.cols(); j++) {
+                        softmax_probs[j] /= sum_exp;
+                        // Gradient is (predicted - target)
+                        loss_gradients(i, j) = softmax_probs[j] - target_distribution(i, j);
                     }
                 }
 
-                // Log gradient and token statistics
-                float total_grad_magnitude = 0.0f;
-                float max_grad_magnitude = 0.0f;
-                size_t total_tokens = loss_gradients.rows() * loss_gradients.cols();
-                size_t non_padding_tokens = 0;
-
+                // Dynamic learning rate adjustment based on gradient statistics
+                float grad_norm = 0.0f;
+                float max_grad = 0.0f;
                 for (size_t i = 0; i < loss_gradients.rows(); i++) {
                     for (size_t j = 0; j < loss_gradients.cols(); j++) {
-                        float grad_magnitude = std::abs(loss_gradients(i, j));
-                        if (grad_magnitude > 0.0f) {  // Count non-zero gradients
-                            total_grad_magnitude += grad_magnitude;
-                            max_grad_magnitude = std::max(max_grad_magnitude, grad_magnitude);
-                            non_padding_tokens++;
+                        float grad = std::abs(loss_gradients(i, j));
+                        grad_norm += grad * grad;
+                        max_grad = std::max(max_grad, grad);
+                    }
+                }
+                grad_norm = std::sqrt(grad_norm);
+
+                // Adjust learning rate based on gradient statistics
+                const float target_grad_norm = 1.0f;
+                const float lr_adjust_rate = 0.01f;
+                if (grad_norm > 0.0f) {
+                    learning_rate *= std::pow(target_grad_norm / grad_norm, lr_adjust_rate);
+                    // Clamp learning rate to reasonable range
+                    learning_rate = std::max(1e-6f, std::min(learning_rate, 1e-2f));
+                }
+
+                // Scale gradients if norm is too large
+                if (grad_norm > target_grad_norm) {
+                    float scale = target_grad_norm / grad_norm;
+                    for (size_t i = 0; i < loss_gradients.rows(); i++) {
+                        for (size_t j = 0; j < loss_gradients.cols(); j++) {
+                            loss_gradients(i, j) *= scale;
                         }
                     }
                 }
-
-                // Calculate average only over non-padding tokens
-                float avg_grad_magnitude = non_padding_tokens > 0 ? 
-                    total_grad_magnitude / non_padding_tokens : 0.0f;
-
-                std::cout << "Gradient Statistics:\n"
-                          << "  Average magnitude (non-padding): " << avg_grad_magnitude << "\n"
-                          << "  Maximum magnitude: " << max_grad_magnitude << "\n"
-                          << "  Non-padding tokens: " << non_padding_tokens << "/" << total_tokens 
-                          << " (" << (100.0f * non_padding_tokens / total_tokens) << "%)\n";
-
-                // More dynamic learning rate adjustment
-                float loss_ratio = 1.0f;  // Default to neutral ratio
-                if (std::isfinite(batch_loss) && std::isfinite(prev_loss) && prev_loss > 0.0f) {
-                    // Only compute ratio if both losses are valid and prev_loss is positive
-                    const float min_loss = 1e-6f;  // Larger epsilon for more stability
-                    loss_ratio = batch_loss / std::max(prev_loss, min_loss);
-                    
-                    // Clamp ratio to reasonable range
-                    const float max_ratio = 10.0f;
-                    loss_ratio = std::max(0.1f, std::min(loss_ratio, max_ratio));
-                }
-
-                float grad_scale = std::min(avg_grad_magnitude, 1.0f);  // Scale based on gradient magnitude
-                
-                // Adjust thresholds based on training progress
-                float upper_threshold = 1.05f - (0.01f * std::min(global_step / 1000.0f, 0.04f));
-                float lower_threshold = 0.95f + (0.01f * std::min(global_step / 1000.0f, 0.04f));
-                
-                if (loss_ratio > upper_threshold) {
-                    // More aggressive decrease when loss increases significantly
-                    float decrease_factor = 0.8f + (0.15f * grad_scale);  // Between 0.8 and 0.95
-                    learning_rate *= decrease_factor;
-                    std::cout << "Decreasing learning rate by factor " << decrease_factor 
-                              << " (loss ratio: " << loss_ratio << ")\n";
-                } else if (loss_ratio < lower_threshold) {
-                    // More aggressive increase when loss decreases significantly
-                    float increase_factor = 1.2f - (0.15f * grad_scale);  // Between 1.05 and 1.2
-                    learning_rate *= increase_factor;
-                    std::cout << "Increasing learning rate by factor " << increase_factor 
-                              << " (loss ratio: " << loss_ratio << ")\n";
-                }
-                
-                // Wider bounds for learning rate
-                float min_lr = 1e-6f;
-                float max_lr = 5e-2f;
-                if (global_step < 100) {  // Allow larger learning rates early in training
-                    max_lr = 1e-1f;
-                }
-                
-                learning_rate = std::max(min_lr, std::min(learning_rate, max_lr));
-                
-                std::cout << "Learning rate adjusted to: " << learning_rate 
-                          << " (loss ratio: " << loss_ratio << ")\n";
 
                 // Backpropagate through the model
                 Matrix lm_head_gradients = lm_head->backward(loss_gradients);
-                std::cout << "lm_head_gradients shape: " << lm_head_gradients.rows() << "x" << lm_head_gradients.cols() << std::endl;
                 transformer.backward(lm_head_gradients, flattened_batch, learning_rate);
-                std::cout << "lm_head_gradients shape after backward: " << lm_head_gradients.rows() << "x" << lm_head_gradients.cols() << std::endl;
+
+                // Print training statistics
+                std::cout << "\nTraining Statistics:" << std::endl;
+                std::cout << "Batch Loss: " << batch_loss << std::endl;
+                std::cout << "Gradient Norm: " << grad_norm << std::endl;
+                std::cout << "Max Gradient: " << max_grad << std::endl;
+                std::cout << "Learning Rate: " << learning_rate << std::endl;
+
                 // Update tracking variables
                 prev_loss = batch_loss;
                 epoch_loss += batch_loss;

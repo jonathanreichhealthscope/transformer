@@ -179,12 +179,28 @@ class LanguageModelHead {
     }
 
     /**
-     * @brief Gets the bias vector.
-     * @return Reference to bias vector
+     * @brief Gets the projection weights matrix.
+     * @return Reference to the projection weights matrix
      */
-    Vector& get_bias() {
-        return bias;
-    }
+    Matrix& get_weights() { return projection; }
+
+    /**
+     * @brief Gets the projection weights matrix (const version).
+     * @return Const reference to the projection weights matrix
+     */
+    const Matrix& get_weights() const { return projection; }
+
+    /**
+     * @brief Gets the bias vector.
+     * @return Reference to the bias vector
+     */
+    Vector& get_bias() { return bias; }
+
+    /**
+     * @brief Gets the bias vector (const version).
+     * @return Const reference to the bias vector
+     */
+    const Vector& get_bias() const { return bias; }
 
     /**
      * @brief Projects hidden states to vocabulary space.

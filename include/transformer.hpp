@@ -123,6 +123,9 @@ class TransformerLayer {
     FeedForward* getFeedForward() {
         return feed_forward.get();
     }
+    LayerNorm* getLayerNorm() {
+        return attention_ln.get();
+    }
     void convert_to_fp16();
 
     TransformerLayer(const TransformerLayer& other)
@@ -222,8 +225,62 @@ class Transformer {
 
     bool training = true;
 
+    /**
+     * @brief Updates a parameter matrix with gradient clipping
+     * @param param Parameter matrix to update
+     * @param grad Gradient matrix
+     * @param learning_rate Learning rate for the update
+     */
+    void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate);
+
+    /**
+     * @brief Updates a parameter vector with gradient clipping
+     * @param param Parameter vector to update
+     * @param grad Gradient vector
+     * @param learning_rate Learning rate for the update
+     */
+    void update_parameter_with_clip(Vector& param, const Vector& grad, float learning_rate);
+
+    /**
+     * @brief Clears all gradients in the model
+     */
+    void clear_gradients();
+
+    /**
+     * @brief Boosts probabilities for tokens that are likely verbs
+     * @param probabilities Vector of token probabilities to modify
+     * @param tokenizer Tokenizer for decoding tokens
+     */
+    void boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
+
+    /**
+     * @brief Boosts probabilities for tokens that are likely adjectives
+     * @param probabilities Vector of token probabilities to modify
+     * @param tokenizer Tokenizer for decoding tokens
+     */
+    void boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
+
+    /**
+     * @brief Checks if a token is likely a verb based on common endings
+     * @param token Token to check
+     * @return True if the token is likely a verb
+     */
+    bool is_likely_verb(const std::string& token);
+
+    /**
+     * @brief Checks if a token is likely an adjective based on common endings
+     * @param token Token to check
+     * @return True if the token is likely an adjective
+     */
+    bool is_likely_adjective(const std::string& token);
+
   public:
     Transformer() = default;
+
+    /**
+     * @brief Initialize the weights of the transformer model
+     */
+    void initialize_weights();
 
     /**
      * @brief Sets the training mode for the transformer and all its components.
@@ -406,32 +463,4 @@ private:
         PhraseType phrase_type,
         const Tokenizer& tokenizer
     );
-
-    /**
-     * @brief Boosts probabilities for tokens that are likely verbs
-     * @param probabilities Vector of token probabilities to modify
-     * @param tokenizer Tokenizer for decoding tokens
-     */
-    void boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
-
-    /**
-     * @brief Boosts probabilities for tokens that are likely adjectives
-     * @param probabilities Vector of token probabilities to modify
-     * @param tokenizer Tokenizer for decoding tokens
-     */
-    void boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
-
-    /**
-     * @brief Checks if a token is likely a verb based on common endings
-     * @param token Token to check
-     * @return True if the token is likely a verb
-     */
-    bool is_likely_verb(const std::string& token);
-
-    /**
-     * @brief Checks if a token is likely an adjective based on common endings
-     * @param token Token to check
-     * @return True if the token is likely an adjective
-     */
-    bool is_likely_adjective(const std::string& token);
 };

@@ -110,78 +110,54 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
 }
 
 Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
+    // Store hidden states for backward pass
+    this->hidden_states = hidden_states;
+    
     // Apply layer normalization first
     Matrix normalized = layer_norm->forward(hidden_states);
     
-    // Project to vocabulary size using projection matrix directly
+    // Project to vocabulary size
     Matrix logits = matmul(normalized, projection);
     
     // Add bias terms
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
             logits(i, j) += bias[j];
         }
     }
     
-    // Use consistent temperature scaling
-    const float temperature = 0.8f;  // Single temperature value for both training and inference
-    logits = logits * (1.0f / temperature);
+    // Find logit range for dynamic temperature
+    float max_logit = -std::numeric_limits<float>::infinity();
+    float min_logit = std::numeric_limits<float>::infinity();
     
-    // Apply format-specific biasing
-    bias_completion_format(logits);
-    
-    // Clip logits to prevent extreme values
-    const float clip_val = 5.0f;
+    #pragma omp parallel for collapse(2) reduction(max:max_logit) reduction(min:min_logit)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
-            logits(i, j) = std::max(-clip_val, std::min(clip_val, logits(i, j)));
+            max_logit = std::max(max_logit, logits(i, j));
+            min_logit = std::min(min_logit, logits(i, j));
         }
+    }
+    
+    // Dynamic temperature based on logit range and training state
+    float base_temp = training ? 1.0f : 0.7f;  // Lower temperature during inference
+    float logit_range = max_logit - min_logit;
+    float dynamic_temp = base_temp * std::max(0.1f, std::min(2.0f, logit_range / 10.0f));
+    
+    // Apply temperature scaling
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        for (size_t j = 0; j < logits.cols(); ++j) {
+            logits(i, j) /= dynamic_temp;
+        }
+    }
+    
+    // Only apply format-specific biasing during inference
+    if (!training) {
+        bias_completion_format(logits);
     }
     
     return logits;
-}
-
-Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
-    try {
-        // Project hidden states to vocabulary space
-        Matrix logits = matmul(hidden_states, projection);
-        
-        // Add bias with proper token activation
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < logits.rows(); ++i) {
-            for (size_t j = 0; j < logits.cols(); ++j) {
-                logits(i, j) += bias[j];
-            }
-        }
-        
-        // Apply dynamic temperature scaling based on logit distribution
-        float max_logit = -std::numeric_limits<float>::infinity();
-        float min_logit = std::numeric_limits<float>::infinity();
-        
-        #pragma omp parallel for collapse(2) reduction(max:max_logit) reduction(min:min_logit)
-        for (size_t i = 0; i < logits.rows(); ++i) {
-            for (size_t j = 0; j < logits.cols(); ++j) {
-                max_logit = std::max(max_logit, logits(i, j));
-                min_logit = std::min(min_logit, logits(i, j));
-            }
-        }
-        
-        // Dynamic temperature based on logit range
-        float logit_range = max_logit - min_logit;
-        float dynamic_temp = std::max(0.1f, std::min(2.0f, logit_range / 10.0f));
-        
-        // Apply temperature scaling
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < logits.rows(); ++i) {
-            for (size_t j = 0; j < logits.cols(); ++j) {
-                logits(i, j) /= dynamic_temp;
-            }
-        }
-        
-        return logits;
-    } catch (const std::exception& e) {
-        throw std::runtime_error("LMHead forward failed: " + std::string(e.what()));
-    }
 }
 
 Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
@@ -194,7 +170,7 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
                                " != " + std::to_string(hidden_size_));
     }
     
-    return forward_impl(hidden_states);
+    return forward(hidden_states, false);
 }
 
 Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& target_distribution) {

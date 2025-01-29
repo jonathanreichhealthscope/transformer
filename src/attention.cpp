@@ -27,28 +27,31 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
       dropout_prob(dropout_prob_), use_flash(use_flash_), use_rope(use_rope_),
       use_sliding_window(use_sliding_window_), window_size(window_size_),
       use_gqa(use_gqa_), num_kv_heads(num_kv_heads_), max_seq_length(max_seq_length_),
-      use_fp16_(use_fp16),
-      // Initialize matrices with correct dimensions
-      query_proj(Matrix(hidden_size_, hidden_size_)),
-      key_proj(Matrix(hidden_size_, hidden_size_)),
-      value_proj(Matrix(hidden_size_, hidden_size_)),
-      output_proj(Matrix(hidden_size_, hidden_size_)),
-      // Initialize bias vectors
-      query_bias(FloatVector(hidden_size_ * num_heads_)),
-      key_bias(FloatVector(hidden_size_ * num_heads_)),
-      value_bias(FloatVector(hidden_size_ * num_heads_)),
-      output_bias(FloatVector(hidden_size_)),
-      // Initialize gradients with same dimensions as their parameters
-      query_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      key_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      value_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      output_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      query_bias_grad(FloatVector(hidden_size_ * num_heads_)),
-      key_bias_grad(FloatVector(hidden_size_ * num_heads_)),
-      value_bias_grad(FloatVector(hidden_size_ * num_heads_)),
-      output_bias_grad(FloatVector(hidden_size_)) {
+      use_fp16_(use_fp16) {
 
     std::cout << "\n=== MultiHeadAttention::constructor START ===" << std::endl;
+
+    // Initialize matrices with correct dimensions
+    params_.query_weights = Matrix(hidden_size_, hidden_size_);
+    params_.key_weights = Matrix(hidden_size_, hidden_size_);
+    params_.value_weights = Matrix(hidden_size_, hidden_size_);
+    params_.output_weights = Matrix(hidden_size_, hidden_size_);
+
+    // Initialize bias vectors
+    params_.query_bias = FloatVector(hidden_size_ * num_heads_);
+    params_.key_bias = FloatVector(hidden_size_ * num_heads_);
+    params_.value_bias = FloatVector(hidden_size_ * num_heads_);
+    params_.output_bias = FloatVector(hidden_size_);
+
+    // Initialize gradients
+    grads_.query_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.key_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.value_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.output_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.query_bias_grad = FloatVector(hidden_size_ * num_heads_);
+    grads_.key_bias_grad = FloatVector(hidden_size_ * num_heads_);
+    grads_.value_bias_grad = FloatVector(hidden_size_ * num_heads_);
+    grads_.output_bias_grad = FloatVector(hidden_size_);
 
     // Print configuration
     std::cout << "Configuration:" << std::endl;
@@ -78,42 +81,7 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
 
     // Initialize weights with Xavier/Glorot initialization
     std::cout << "\nInitializing weights..." << std::endl;
-    float scale = std::sqrt(2.0f / (hidden_size + hidden_size));
-
-    query_proj.initialize_random(scale);
-    key_proj.initialize_random(scale);
-    value_proj.initialize_random(scale);
-    output_proj.initialize_random(scale);
-
-    // Initialize biases to small non-zero values
-    std::cout << "\nInitializing biases..." << std::endl;
-    for (size_t i = 0; i < query_bias.size(); i++)
-        query_bias[i] = 0.01f;
-    for (size_t i = 0; i < key_bias.size(); i++)
-        key_bias[i] = 0.01f;
-    for (size_t i = 0; i < value_bias.size(); i++)
-        value_bias[i] = 0.01f;
-    for (size_t i = 0; i < output_bias.size(); i++)
-        output_bias[i] = 0.01f;
-
-    // Initialize gradients to zero
-    for (size_t i = 0; i < query_proj_grad.rows(); i++) {
-        for (size_t j = 0; j < query_proj_grad.cols(); j++) {
-            query_proj_grad(i, j) = 0.0f;
-            key_proj_grad(i, j) = 0.0f;
-            value_proj_grad(i, j) = 0.0f;
-            output_proj_grad(i, j) = 0.0f;
-        }
-    }
-
-    for (size_t i = 0; i < query_bias_grad.size(); i++)
-        query_bias_grad[i] = 0.0f;
-    for (size_t i = 0; i < key_bias_grad.size(); i++)
-        key_bias_grad[i] = 0.0f;
-    for (size_t i = 0; i < value_bias_grad.size(); i++)
-        value_bias_grad[i] = 0.0f;
-    for (size_t i = 0; i < output_bias_grad.size(); i++)
-        output_bias_grad[i] = 0.0f;
+    initialize_weights();
 
     // Initialize RoPE cache
     if (use_rope) {
@@ -251,9 +219,9 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
                                  const std::optional<KVCache>& kv_cache) {
     try {
         // Project input to Q, K, V
-        Matrix Q = query_proj.forward(input);
-        Matrix K = key_proj.forward(input);
-        Matrix V = value_proj.forward(input);
+        Matrix Q = matmul(input, params_.query_weights);
+        Matrix K = matmul(input, params_.key_weights);
+        Matrix V = matmul(input, params_.value_weights);
         
         // Debug Q, K, V projections
         auto debug_matrix = [](const std::string& name, const Matrix& mat) {
@@ -314,7 +282,7 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
             cudaDeviceSynchronize();  // Single sync point
             
             // Final projection
-            Matrix final_output = output_proj.forward(output);
+            Matrix final_output = params_.output_weights.forward(output);
             debug_matrix("Final Output", final_output);
             
             return final_output;
@@ -344,7 +312,7 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
                     std::to_string(output.cols()) + " vs expected " + std::to_string(hidden_size));
             }
             
-            Matrix final_output = output_proj.forward(output);
+            Matrix final_output = params_.output_weights.forward(output);
             debug_matrix("Final Output", final_output);
             
             return final_output;
@@ -368,17 +336,17 @@ void MultiHeadAttention::save(std::ostream& os) const {
 
     // Save projection matrices
     std::cout << "\nSaving projection matrices..." << std::endl;
-    std::cout << "Query projection shape: " << query_proj.rows() << "x" << query_proj.cols()
+    std::cout << "Query projection shape: " << params_.query_weights.rows() << "x" << params_.query_weights.cols()
               << std::endl;
-    query_proj.save(os);
-    std::cout << "Key projection shape: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
-    key_proj.save(os);
-    std::cout << "Value projection shape: " << value_proj.rows() << "x" << value_proj.cols()
+    params_.query_weights.save(os);
+    std::cout << "Key projection shape: " << params_.key_weights.rows() << "x" << params_.key_weights.cols() << std::endl;
+    params_.key_weights.save(os);
+    std::cout << "Value projection shape: " << params_.value_weights.rows() << "x" << params_.value_weights.cols()
               << std::endl;
-    value_proj.save(os);
-    std::cout << "Output projection shape: " << output_proj.rows() << "x" << output_proj.cols()
+    params_.value_weights.save(os);
+    std::cout << "Output projection shape: " << params_.output_weights.rows() << "x" << params_.output_weights.cols()
               << std::endl;
-    output_proj.save(os);
+    params_.output_weights.save(os);
 
     std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
 }
@@ -405,10 +373,10 @@ std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, c
 
     // Load projection matrices
     std::cout << "\nLoading projection matrices..." << std::endl;
-    attention->query_proj = Matrix::load(is);
-    attention->key_proj = Matrix::load(is);
-    attention->value_proj = Matrix::load(is);
-    attention->output_proj = Matrix::load(is);
+    attention->params_.query_weights = Matrix::load(is);
+    attention->params_.key_weights = Matrix::load(is);
+    attention->params_.value_weights = Matrix::load(is);
+    attention->params_.output_weights = Matrix::load(is);
 
     // Validate loaded matrices
     std::cout << "\nValidating loaded matrices..." << std::endl;
@@ -425,10 +393,10 @@ std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, c
         }
     };
 
-    validate_matrix(attention->query_proj, "Query projection");
-    validate_matrix(attention->key_proj, "Key projection");
-    validate_matrix(attention->value_proj, "Value projection");
-    validate_matrix(attention->output_proj, "Output projection");
+    validate_matrix(attention->params_.query_weights, "Query projection");
+    validate_matrix(attention->params_.key_weights, "Key projection");
+    validate_matrix(attention->params_.value_weights, "Value projection");
+    validate_matrix(attention->params_.output_weights, "Output projection");
 
     std::cout << "=== MultiHeadAttention::load END ===\n" << std::endl;
     return attention;
@@ -547,11 +515,17 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
     validate_dimensions(grad, input_matrix, target_distribution);
 
     // Initialize gradients if not already done
-    if (query_proj_grad.empty()) {
-        query_proj_grad = Matrix(query_proj.rows(), query_proj.cols(), 0.0f);
-        key_proj_grad = Matrix(key_proj.rows(), key_proj.cols(), 0.0f);
-        value_proj_grad = Matrix(value_proj.rows(), value_proj.cols(), 0.0f);
-        output_proj_grad = Matrix(output_proj.rows(), output_proj.cols(), 0.0f);
+    if (grads_.query_grad.empty()) {
+        grads_.query_grad = Matrix(params_.query_weights.rows(), params_.query_weights.cols(), 0.0f);
+        grads_.key_grad = Matrix(params_.key_weights.rows(), params_.key_weights.cols(), 0.0f);
+        grads_.value_grad = Matrix(params_.value_weights.rows(), params_.value_weights.cols(), 0.0f);
+        grads_.output_grad = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
+        
+        // Initialize bias gradients
+        grads_.query_bias_grad = FloatVector(params_.query_bias.size(), 0.0f);
+        grads_.key_bias_grad = FloatVector(params_.key_bias.size(), 0.0f);
+        grads_.value_bias_grad = FloatVector(params_.value_bias.size(), 0.0f);
+        grads_.output_bias_grad = FloatVector(params_.output_bias.size(), 0.0f);
     }
     
     // Clip incoming gradients
@@ -580,46 +554,36 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
     
     // Project attention scores back to hidden dimensions for query
     Matrix d_query_hidden(d_query.rows(), input_matrix.cols());  // [seq_len x hidden_dim]
-    cuda::matmul(d_query, query_proj, d_query_hidden);
-    query_proj_grad += matmul(input_matrix.transpose(), d_query_hidden);
-    std::cout << "query_proj_grad dimensions: " << query_proj_grad.rows() << "x" << query_proj_grad.cols() << std::endl;
+    cuda::matmul(d_query, params_.query_weights, d_query_hidden);
+    grads_.query_grad += matmul(input_matrix.transpose(), d_query_hidden);
+    std::cout << "query_weights_grad dimensions: " << grads_.query_grad.rows() << "x" << grads_.query_grad.cols() << std::endl;
 
     // Project attention scores back to hidden dimensions for key
     Matrix d_key_hidden(d_key.rows(), input_matrix.cols());
-    cuda::matmul(d_key, key_proj, d_key_hidden);
-    key_proj_grad += matmul(input_matrix.transpose(), d_key_hidden);
-    std::cout << "key_proj_grad dimensions: " << key_proj_grad.rows() << "x" << key_proj_grad.cols() << std::endl;
+    cuda::matmul(d_key, params_.key_weights, d_key_hidden);
+    grads_.key_grad += matmul(input_matrix.transpose(), d_key_hidden);
+    std::cout << "key_weights_grad dimensions: " << grads_.key_grad.rows() << "x" << grads_.key_grad.cols() << std::endl;
 
     // Project attention scores back to hidden dimensions for value
     Matrix d_value_hidden(d_value.rows(), input_matrix.cols());
-    cuda::matmul(d_value, value_proj, d_value_hidden);
-    value_proj_grad += matmul(input_matrix.transpose(), d_value_hidden);
-    std::cout << "value_proj_grad dimensions: " << value_proj_grad.rows() << "x" << value_proj_grad.cols() << std::endl;
+    cuda::matmul(d_value, params_.value_weights, d_value_hidden);
+    grads_.value_grad += matmul(input_matrix.transpose(), d_value_hidden);
+    std::cout << "value_weights_grad dimensions: " << grads_.value_grad.rows() << "x" << grads_.value_grad.cols() << std::endl;
 
     // For output projection, we already have grad in hidden dimensions
-    output_proj_grad += matmul(grad.transpose(), input_matrix);  // This one is already correct
-    std::cout << "output_proj_grad dimensions: " << output_proj_grad.rows() << "x" << output_proj_grad.cols() << std::endl;
-
-    // Update bias gradients
-    Vector d_query_bias = d_query.row_sum();
-    std::cout << "d_query_bias dimensions: " << d_query_bias.size() << std::endl;   
-    Vector d_key_bias = d_key.row_sum();
-    std::cout << "d_key_bias dimensions: " << d_key_bias.size() << std::endl;
-    Vector d_value_bias = d_value.row_sum();
-    std::cout << "d_value_bias dimensions: " << d_value_bias.size() << std::endl;
-    Vector d_output_bias = grad.row_sum();
-    std::cout << "d_output_bias dimensions: " << d_output_bias.size() << std::endl;
+    grads_.output_grad += matmul(grad.transpose(), input_matrix);  // This one is already correct
+    std::cout << "output_weights_grad dimensions: " << grads_.output_grad.rows() << "x" << grads_.output_grad.cols() << std::endl;
 
     // Update bias gradients element by element
     std::cout << "Updating bias gradients..." << std::endl;
-    for (size_t i = 0; i < query_bias_grad.size(); ++i) {
-        query_bias_grad[i] += d_query_bias[i];
-        key_bias_grad[i] += d_key_bias[i];
-        value_bias_grad[i] += d_value_bias[i];
+    for (size_t i = 0; i < grads_.query_bias_grad.size(); ++i) {
+        grads_.query_bias_grad[i] += d_query.row_sum()[i];
+        grads_.key_bias_grad[i] += d_key.row_sum()[i];
+        grads_.value_bias_grad[i] += d_value.row_sum()[i];
     }
     std::cout << "Updated query bias gradients" << std::endl;
-    for (size_t i = 0; i < output_bias_grad.size(); ++i) {
-        output_bias_grad[i] += d_output_bias[i];
+    for (size_t i = 0; i < grads_.output_bias_grad.size(); ++i) {
+        grads_.output_bias_grad[i] += grad.row_sum()[i];
     }
 
     // Convert gradients back to FP32 before returning
@@ -1065,30 +1029,22 @@ Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Mat
 }
 
 Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
-    // Original implementation
-    int seq_len = input.rows();
-    Matrix d_key(seq_len, seq_len);
-    cuda::matmul(grad, key_proj.transpose(), d_key);
-    
-    std::cout << "compute_key_gradients dimensions:" << std::endl;
-    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "key_proj: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
-    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
-    
+    Matrix d_key(grad.rows(), grad.cols());
+#ifdef USE_CUDA
+    cuda::matmul(grad, params_.key_weights.transpose(), d_key);
+#else
+    d_key = matmul(grad, params_.key_weights.transpose());
+#endif
     return d_key;
 }
 
 Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
-    // Original implementation
-    int seq_len = input.rows();
-    Matrix d_value(seq_len, seq_len);
-    cuda::matmul(grad, value_proj.transpose(), d_value);
-    
-    std::cout << "compute_value_gradients dimensions:" << std::endl;
-    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "value_proj: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
-    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
-    
+    Matrix d_value(grad.rows(), grad.cols());
+#ifdef USE_CUDA
+    cuda::matmul(grad, params_.value_weights.transpose(), d_value);
+#else
+    d_value = matmul(grad, params_.value_weights.transpose());
+#endif
     return d_value;
 }
 
@@ -1109,44 +1065,17 @@ Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix
 
 void MultiHeadAttention::initialize_weights() {
     // Xavier/Glorot initialization
-    // For attention, we want to consider both input and output connections
-    // fan_in = hidden_size, fan_out = hidden_size
-    float scale = std::sqrt(2.0f / (hidden_size + hidden_size));
+    float scale = std::sqrt(2.0f / (hidden_size + head_dim));
     
-    std::cout << "Initializing attention weights with scale: " << scale << std::endl;
+    // Initialize projection matrices using parameter accessors
+    params_.query_weights.initialize_random(scale);
+    params_.key_weights.initialize_random(scale);
+    params_.value_weights.initialize_random(scale);
+    params_.output_weights.initialize_random(scale);
     
-    query_proj.initialize_random(scale);
-    key_proj.initialize_random(scale);
-    value_proj.initialize_random(scale);
-    output_proj.initialize_random(scale);
-    
-    // Initialize biases to small positive values to encourage
-    // initially looking at all positions slightly
-    float bias_init = 0.01f;
-    query_bias.initialize_constant(bias_init);
-    key_bias.initialize_constant(bias_init);
-    value_bias.initialize_constant(bias_init);
-    output_bias.initialize_constant(bias_init);
-    
-    // Log initialization statistics
-    auto log_stats = [](const Matrix& m, const std::string& name) {
-        float min_val = m.min();
-        float max_val = m.max();
-        float mean_val = 0.0f;
-        for (size_t i = 0; i < m.rows(); i++) {
-            for (size_t j = 0; j < m.cols(); j++) {
-                mean_val += m(i,j);
-            }
-        }
-        mean_val /= (m.rows() * m.cols());
-        
-        std::cout << name << " initialization stats:\n"
-                  << "- Range: [" << min_val << ", " << max_val << "]\n"
-                  << "- Mean: " << mean_val << "\n";
-    };
-    
-    log_stats(query_proj, "Query projection");
-    log_stats(key_proj, "Key projection");
-    log_stats(value_proj, "Value projection");
-    log_stats(output_proj, "Output projection");
+    // Initialize bias vectors with small values
+    params_.query_bias.initialize_constant(0.01f);
+    params_.key_bias.initialize_constant(0.01f);
+    params_.value_bias.initialize_constant(0.01f);
+    params_.output_bias.initialize_constant(0.01f);
 }

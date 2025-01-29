@@ -348,10 +348,15 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
     dropout = std::make_unique<Dropout>(config.dropout_prob);
 
     // Xavier/Glorot initialization with bounds
-    auto init_weight = [](float fan_in, float fan_out) -> float {
+    auto init_weights = [](Matrix& weights, float fan_in, float fan_out) {
         float limit = std::sqrt(6.0f / (fan_in + fan_out));
         limit = std::min(limit, 0.1f); // Cap maximum initialization value
-        return (static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f) * limit;
+        
+        for (size_t i = 0; i < weights.rows(); i++) {
+            for (size_t j = 0; j < weights.cols(); j++) {
+                weights(i, j) = (static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f) * limit;
+            }
+        }
     };
 
     // Initialize token embedding with bounded values
@@ -373,6 +378,17 @@ Transformer::Transformer(const TransformerConfig& config) : config(config) {
 
     // Initialize the language model head with bounded values
     lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
+
+    // Initialize final layer norm weights (scale and bias)
+    if (final_ln) {
+        auto& params = final_ln->parameters();
+        params.gamma.initialize_constant(1.0f);  // Identity scaling
+        params.beta.initialize_constant(0.0f);   // No initial shift
+        
+        // Cache the initial values for gradient computation
+        GradientCheckpoint::cache_activation("final_ln_gamma", params.gamma);
+        GradientCheckpoint::cache_activation("final_ln_beta", params.beta);
+    }
 }
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer, bool use_cache) {
@@ -464,15 +480,138 @@ void Transformer::clear_kv_cache() {
 }
 
 // Original backward method implementation
-void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens, 
-                         float learning_rate) {
-    static const bool use_fp16 = config.use_fp16;
-    
-    Matrix grad = grad_output;
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(grad);
+void Transformer::backward(const Matrix& grad_output, const std::vector<int>& input_tokens, float learning_rate) {
+    if (!training) {
+        std::cout << "Model is in evaluation mode. Skipping backward pass." << std::endl;
+        return;
     }
-    // ... rest of original implementation
+
+    try {
+        // Backward through layers in reverse order
+        Matrix current_grad = grad_output;
+        
+        for (int i = layers.size() - 1; i >= 0; --i) {
+            // Get cached activations for this layer using the same keys as forward pass
+            std::string ffn_key = "ffn_norm_" + std::to_string(i);
+            std::string attn_key = "attn_norm_" + std::to_string(i);
+            
+            // Get both cached activations
+            Matrix ffn_input = GradientCheckpoint::get_activation(ffn_key);
+            Matrix attn_input = GradientCheckpoint::get_activation(attn_key);
+            
+            // Store the original dimensions for debugging
+            std::cout << "Layer " << i << " backward pass dimensions:" << std::endl;
+            std::cout << "FFN input: " << ffn_input.rows() << "x" << ffn_input.cols() << std::endl;
+            std::cout << "Attention input: " << attn_input.rows() << "x" << attn_input.cols() << std::endl;
+            std::cout << "Current grad: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
+            
+            // Use attention input for attention computation and ffn_input for feed forward
+            Matrix layer_grad;
+            try {
+                layer_grad = layers[i]->backward(current_grad, attn_input, Matrix());  // Use attention input
+                current_grad = layer_grad;  // Update current gradient for next layer
+            } catch (const std::exception& e) {
+                std::cerr << "Error in layer " << i << " backward pass: " << e.what() << std::endl;
+                std::cerr << "Attempting to proceed with gradient computation..." << std::endl;
+            }
+            
+            // Update parameters only if we have valid gradients
+            if (!layer_grad.empty()) {
+                // Update attention parameters
+                auto* attention = layers[i]->getAttention();
+                if (attention) {
+                    auto& params = attention->parameters();
+                    auto& grads = attention->param_gradients();
+                    
+                    try {
+                        // Update query, key, value, and output weights
+                        update_parameter_with_clip(params.query_weights, grads.query_grad, learning_rate);
+                        update_parameter_with_clip(params.key_weights, grads.key_grad, learning_rate);
+                        update_parameter_with_clip(params.value_weights, grads.value_grad, learning_rate);
+                        update_parameter_with_clip(params.output_weights, grads.output_grad, learning_rate);
+                        
+                        // Update biases
+                        update_parameter_with_clip(params.query_bias, grads.query_bias_grad, learning_rate);
+                        update_parameter_with_clip(params.key_bias, grads.key_bias_grad, learning_rate);
+                        update_parameter_with_clip(params.value_bias, grads.value_bias_grad, learning_rate);
+                        update_parameter_with_clip(params.output_bias, grads.output_bias_grad, learning_rate);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error updating attention parameters: " << e.what() << std::endl;
+                    }
+                }
+                
+                // Update feed forward parameters
+                auto* ffn = layers[i]->getFeedForward();
+                if (ffn) {
+                    auto& params = ffn->parameters();
+                    auto& grads = ffn->param_gradients();
+                    
+                    try {
+                        // Update weights and biases
+                        update_parameter_with_clip(params.ff1_weights, grads.ff1_grad, learning_rate);
+                        update_parameter_with_clip(params.ff2_weights, grads.ff2_grad, learning_rate);
+                        update_parameter_with_clip(params.ff1_bias, grads.ff1_bias_grad, learning_rate);
+                        update_parameter_with_clip(params.ff2_bias, grads.ff2_bias_grad, learning_rate);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error updating feed forward parameters: " << e.what() << std::endl;
+                    }
+                }
+                
+                // Update layer norm parameters
+                if (auto* ln = layers[i]->getLayerNorm()) {
+                    auto& params = ln->parameters();
+                    auto& grads = ln->param_gradients();
+                    try {
+                        update_parameter_with_clip(params.gamma, grads.gamma_grad, learning_rate);
+                        update_parameter_with_clip(params.beta, grads.beta_grad, learning_rate);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error updating layer norm parameters: " << e.what() << std::endl;
+                    }
+                }
+            }
+        }
+        
+        // Update embedding layer if it exists
+        if (token_embedding) {
+            try {
+                update_parameter_with_clip(token_embedding->get_weights(), 
+                                         token_embedding->get_gradient_table(), 
+                                         learning_rate);
+            } catch (const std::exception& e) {
+                std::cerr << "Error updating embedding parameters: " << e.what() << std::endl;
+            }
+        }
+        
+        // Reset all gradients
+        clear_gradients();
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error in backward pass: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+void Transformer::clear_gradients() {
+    // Reset layer gradients
+    for (auto& layer : layers) {
+        if (auto* attention = layer->getAttention()) {
+            attention->param_gradients() = MultiHeadAttention::Gradients();
+        }
+        if (auto* ffn = layer->getFeedForward()) {
+            ffn->param_gradients() = FeedForward::Gradients();
+        }
+        if (auto* ln = layer->getLayerNorm()) {
+            ln->param_gradients() = LayerNorm::Gradients();
+        }
+    }
+    
+    // Reset embedding gradients
+    if (token_embedding) {
+        token_embedding->get_gradient_table().initialize_constant(0.0f);
+    }
+    
+    // Reset parameter gradients
+    parameter_grads.reset();
 }
 
 // New batch backward method implementation
@@ -518,122 +657,49 @@ void Transformer::train_step(const std::vector<std::vector<int>>& input_tokens,
 void Transformer::update_parameters(float learning_rate) {
     std::cout << "=== Transformer::update_parameters START ===" << std::endl;
 
-    // Update Matrix parameters
-    auto& params = parameters();
-    auto& grads = parameter_gradients();
-
-    std::cout << "Number of matrix parameters: " << params.size() << std::endl;
-    std::cout << "Number of matrix gradients: " << grads.size() << std::endl;
-
-    #pragma omp parallel for
-    for (size_t i = 0; i < params.size(); ++i) {
-        Matrix& param = params[i];
-        const Matrix& grad = grads[i];
-
-        std::cout << "Updating matrix parameter " << i << ": ";
-        std::cout << "param shape=" << param.rows() << "x" << param.cols()
-                  << ", grad shape=" << grad.rows() << "x" << grad.cols() << std::endl;
-
-        if (param.rows() != grad.rows() || param.cols() != grad.cols()) {
-            throw std::runtime_error(
-                "Dimension mismatch in matrix update: param(" + std::to_string(param.rows()) + "," +
-                std::to_string(param.cols()) + ") != grad(" + std::to_string(grad.rows()) + "," +
-                std::to_string(grad.cols()) + ")");
-        }
-
-        #pragma omp parallel for collapse(2)
-        for (size_t j = 0; j < param.rows(); ++j) {
-            for (size_t k = 0; k < param.cols(); ++k) {
-                param(j, k) -= learning_rate * grad(j, k);
-            }
-        }
-    }
-
-    // Update Vector parameters for each layer
-    #pragma omp parallel for
-    for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
-        std::cout << "\nProcessing layer " << layer_idx << std::endl;
-        auto& layer = layers[layer_idx];
-
+    // Update layer parameters
+    for (auto& layer : layers) {
         // Update attention parameters
-        auto& attn_params = layer->self_attention->parameters();
-        auto& attn_grads = layer->self_attention->parameter_gradients();
+        if (auto* attention = layer->getAttention()) {
+            auto& attn_params = attention->parameters();
+            auto& attn_grads = attention->param_gradients();
 
-        std::cout << "Attention vectors: " << attn_params.vectors.size() << " parameters, "
-                  << attn_grads.vectors.size() << " gradients" << std::endl;
+            // Update weights
+            update_parameter_with_clip(attn_params.query_weights, attn_grads.query_grad, learning_rate);
+            update_parameter_with_clip(attn_params.key_weights, attn_grads.key_grad, learning_rate);
+            update_parameter_with_clip(attn_params.value_weights, attn_grads.value_grad, learning_rate);
+            update_parameter_with_clip(attn_params.output_weights, attn_grads.output_grad, learning_rate);
 
-        // Update attention biases using computed gradients
-        #pragma omp parallel for
-        for (size_t i = 0; i < attn_params.vectors.size(); ++i) {
-            auto& bias = attn_params.vectors[i];
-            const auto& bias_grad = attn_grads.vectors[i];
-
-            std::cout << "Attention bias " << i << ": bias size=" << bias.get().size()
-                      << ", grad size=" << bias_grad.get().size() << std::endl;
-
-            if (bias.get().size() != bias_grad.get().size()) {
-                throw std::runtime_error("Dimension mismatch in attention bias update");
-            }
-
-            #pragma omp parallel for
-            for (size_t j = 0; j < bias.get().size(); ++j) {
-                bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
-            }
-        }
-
-        // Update layer norm parameters
-        auto& ln_params = layer->attention_ln->parameters();
-        auto& ln_grads = layer->attention_ln->parameter_gradients();
-
-        std::cout << "Layer norm vectors: " << ln_params.size() << " parameters, "
-                  << ln_grads.size() << " gradients" << std::endl;
-
-        #pragma omp parallel for
-        for (size_t i = 0; i < ln_params.size(); ++i) {
-            auto& param = ln_params[i];
-            const auto& grad = ln_grads[i];
-
-            std::cout << "Layer norm param " << i << ": param size=" << param.get().size()
-                      << ", grad size=" << grad.get().size() << std::endl;
-
-            if (param.get().size() != grad.get().size()) {
-                throw std::runtime_error("Dimension mismatch in layer norm update");
-            }
-
-            #pragma omp parallel for
-            for (size_t j = 0; j < param.get().size(); ++j) {
-                param.get().data()[j] -= learning_rate * grad.get().data()[j];
-            }
+            // Update biases
+            update_parameter_with_clip(attn_params.query_bias, attn_grads.query_bias_grad, learning_rate);
+            update_parameter_with_clip(attn_params.key_bias, attn_grads.key_bias_grad, learning_rate);
+            update_parameter_with_clip(attn_params.value_bias, attn_grads.value_bias_grad, learning_rate);
+            update_parameter_with_clip(attn_params.output_bias, attn_grads.output_bias_grad, learning_rate);
         }
 
         // Update feed forward parameters
-        auto& ffn_params = layer->feed_forward->parameters();
-        auto& ffn_grads = layer->feed_forward->parameter_gradients();
+        if (auto* ffn = layer->getFeedForward()) {
+            auto& ffn_params = ffn->parameters();
+            auto& ffn_grads = ffn->param_gradients();
 
-        std::cout << "Feed forward vectors: " << ffn_params.vectors.size() << " parameters, "
-                  << ffn_grads.vectors.size() << " gradients" << std::endl;
+            // Update weights
+            update_parameter_with_clip(ffn_params.ff1_weights, ffn_grads.ff1_grad, learning_rate);
+            update_parameter_with_clip(ffn_params.ff2_weights, ffn_grads.ff2_grad, learning_rate);
 
-        #pragma omp parallel for
-        for (size_t i = 0; i < ffn_params.vectors.size(); ++i) {
-            auto& bias = ffn_params.vectors[i];
-            const auto& bias_grad = ffn_grads.vectors[i];
+            // Update biases
+            update_parameter_with_clip(ffn_params.ff1_bias, ffn_grads.ff1_bias_grad, learning_rate);
+            update_parameter_with_clip(ffn_params.ff2_bias, ffn_grads.ff2_bias_grad, learning_rate);
+        }
 
-            std::cout << "Feed forward bias " << i << ": bias size=" << bias.get().size()
-                      << ", grad size=" << bias_grad.get().size() << std::endl;
-
-            if (bias.get().size() != bias_grad.get().size()) {
-                throw std::runtime_error("Dimension mismatch in feed forward bias update");
-            }
-
-            #pragma omp parallel for
-            for (size_t j = 0; j < bias.get().size(); ++j) {
-                bias.get().data()[j] -= learning_rate * bias_grad.get().data()[j];
-            }
+        // Update layer norm parameters
+        if (auto* ln = layer->getLayerNorm()) {
+            auto& ln_params = ln->parameters();
+            auto& ln_grads = ln->param_gradients();
+            
+            update_parameter_with_clip(ln_params.gamma, ln_grads.gamma_grad, learning_rate);
+            update_parameter_with_clip(ln_params.beta, ln_grads.beta_grad, learning_rate);
         }
     }
-
-    // Clear gradients after update
-    parameter_grads.reset();
 
     std::cout << "=== Transformer::update_parameters END ===" << std::endl;
 }
@@ -642,47 +708,79 @@ std::vector<Matrix>& Transformer::parameters() {
     static std::vector<Matrix> all_params;
     all_params.clear();
 
-    // Token embedding parameters (only Matrix)
+    // Token embedding parameters
     if (token_embedding) {
-        auto& token_params = token_embedding->parameters();
-        for (const auto& param : token_params) {
-            all_params.push_back(param.get());
-        }
+        all_params.push_back(token_embedding->get_weights());
     }
 
     // Layer parameters
     for (const auto& layer : layers) {
-        // Attention parameters
-        auto& attention_params = layer->self_attention->parameters();
-        for (const auto& param : attention_params.matrices) {
-            all_params.push_back(param.get());
+        if (auto* attention = layer->getAttention()) {
+            auto& attn_params = attention->parameters();
+            all_params.push_back(attn_params.query_weights);
+            all_params.push_back(attn_params.key_weights);
+            all_params.push_back(attn_params.value_weights);
+            all_params.push_back(attn_params.output_weights);
         }
 
-        // Layer norm parameters (only Vectors, skip)
-
-        // Feed forward parameters
-        auto& ffn_params = layer->feed_forward->parameters();
-        for (const auto& param : ffn_params.matrices) {
-            all_params.push_back(param.get());
+        if (auto* ffn = layer->getFeedForward()) {
+            auto& ffn_params = ffn->parameters();
+            all_params.push_back(ffn_params.ff1_weights);
+            all_params.push_back(ffn_params.ff2_weights);
         }
     }
 
     return all_params;
 }
 
-std::vector<Matrix>& Transformer::parameter_gradients() {
-    if (!parameter_grads) {
-        // Initialize parameter gradients if they don't exist
-        parameter_grads = std::vector<Matrix>();
-        auto& params = parameters();
-        parameter_grads->reserve(params.size());
-        
-        // Create gradient matrices with same dimensions as parameters
-        for (const auto& param : params) {
-            parameter_grads->emplace_back(param.rows(), param.cols());
+void Transformer::initialize_weights() {
+    // Xavier/Glorot initialization with bounds
+    auto init_weights = [](Matrix& weights, float fan_in, float fan_out) {
+        float limit = std::sqrt(6.0f / (fan_in + fan_out));
+        limit = std::min(limit, 0.1f); // Cap maximum initialization value
+        weights.initialize_random(limit);
+    };
+
+    // Initialize token embeddings
+    if (token_embedding) {
+        auto& embedding_weights = token_embedding->get_weights();
+        init_weights(embedding_weights, config.vocab_size, config.hidden_size);
+    }
+
+    // Initialize transformer layers
+    for (auto& layer : layers) {
+        if (layer) {
+            // Initialize attention weights
+            if (auto* attention = layer->getAttention()) {
+                auto& params = attention->parameters();
+                init_weights(params.query_weights, config.hidden_size, config.hidden_size);
+                init_weights(params.key_weights, config.hidden_size, config.hidden_size);
+                init_weights(params.value_weights, config.hidden_size, config.hidden_size);
+                init_weights(params.output_weights, config.hidden_size, config.hidden_size);
+            }
+
+            // Initialize feed forward weights
+            if (auto* ff = layer->getFeedForward()) {
+                auto& params = ff->parameters();
+                init_weights(params.ff1_weights, config.hidden_size, config.intermediate_size);
+                init_weights(params.ff2_weights, config.intermediate_size, config.hidden_size);
+            }
+
+            // Initialize layer norm parameters
+            if (auto* ln = layer->getLayerNorm()) {
+                auto& params = ln->parameters();
+                params.gamma.initialize_constant(1.0f);  // Identity scaling
+                params.beta.initialize_constant(0.0f);   // No initial shift
+            }
         }
     }
-    return *parameter_grads;
+
+    // Initialize final layer norm
+    if (final_ln) {
+        auto& params = final_ln->parameters();
+        params.gamma.initialize_constant(1.0f);
+        params.beta.initialize_constant(0.0f);
+    }
 }
 
 Transformer::~Transformer() {
@@ -980,4 +1078,50 @@ bool Transformer::is_likely_adjective(const std::string& token) {
         }
     }
     return false;
+}
+
+void Transformer::update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate) {
+    const float clip_threshold = 1.0f;  // Gradient clipping threshold
+    
+    // Calculate gradient norm
+    float grad_norm = 0.0f;
+    #pragma omp parallel for reduction(+:grad_norm)
+    for (size_t i = 0; i < grad.rows(); ++i) {
+        for (size_t j = 0; j < grad.cols(); ++j) {
+            grad_norm += grad(i, j) * grad(i, j);
+        }
+    }
+    grad_norm = std::sqrt(grad_norm);
+    
+    // Apply clipping if necessary
+    float scaling_factor = grad_norm > clip_threshold ? clip_threshold / grad_norm : 1.0f;
+    
+    // Update parameters with clipped gradients
+    #pragma omp parallel for collapse(2)
+    for (size_t i = 0; i < param.rows(); ++i) {
+        for (size_t j = 0; j < param.cols(); ++j) {
+            param(i, j) -= learning_rate * grad(i, j) * scaling_factor;
+        }
+    }
+}
+
+void Transformer::update_parameter_with_clip(Vector& param, const Vector& grad, float learning_rate) {
+    const float clip_threshold = 1.0f;  // Gradient clipping threshold
+    
+    // Calculate gradient norm
+    float grad_norm = 0.0f;
+    #pragma omp parallel for reduction(+:grad_norm)
+    for (size_t i = 0; i < grad.size(); ++i) {
+        grad_norm += grad[i] * grad[i];
+    }
+    grad_norm = std::sqrt(grad_norm);
+    
+    // Apply clipping if necessary
+    float scaling_factor = grad_norm > clip_threshold ? clip_threshold / grad_norm : 1.0f;
+    
+    // Update parameters with clipped gradients
+    #pragma omp parallel for
+    for (size_t i = 0; i < param.size(); ++i) {
+        param[i] -= learning_rate * grad[i] * scaling_factor;
+    }
 }

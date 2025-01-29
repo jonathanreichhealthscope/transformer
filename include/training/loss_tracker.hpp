@@ -1,4 +1,5 @@
 #pragma once
+#include "tensor.hpp"
 #include <deque>
 #include <numeric>
 #include <algorithm>
@@ -14,6 +15,7 @@ public:
     float get_trend() const;
     float get_recent_average() const { return recent_average; }
     float get_overall_average() const { return overall_average; }
+    float compute_loss(const Tensor& predictions, const Tensor& targets);
     size_t get_sample_count() const { return loss_history.size(); }
 
 private:
