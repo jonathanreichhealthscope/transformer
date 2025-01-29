@@ -1023,33 +1023,100 @@ std::string Transformer::extract_prediction(
     // Get the final token predictions
     Matrix final_logits = Matrix(logits.row(logits.rows() - 1));  // Explicit conversion
     
-    // Apply type-specific constraints to the predictions
+    // Apply softmax with temperature
+    const float temperature = 0.7f;  // Lower = more focused predictions, higher = more diverse
+    float max_logit = -std::numeric_limits<float>::infinity();
+    
+    // Find max for numerical stability
+    for (size_t i = 0; i < final_logits.cols(); i++) {
+        max_logit = std::max(max_logit, final_logits(0, i));
+    }
+    
+    // Compute softmax probabilities
+    std::vector<float> probabilities(final_logits.cols());
+    float sum_exp = 0.0f;
+    
+    for (size_t i = 0; i < final_logits.cols(); i++) {
+        float scaled_logit = (final_logits(0, i) - max_logit) / temperature;
+        probabilities[i] = std::exp(scaled_logit);
+        sum_exp += probabilities[i];
+    }
+    
+    // Normalize probabilities
+    for (float& prob : probabilities) {
+        prob /= sum_exp;
+    }
+    
+    // Apply type-specific boosts
     switch (phrase_type) {
         case PhraseType::VERB:
-            // Boost probabilities of verb-like tokens
-            // This would involve identifying verb tokens in your vocabulary
+            boost_verb_probabilities(probabilities, tokenizer);
             break;
-            
         case PhraseType::ADJECTIVE:
-            // Boost probabilities of adjective-like tokens
-            // This would involve identifying adjective tokens in your vocabulary
+            boost_adjective_probabilities(probabilities, tokenizer);
             break;
-            
         default:
-            // No special constraints for general phrases
             break;
     }
     
-    // Get the most likely token
-    int predicted_token = 0;
-    float max_prob = -std::numeric_limits<float>::infinity();
-    for (size_t i = 0; i < final_logits.cols(); i++) {
-        if (final_logits(0, i) > max_prob) {
-            max_prob = final_logits(0, i);
-            predicted_token = i;
-        }
-    }
+    // Sample from the distribution
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::discrete_distribution<> dist(probabilities.begin(), probabilities.end());
+    int predicted_token = dist(gen);
     
     // Decode the predicted token
     return tokenizer.decode({predicted_token});
+}
+
+void Transformer::boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer) {
+    const float boost_factor = 1.5f;
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        std::string token = tokenizer.decode({static_cast<int>(i)});
+        if (is_likely_verb(token)) {
+            probabilities[i] *= boost_factor;
+        }
+    }
+    // Renormalize
+    float sum = std::accumulate(probabilities.begin(), probabilities.end(), 0.0f);
+    for (float& prob : probabilities) {
+        prob /= sum;
+    }
+}
+
+void Transformer::boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer) {
+    const float boost_factor = 1.5f;
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        std::string token = tokenizer.decode({static_cast<int>(i)});
+        if (is_likely_adjective(token)) {
+            probabilities[i] *= boost_factor;
+        }
+    }
+    // Renormalize
+    float sum = std::accumulate(probabilities.begin(), probabilities.end(), 0.0f);
+    for (float& prob : probabilities) {
+        prob /= sum;
+    }
+}
+
+bool Transformer::is_likely_verb(const std::string& token) {
+    const std::vector<std::string> verb_endings = {"ing", "ed", "ate", "ize", "ify"};
+    for (const auto& ending : verb_endings) {
+        if (token.length() > ending.length() && 
+            token.substr(token.length() - ending.length()) == ending) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Transformer::is_likely_adjective(const std::string& token) {
+    const std::vector<std::string> adj_endings = {"ful", "ous", "ible", "able", "al", "ive"};
+    for (const auto& ending : adj_endings) {
+        if (token.length() > ending.length() && 
+            token.substr(token.length() - ending.length()) == ending) {
+            return true;
+        }
+    }
+    return false;
 }

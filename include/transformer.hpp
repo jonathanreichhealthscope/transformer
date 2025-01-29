@@ -406,4 +406,32 @@ private:
         PhraseType phrase_type,
         const Tokenizer& tokenizer
     );
+
+    /**
+     * @brief Boosts probabilities for tokens that are likely verbs
+     * @param probabilities Vector of token probabilities to modify
+     * @param tokenizer Tokenizer for decoding tokens
+     */
+    void boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
+
+    /**
+     * @brief Boosts probabilities for tokens that are likely adjectives
+     * @param probabilities Vector of token probabilities to modify
+     * @param tokenizer Tokenizer for decoding tokens
+     */
+    void boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
+
+    /**
+     * @brief Checks if a token is likely a verb based on common endings
+     * @param token Token to check
+     * @return True if the token is likely a verb
+     */
+    bool is_likely_verb(const std::string& token);
+
+    /**
+     * @brief Checks if a token is likely an adjective based on common endings
+     * @param token Token to check
+     * @return True if the token is likely an adjective
+     */
+    bool is_likely_adjective(const std::string& token);
 };
