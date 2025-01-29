@@ -550,12 +550,22 @@ int main(int argc, char* argv[]) {
                           << " (" << (100.0f * non_padding_tokens / total_tokens) << "%)\n";
 
                 // More dynamic learning rate adjustment
-                float loss_ratio = batch_loss / (prev_loss + 1e-10f);
+                float loss_ratio = 1.0f;  // Default to neutral ratio
+                if (std::isfinite(batch_loss) && std::isfinite(prev_loss) && prev_loss > 0.0f) {
+                    // Only compute ratio if both losses are valid and prev_loss is positive
+                    const float min_loss = 1e-6f;  // Larger epsilon for more stability
+                    loss_ratio = batch_loss / std::max(prev_loss, min_loss);
+                    
+                    // Clamp ratio to reasonable range
+                    const float max_ratio = 10.0f;
+                    loss_ratio = std::max(0.1f, std::min(loss_ratio, max_ratio));
+                }
+
                 float grad_scale = std::min(avg_grad_magnitude, 1.0f);  // Scale based on gradient magnitude
                 
                 // Adjust thresholds based on training progress
-                float upper_threshold = 1.05f - (0.01f * std::min(global_step / 1000.0f, 0.04f));  // Starts at 1.05, decreases to 1.01
-                float lower_threshold = 0.95f + (0.01f * std::min(global_step / 1000.0f, 0.04f));  // Starts at 0.95, increases to 0.99
+                float upper_threshold = 1.05f - (0.01f * std::min(global_step / 1000.0f, 0.04f));
+                float lower_threshold = 0.95f + (0.01f * std::min(global_step / 1000.0f, 0.04f));
                 
                 if (loss_ratio > upper_threshold) {
                     // More aggressive decrease when loss increases significantly
