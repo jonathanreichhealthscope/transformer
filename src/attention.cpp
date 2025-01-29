@@ -215,20 +215,18 @@ Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, con
     return O;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& input, const Matrix& attention_mask) {
-    // Convert Matrix attention mask to AttentionMask
-    AttentionMask mask(attention_mask);
-    return forward(input, mask, std::nullopt);
-}
-
 Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask,
                                  const std::optional<KVCache>& kv_cache) {
-    // Original implementation remains the same
     try {
         // Project input to Q, K, V
         Matrix Q = matmul(input, params_.query_weights);
         Matrix K = matmul(input, params_.key_weights);
         Matrix V = matmul(input, params_.value_weights);
+        
+        // Cache the projected matrices for backward pass
+        GradientCheckpoint::cache_activation("query", Q);
+        GradientCheckpoint::cache_activation("key", K);
+        GradientCheckpoint::cache_activation("value", V);
         
         // Get dimensions
         size_t batch_size = input.rows();
@@ -240,7 +238,10 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
         if (use_flash) {
             attention_output = flash_attention(Q, K, V, mask);
         } else {
-            attention_output = standard_attention(Q, K, V, mask);
+            Matrix attention_scores = compute_attention_scores(Q, K, mask);
+            // Cache attention scores for backward pass
+            GradientCheckpoint::cache_activation("attention_scores", attention_scores);
+            attention_output = matmul(attention_scores, V);
         }
         
         // Final projection
@@ -251,68 +252,47 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
     }
 }
 
-Matrix MultiHeadAttention::compute_attention_scores(
-    const Matrix& Q, const Matrix& K, const Matrix& attention_mask,
-    size_t batch_size, size_t seq_len) {
-    
-    // Compute QK^T while maintaining batch and head dimensions
-    Matrix scores(Q.rows(), K.rows());  // [batch_size * num_heads * seq_len, seq_len]
-    
-    const float scale = 1.0f / std::sqrt(static_cast<float>(K.cols()));
-    
-    // Compute attention scores for each batch and head separately
-    for (size_t b = 0; b < batch_size; b++) {
-        for (size_t h = 0; h < num_heads; h++) {
-            size_t start_idx = (b * num_heads + h) * seq_len;
-            size_t end_idx = start_idx + seq_len;
+Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matrix& K, const AttentionMask& mask) {
+    Matrix scores = matmul(Q, K.transpose());
+
+    // Scale scores with careful handling of numerical stability
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // Clip extremely large values to prevent overflow
+    const float max_score = 100.0f; // Prevent exp overflow
+
+    for (size_t i = 0; i < scores.rows(); ++i) {
+        // Find max for numerical stability in softmax
+        float row_max = -std::numeric_limits<float>::infinity();
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) *= scale;
             
-            // Extract this batch and head's queries and keys
-            Matrix Q_bh = Q.block(start_idx, 0, seq_len, Q.cols());
-            Matrix K_bh = K.block(start_idx, 0, seq_len, K.cols());
-            
-            // Compute attention scores for this batch and head
-            Matrix scores_bh = matmul(Q_bh, K_bh.transpose());
-            scores_bh *= scale;
-            
-            // Apply attention mask
-            for (size_t i = 0; i < seq_len; i++) {
-                for (size_t j = 0; j < seq_len; j++) {
-                    if (attention_mask(i, j) == 0.0f) {
-                        scores_bh(i, j) = -std::numeric_limits<float>::infinity();
-                    }
-                }
+            // Apply mask if needed
+            if (mask.is_masked(i, j)) {
+                scores(i, j) = -std::numeric_limits<float>::infinity();
+            } else {
+                scores(i, j) = std::min(scores(i, j), max_score);
             }
-            
-            // Apply softmax with improved numerical stability
-            for (size_t i = 0; i < seq_len; i++) {
-                float max_val = -std::numeric_limits<float>::infinity();
-                for (size_t j = 0; j < seq_len; j++) {
-                    max_val = std::max(max_val, scores_bh(i, j));
-                }
-                
-                float sum_exp = 0.0f;
-                for (size_t j = 0; j < seq_len; j++) {
-                    scores_bh(i, j) = std::exp(scores_bh(i, j) - max_val);
-                    sum_exp += scores_bh(i, j);
-                }
-                
-                // Normalize with numerical stability
-                const float eps = 1e-6f;
-                sum_exp = std::max(sum_exp, eps);
-                for (size_t j = 0; j < seq_len; j++) {
-                    scores_bh(i, j) /= sum_exp;
-                }
-            }
-            
-            // Copy scores back to the full scores matrix
-            for (size_t i = 0; i < seq_len; i++) {
-                for (size_t j = 0; j < seq_len; j++) {
-                    scores(start_idx + i, start_idx + j) = scores_bh(i, j);
-                }
-            }
+            row_max = std::max(row_max, scores(i, j));
+        }
+
+        // Compute softmax with improved numerical stability
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) = std::exp(scores(i, j) - row_max);
+            sum_exp += scores(i, j);
+        }
+
+        // Normalize with careful handling of small values
+        const float eps = 1e-6f;
+        if (sum_exp < eps)
+            sum_exp = eps;
+
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) /= sum_exp;
         }
     }
-    
+
     return scores;
 }
 
@@ -868,44 +848,6 @@ float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
                                  ", dim=" + std::to_string(dim_idx));
     }
     return sin_cached(pos, dim_idx);
-}
-
-Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matrix& K) {
-    Matrix scores = matmul(Q, K.transpose());
-
-    // Scale scores with careful handling of numerical stability
-    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-
-    // Clip extremely large values to prevent overflow
-    const float max_score = 100.0f; // Prevent exp overflow
-
-    for (size_t i = 0; i < scores.rows(); ++i) {
-        // Find max for numerical stability in softmax
-        float row_max = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < scores.cols(); ++j) {
-            scores(i, j) *= scale;
-            scores(i, j) = std::min(scores(i, j), max_score);
-            row_max = std::max(row_max, scores(i, j));
-        }
-
-        // Compute softmax with improved numerical stability
-        float sum_exp = 0.0f;
-        for (size_t j = 0; j < scores.cols(); ++j) {
-            scores(i, j) = std::exp(scores(i, j) - row_max);
-            sum_exp += scores(i, j);
-        }
-
-        // Normalize with careful handling of small values
-        const float eps = 1e-6f;
-        if (sum_exp < eps)
-            sum_exp = eps;
-
-        for (size_t j = 0; j < scores.cols(); ++j) {
-            scores(i, j) /= sum_exp;
-        }
-    }
-
-    return scores;
 }
 
 void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {

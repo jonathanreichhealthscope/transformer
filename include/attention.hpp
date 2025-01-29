@@ -224,9 +224,10 @@ class MultiHeadAttention {
      * 
      * @param Q Query matrix [batch_size * num_heads, seq_len, head_dim]
      * @param K Key matrix [batch_size * num_kv_heads, seq_len, head_dim]
+     * @param mask Attention mask to prevent attending to certain positions
      * @return Attention scores [batch_size * num_heads, seq_len, seq_len]
      */
-    Matrix compute_attention_scores(const Matrix& Q, const Matrix& K);
+    Matrix compute_attention_scores(const Matrix& Q, const Matrix& K, const AttentionMask& mask);
 
     /**
      * @brief Initialize the attention weights and biases
@@ -250,11 +251,6 @@ class MultiHeadAttention {
 
     // Add the direct matrix version of forward
     Matrix forward(const Matrix& input, const Matrix& attention_mask);
-
-    // Add the 5-parameter version of compute_attention_scores
-    Matrix compute_attention_scores(const Matrix& Q, const Matrix& K, 
-                                  const Matrix& attention_mask,
-                                  size_t batch_size, size_t seq_len);
 
   private:
     Parameters params_;
