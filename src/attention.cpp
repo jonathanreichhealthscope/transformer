@@ -19,6 +19,42 @@
 
 extern PerformanceMetrics metrics;
 
+// Initialize static members
+Matrix MultiHeadAttention::cos_cached;
+Matrix MultiHeadAttention::sin_cached;
+bool MultiHeadAttention::rope_cache_initialized = false;
+
+void MultiHeadAttention::initialize_static_rope_cache(size_t max_seq_len, size_t dim, size_t num_heads) {
+    if (rope_cache_initialized) {
+        return;  // Cache already initialized
+    }
+
+    std::cout << "Initializing static RoPE cache:" << std::endl;
+    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
+    std::cout << "- dim: " << dim << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+
+    cos_cached = Matrix(max_seq_len, dim * num_heads);
+    sin_cached = Matrix(max_seq_len, dim * num_heads);
+
+    std::cout << "Created cache matrices:" << std::endl;
+    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
+    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
+
+    for (size_t pos = 0; pos < max_seq_len; pos++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            for (size_t i = 0; i < dim; i++) {
+                size_t idx = h * dim + i;
+                float theta = std::pow(10000.0f, -2.0f * i / dim);
+                cos_cached(pos, idx) = std::cos(pos * theta);
+                sin_cached(pos, idx) = std::sin(pos * theta);
+            }
+        }
+    }
+
+    rope_cache_initialized = true;
+}
+
 MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, size_t head_dim_,
                                      float dropout_prob_, bool use_flash_, bool use_rope_,
                                      bool use_sliding_window_, size_t window_size_, bool use_gqa_,
@@ -83,9 +119,9 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
     std::cout << "\nInitializing weights..." << std::endl;
     initialize_weights();
 
-    // Initialize RoPE cache
+    // Initialize RoPE cache if needed and not already initialized
     if (use_rope) {
-        initialize_rope_cache(max_seq_length_, head_dim);
+        initialize_static_rope_cache(max_seq_length_, head_dim, num_heads);
     }
 
     std::cout << "=== MultiHeadAttention::constructor END ===\n" << std::endl;
@@ -553,31 +589,6 @@ float compute_grad_norm(const Matrix& grad) {
 
 size_t count_params(const Matrix& param) {
     return param.rows() * param.cols();
-}
-
-void MultiHeadAttention::initialize_rope_cache(size_t max_seq_len, size_t dim) {
-    std::cout << "Initializing RoPE cache:" << std::endl;
-    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
-    std::cout << "- dim: " << dim << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
-
-    cos_cached = Matrix(max_seq_len, dim * num_heads);
-    sin_cached = Matrix(max_seq_len, dim * num_heads);
-
-    std::cout << "Created cache matrices:" << std::endl;
-    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
-    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
-
-    for (size_t pos = 0; pos < max_seq_len; pos++) {
-        for (size_t h = 0; h < num_heads; h++) {
-            for (size_t i = 0; i < dim; i++) {
-                size_t idx = h * dim + i;
-                float theta = std::pow(10000.0f, -2.0f * i / dim);
-                cos_cached(pos, idx) = std::cos(pos * theta);
-                sin_cached(pos, idx) = std::sin(pos * theta);
-            }
-        }
-    }
 }
 
 float MultiHeadAttention::get_cos_cached(size_t pos, size_t dim_idx) const {

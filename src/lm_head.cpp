@@ -60,7 +60,6 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
 }
 
 Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
-    std::cout << "\n=== LanguageModelHead::forward START ===" << std::endl << std::flush;    
     // Cache hidden states for backward pass
     hidden_states_ = hidden_states;
     
@@ -70,20 +69,16 @@ Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
             std::to_string(hidden_size_) + " but got " + std::to_string(hidden_states.cols()));
     }
     
-    // Transpose projection matrix for correct multiplication
-    // projection is [vocab_size x hidden_size] = [2492 x 128]
-    // we need [hidden_size x vocab_size] = [128 x 2492] for the multiplication
-    Matrix projection_t = projection.transpose();
-        // Then multiply hidden states with transposed projection
-    // [N x 128] * [128 x 2492] = [N x 2492]
-    Matrix logits = matmul(hidden_states, projection_t);
-    
-    // Verify dimensions
-    if (logits.rows() != hidden_states.rows() || logits.cols() != vocab_size_) {
-        throw std::runtime_error("Logits dimension mismatch: expected " + 
-            std::to_string(hidden_states.rows()) + "x" + std::to_string(vocab_size_) + 
-            " but got " + std::to_string(logits.rows()) + "x" + std::to_string(logits.cols()));
+    // Use cached transposed projection matrix if available, otherwise create and cache it
+    static Matrix projection_t;
+    static bool is_cached = false;
+    if (!is_cached) {
+        projection_t = projection.transpose();
+        is_cached = true;
     }
+    
+    // Compute logits using cached transposed matrix
+    Matrix logits = matmul(hidden_states, projection_t);
     
     // Add bias term
     for (size_t i = 0; i < logits.rows(); i++) {
@@ -258,89 +253,33 @@ void LanguageModelHead::set_training(bool training_mode) {
 }
 
 Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
-    std::cout << "\n=== LanguageModelHead::backward_pass START ===" << std::endl;
-    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-    std::cout << "hidden_states dims: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
-    
+    // Cache the transposed hidden states once
     Matrix hidden_states_t = hidden_states.transpose();
-    std::cout << "hidden_states_t dims: " << hidden_states_t.rows() << "x" << hidden_states_t.cols() << std::endl;
     
-    Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
-    std::cout << "grad_proj dims: " << grad_proj.rows() << "x" << grad_proj.cols() << std::endl;
-    
+    // Compute gradients using the cached transposition
+    Matrix grad_proj = matmul(hidden_states_t, grad_output);
     Vector grad_bias = grad_output.row_sum();
-    std::cout << "grad_bias size: " << grad_bias.size() << std::endl;
     
-    std::cout << "projection dims: " << projection.rows() << "x" << projection.cols() << std::endl;
-    std::cout << "m_proj dims: " << m_proj.rows() << "x" << m_proj.cols() << std::endl;
-    std::cout << "v_proj dims: " << v_proj.rows() << "x" << v_proj.cols() << std::endl;
-    
-    // Compute gradients for projection and bias
-    std::cout << "Computing gradients for projection and bias" << std::endl;
-    grad_proj = matmul(hidden_states.transpose(), grad_output);
-    
-    // Gradient clipping for stability
-    const float grad_clip = 1.0f;
-    for (size_t i = 0; i < grad_proj.rows(); ++i) {
-        for (size_t j = 0; j < grad_proj.cols(); ++j) {
-            grad_proj(i, j) = std::max(-grad_clip, std::min(grad_clip, grad_proj(i, j)));
-        }
-    }
-    
-    grad_bias = grad_output.row_sum();
-    for (size_t i = 0; i < grad_bias.size(); ++i) {
-        grad_bias[i] = std::max(-grad_clip, std::min(grad_clip, grad_bias[i]));
-    }
-
+    // Update parameters using Adam optimizer
     t++;  // Increment time step
-
-    // Update projection matrix using Adam optimizer with improved stability
-    const float scale_factor = std::sqrt(1.0f / hidden_size_);  // Reduced scale factor
-    const float max_update = 0.05f * scale_factor;  // More conservative max update
     
     // Constants for gradient clipping and stability
-    const float clip_threshold = 5.0f;  // Reduced from 10.0f
+    const float clip_threshold = 5.0f;
     const float max_allowed_value = 100.0f;
+    const float scale_factor = std::sqrt(1.0f / hidden_size_);
+    const float max_update = 0.05f * scale_factor;
+    
     bool has_unstable_update = false;
     
-    // Validate m_proj and v_proj dimensions match projection matrix
-    if (m_proj.rows() != projection.rows() || m_proj.cols() != projection.cols() ||
-        v_proj.rows() != projection.rows() || v_proj.cols() != projection.cols()) {
-        throw std::runtime_error("Momentum matrices dimension mismatch");
-    }
-    
-    // Print dimensions for debugging
-    std::cout << "Matrix dimensions in backward pass:\n"
-              << "grad_proj: " << grad_proj.rows() << "x" << grad_proj.cols() << "\n"
-              << "projection: " << projection.rows() << "x" << projection.cols() << "\n"
-              << "m_proj: " << m_proj.rows() << "x" << m_proj.cols() << "\n"
-              << "v_proj: " << v_proj.rows() << "x" << v_proj.cols() << "\n";
-    
-    // Remove debug prints inside OpenMP region to prevent garbled output
+    // Update projection matrix using Adam optimizer
     #pragma omp parallel for collapse(2) reduction(|:has_unstable_update)
     for (size_t i = 0; i < grad_proj.rows(); ++i) {
         for (size_t j = 0; j < grad_proj.cols(); ++j) {
-            // Bounds check before any access
-            if (i >= grad_proj.rows() || j >= grad_proj.cols() ||
-                i >= projection.rows() || j >= projection.cols() ||
-                i >= m_proj.rows() || j >= m_proj.cols() ||
-                i >= v_proj.rows() || j >= v_proj.cols()) {
-                #pragma omp critical
-                {
-                    std::cout << "ERROR: Index out of bounds at (" << i << "," << j << ")\n";
-                    std::cout << "Matrix dimensions:\n"
-                             << "grad_proj: " << grad_proj.rows() << "x" << grad_proj.cols() << "\n"
-                             << "projection: " << projection.rows() << "x" << projection.cols() << "\n";
-                }
-                has_unstable_update = true;
-                continue;
-            }
-
             if (!std::isfinite(grad_proj(i, j))) {
                 continue;
             }
             
-            // Clip gradient before momentum update
+            // Clip gradient
             float clipped_grad = grad_proj(i, j);
             if (std::abs(clipped_grad) > clip_threshold) {
                 clipped_grad *= clip_threshold / std::abs(clipped_grad);
@@ -401,74 +340,8 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
         }
     }
     
-    
-    if (has_unstable_update) {
-        current_lr *= 0.5f;
-        
-        #pragma omp parallel for collapse(2)
-        for (size_t i = 0; i < projection.rows(); ++i) {
-            for (size_t j = 0; j < projection.cols(); ++j) {
-                m_proj(i, j) = 0.0f;
-                v_proj(i, j) = 0.0f;
-            }
-        }
-    }
-    
-    // Debug output for projection matrix after update
-    float min_proj_after = std::numeric_limits<float>::infinity();
-    float max_proj_after = -std::numeric_limits<float>::infinity();
-    float sum_proj_after = 0.0f;
-    size_t nonzero_proj_after = 0;
-
-    #pragma omp parallel for collapse(2) reduction(min:min_proj_after) reduction(max:max_proj_after) \
-                             reduction(+:sum_proj_after,nonzero_proj_after)
-    for (size_t i = 0; i < projection.rows(); ++i) {
-        for (size_t j = 0; j < projection.cols(); ++j) {
-            float val = projection(i, j);
-            min_proj_after = std::min(min_proj_after, val);
-            max_proj_after = std::max(max_proj_after, val);
-            sum_proj_after += val;
-            if (std::abs(val) > 1e-6) nonzero_proj_after++;
-        }
-    }
-
-    std::cout << "Projection Matrix Statistics After Update:\n"
-              << "Min proj: " << min_proj_after << "\n"
-              << "Max proj: " << max_proj_after << "\n"
-              << "Mean proj: " << sum_proj_after / (projection.rows() * projection.cols()) << "\n"
-              << "Nonzero proj: " << nonzero_proj_after << "/" 
-              << (projection.rows() * projection.cols()) << "\n\n";
-
-    // If projection matrix has degenerated, reinitialize it
-    if (nonzero_proj_after < projection.rows() * projection.cols() / 2) {
-        std::cout << "WARNING: Projection matrix has too many zeros. Reinitializing...\n";
-        float scale = std::sqrt(6.0f / (hidden_size_ + vocab_size_));
-        projection.randomize(-scale, scale);
-    }
-    std::cout << "Projection matrix reinitialized" << std::endl;
-    // Update bias vector using Adam optimizer with similar changes
-    #pragma omp parallel for
-    for (size_t i = 0; i < bias.size(); ++i) {
-        // Update momentum
-        m_bias[i] = beta1 * m_bias[i] + (1 - beta1) * grad_bias[i];
-        // Update RMSprop with stability
-        v_bias[i] = beta2 * v_bias[i] + (1 - beta2) * grad_bias[i] * grad_bias[i];
-        
-        // Bias correction
-        float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
-        float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
-        
-        // Compute update without restrictive bounds
-        float update = current_lr * m_hat / (std::sqrt(v_hat) + eps);
-        
-        // Apply update directly
-        bias[i] -= update;
-    }
-    std::cout << "Bias vector updated" << std::endl;
-    // Compute gradient with respect to input
-    Matrix grad_input = matmul(grad_output, projection.transpose());
-    std::cout << "grad_input dims: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
-    std::cout << "=== LanguageModelHead::backward_pass END ===\n" << std::endl;
+    // Compute gradient with respect to input using cached transposition
+    Matrix grad_input = matmul(grad_output, projection);
     
     return grad_input;
 }

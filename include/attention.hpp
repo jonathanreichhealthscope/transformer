@@ -288,9 +288,10 @@ class MultiHeadAttention {
     Matrix cached_key_layer;         ///< Cached key layer output
     Matrix cached_value_layer;       ///< Cached value layer output
 
-    // RoPE caches
-    Matrix cos_cached;       ///< Cached cosine values for RoPE
-    Matrix sin_cached;       ///< Cached sine values for RoPE
+    // Static RoPE cache shared across all instances
+    static Matrix cos_cached;
+    static Matrix sin_cached;
+    static bool rope_cache_initialized;
 
     // Private helper methods
     Vector apply_rope(const Vector& x, size_t position) const;
@@ -406,6 +407,9 @@ class MultiHeadAttention {
         }
         return result;
     }
+
+    // Add static initialization method
+    static void initialize_static_rope_cache(size_t max_seq_len, size_t dim, size_t num_heads);
 };
 
 // Add sliding window attention
