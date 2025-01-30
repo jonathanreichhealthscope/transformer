@@ -427,6 +427,12 @@ struct BatchSequence {
 };
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer) {
+    std::cout << "\n=== Transformer::forward START ===" << std::endl << std::flush;
+    if (!lm_head) {
+        throw std::runtime_error("Language model head is not initialized");
+    }
+    std::cout << "Language model head is initialized" << std::endl << std::flush;
+
     // Clear ALL states before processing new input
     clear_kv_cache();
     hidden_states = Matrix();
@@ -528,8 +534,13 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
     last_seq_boundaries = seq_boundaries;
     last_input_tokens_ = input_tokens;
     last_input_query_ = original_query;
+
+    // Project through language model head to get logits
+    std::cout << "Projecting through language model head..." << std::endl << std::flush;
+    Matrix logits = lm_head->forward(hidden_states, training);
+    std::cout << "Language model head projection complete" << std::endl << std::flush;
     
-    return hidden_states;
+    return logits;  // Return logits instead of hidden states
 }
 
 void Transformer::clear_kv_cache() {

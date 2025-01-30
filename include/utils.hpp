@@ -54,7 +54,7 @@ public:
         const Matrix& logits,
         const Tokenizer& tokenizer,
         Transformer& transformer,
-        int k,
+        int k = 5,
         std::mt19937* gen = nullptr
     );
     static std::vector<std::pair<std::string, std::string>> create_training_data();
@@ -81,6 +81,18 @@ public:
     static TokenCategories analyze_token_categories(const std::vector<std::pair<std::string, std::string>>& training_data);
     static std::string get_token_category(const std::string& token, const TokenCategories& categories);
     static void trim(std::string& s);
+
+    // Cross-validation functions
+    static std::vector<std::pair<std::vector<std::pair<std::string, std::string>>, 
+                                std::vector<std::pair<std::string, std::string>>>> 
+    create_cross_validation_folds(const std::vector<std::pair<std::string, std::string>>& data, 
+                                size_t num_folds);
+
+    static float perform_cross_validation(Transformer& transformer, 
+                                        const Tokenizer& tokenizer,
+                                        const std::vector<std::pair<std::string, std::string>>& data,
+                                        size_t num_folds, 
+                                        float early_stopping_threshold);
 
     // Add inline utility functions for gradient computation
     static inline float compute_grad_norm(const Matrix& grad) {

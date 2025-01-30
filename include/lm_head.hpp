@@ -1,6 +1,5 @@
 #pragma once
 #include "components.hpp"
-#include "cuda_utils.hpp"
 #include "layer_norm.hpp"
 #include "tiktoken_tokenizer.hpp"
 #include <functional>
@@ -10,7 +9,8 @@
 #include <vector>
 #include <deque>
 
-#ifdef USE_CUDA
+// Only include CUDA headers if CUDA is available
+#if defined(USE_CUDA) && defined(CUDA_AVAILABLE)
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cuda_fp16.h>

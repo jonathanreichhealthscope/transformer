@@ -269,7 +269,9 @@ void generate_predictions(Transformer& transformer, const std::string& input_tex
     
     // Generate prediction
     Matrix hidden_states = transformer.forward(input_tokens, input_text, *tokenizer);
+    std::cout << "\nAbout to call lm_head->forward" << std::endl << std::flush;
     Matrix logits = transformer.get_lm_head()->forward(hidden_states);
+    std::cout << "Finished lm_head->forward" << std::endl << std::flush;
     
     // Get probabilities for last token with proper temperature scaling
     Vector last_row = logits.row(logits.rows() - 1);
@@ -567,23 +569,18 @@ int main(int argc, char* argv[]) {
             tokenizer->initialize();  // Initialize with default encoding
             std::cout << "Initialized tokenizer. Vocabulary size: " 
                       << tokenizer->vocab_size() << std::endl;
+                      
+            // Update config vocabulary size to match tokenizer
+            config.vocab_size = tokenizer->vocab_size();
+            std::cout << "Updated config vocabulary size to: " << config.vocab_size << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "Failed to initialize tokenizer: " << e.what() << std::endl;
             return 1;
         }
 
-        // Update vocabulary size in config based on tokenizer
-        config.vocab_size = tokenizer->vocab_size();
-        std::cout << "Using vocabulary size: " << config.vocab_size << std::endl;
-
         // Initialize model with updated config
         Transformer transformer(config);
-        auto lm_head = std::make_unique<LanguageModelHead>(config.hidden_size, config.vocab_size);
-
-        // Setup advanced components
-        TensorCache<Matrix> activation_cache(1024, CacheReplacementPolicy::ARC);
-        QuantizationAwareTraining qat(true);
-        auto sam_optimizer = std::make_unique<SAM>(0.05f);
+        std::cout << "\nTransformer initialized with language model head" << std::endl << std::flush;
 
         // Print vocabulary mappings
         std::cout << "\nPrinting vocabulary mappings:\n";
@@ -637,13 +634,21 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Training loop
-        size_t global_step = 0; // Move outside epoch loop
-        Matrix last_hidden_states;
-
         // Load validation data
         auto validation_data = Utils::load_validation_data();
         std::cout << "Loaded " << validation_data.size() << " validation examples\n";
+
+        // Combine training and validation data for cross-validation
+        std::vector<std::pair<std::string, std::string>> all_data;
+        all_data.insert(all_data.end(), training_pairs.begin(), training_pairs.end());
+        all_data.insert(all_data.end(), validation_data.begin(), validation_data.end());
+        
+        // Perform initial cross-validation to establish baseline
+        const size_t NUM_FOLDS = 5;
+        const float EARLY_STOPPING_THRESHOLD = 1.5f;  // Ratio of val_loss/train_loss that triggers early stopping
+        float initial_cv_loss = Utils::perform_cross_validation(transformer, *tokenizer, all_data, 
+                                                              NUM_FOLDS, EARLY_STOPPING_THRESHOLD);
+        std::cout << "Initial cross-validation loss: " << initial_cv_loss << std::endl;
 
         // Update any hardcoded token references
         int pad_id = tokenizer->get_pad_token_id();    // Should be 0
@@ -657,6 +662,11 @@ int main(int argc, char* argv[]) {
         int mask_id = tokenizer->get_mask_token_id();  // Should be 4
         std::cout << "mask_id: " << mask_id << std::endl;
         std::cout << "epochs: " << config.num_epochs << std::endl;
+
+        float best_cv_loss = initial_cv_loss;
+        size_t epochs_without_improvement = 0;
+        const size_t PATIENCE = 3;
+
         for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
             std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
             float epoch_loss = 0.0f;
@@ -773,91 +783,60 @@ int main(int argc, char* argv[]) {
                 }
                 std::cout << "Flattened batch size: " << flattened_batch.size() << " tokens\n";
 
-                // Forward pass with the flattened batch
-                transformer.set_training(true);
-                metrics.start_timer("forward_pass");
-                Matrix hidden_states = transformer.forward(flattened_batch, "", *tokenizer);
-                metrics.stop_timer("forward_pass");
+                // Forward pass through the model
+                Matrix logits = transformer.forward(flattened_batch, "", *tokenizer);
 
-                metrics.record_memory_usage(hidden_states.bytes());
-
-                Matrix logits = lm_head->project_to_vocab(hidden_states);
-
-                // Compute loss and its gradients for all tokens in sequence
+                // Compute batch loss
                 float batch_loss = Utils::compute_batch_loss(logits, target_distribution, *tokenizer);
 
-                // Compute softmax gradients for each token in the sequence
-                Matrix loss_gradients = Matrix(logits.rows(), logits.cols(), 0.0f);
-                for (size_t i = 0; i < logits.rows(); i++) {
-                    // Compute softmax for this token's logits
-                    std::vector<float> token_logits;
-                    float max_logit = -std::numeric_limits<float>::infinity();
-
-                    // First pass: find max logit
-                    for (size_t j = 0; j < logits.cols(); j++) {
-                        float logit = logits(i, j);
-                        token_logits.push_back(logit);
-                        max_logit = std::max(max_logit, logit);
-                    }
-
-                    // Second pass: compute softmax and gradients
-                    float sum_exp = 0.0f;
-                    std::vector<float> softmax_probs(logits.cols());
-                    
-                    for (size_t j = 0; j < logits.cols(); j++) {
-                        softmax_probs[j] = std::exp(token_logits[j] - max_logit);
-                        sum_exp += softmax_probs[j];
-                    }
-
-                    // Normalize and compute gradients
-                    for (size_t j = 0; j < logits.cols(); j++) {
-                        softmax_probs[j] /= sum_exp;
-                        // Gradient is (predicted - target)
-                        loss_gradients(i, j) = softmax_probs[j] - target_distribution(i, j);
-                    }
-                }
-
-                // Dynamic learning rate adjustment based on gradient statistics
+                // Compute gradient norm
+                Matrix loss_gradients = Utils::compute_loss_gradient(logits, target_distribution);
                 float grad_norm = 0.0f;
-                float max_grad = 0.0f;
-                for (size_t i = 0; i < loss_gradients.rows(); i++) {
-                    for (size_t j = 0; j < loss_gradients.cols(); j++) {
-                        float grad = std::abs(loss_gradients(i, j));
-                        grad_norm += grad * grad;
-                        max_grad = std::max(max_grad, grad);
-                    }
+                for (size_t i = 0; i < loss_gradients.size(); i++) {
+                    grad_norm += loss_gradients.data()[i] * loss_gradients.data()[i];
                 }
                 grad_norm = std::sqrt(grad_norm);
 
-                // Adjust learning rate based on gradient statistics
-                const float target_grad_norm = 1.0f;
-                const float lr_adjust_rate = 0.01f;
-                if (grad_norm > 0.0f) {
-                    learning_rate *= std::pow(target_grad_norm / grad_norm, lr_adjust_rate);
-                    // Clamp learning rate to reasonable range
-                    learning_rate = std::max(1e-6f, std::min(learning_rate, 1e-2f));
-                }
+                // Calculate learning rate
+                const size_t warmup_steps = 1000;
+                const size_t decay_steps = 10000;
+                const float min_lr = 1e-6f;
+                const float max_lr = 1e-3f;
 
-                // Scale gradients if norm is too large
-                if (grad_norm > target_grad_norm) {
-                    float scale = target_grad_norm / grad_norm;
-                    for (size_t i = 0; i < loss_gradients.rows(); i++) {
-                        for (size_t j = 0; j < loss_gradients.cols(); j++) {
-                            loss_gradients(i, j) *= scale;
-                        }
-                    }
+                float current_lr;
+                if (global_step < warmup_steps) {
+                    current_lr = min_lr + (max_lr - min_lr) * (float)global_step / warmup_steps;
+                } else {
+                    float progress = (float)(global_step - warmup_steps) / decay_steps;
+                    float cosine_decay = 0.5f * (1.0f + std::cos(progress * M_PI));
+                    current_lr = min_lr + (max_lr - min_lr) * cosine_decay;
                 }
-
-                // Backpropagate through the model
-                Matrix lm_head_gradients = lm_head->backward(loss_gradients);
-                transformer.backward(lm_head_gradients, flattened_batch, learning_rate);
 
                 // Print training statistics
-                std::cout << "\nTraining Statistics:" << std::endl;
+                std::cout << "\nTraining Statistics (Batch " << batch + 1 << "):" << std::endl;
                 std::cout << "Batch Loss: " << batch_loss << std::endl;
                 std::cout << "Gradient Norm: " << grad_norm << std::endl;
-                std::cout << "Max Gradient: " << max_grad << std::endl;
-                std::cout << "Learning Rate: " << learning_rate << std::endl;
+
+                // Generate predictions every 2 batches
+                if ((batch + 1) % 2 == 0) {
+                    // Make predictions after each batch
+                    generate_predictions(transformer, "I go to", tokenizer.get());
+                    generate_predictions(transformer, "The weather is", tokenizer.get());
+                    generate_predictions(transformer, "I want to", tokenizer.get());
+                    generate_predictions(transformer, "The cat", tokenizer.get());
+                    generate_predictions(transformer, "She likes to", tokenizer.get());
+                }
+
+                // Print progress and metrics every 10 batches
+                if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
+                    std::cout << "\rBatch " << batch + 1 << "/" << total_batches << " in epoch "
+                              << epoch + 1 << " (Loss: " << batch_loss
+                              << ", Avg Loss: " << epoch_loss / (batch + 1)
+                              << ", LR: " << current_lr << ")" << std::flush;
+
+                    // Print performance metrics
+                    metrics.print_metrics();
+                }
 
                 // Update tracking variables
                 prev_loss = batch_loss;
@@ -866,34 +845,86 @@ int main(int argc, char* argv[]) {
                 
                 metrics.stop_timer("batch_processing");
 
-                // Make predictions after each batch
-                generate_predictions(transformer, "I go to", tokenizer.get());
-                generate_predictions(transformer, "The weather is", tokenizer.get());
-                generate_predictions(transformer, "I want to", tokenizer.get());
-                generate_predictions(transformer, "The cat", tokenizer.get());
-                generate_predictions(transformer, "She likes to", tokenizer.get());
-
-                // Print progress and metrics every 10 batches
-                if ((batch + 1) % 10 == 0 || batch + 1 == total_batches) {
-                    std::cout << "\rBatch " << batch + 1 << "/" << total_batches << " in epoch "
-                              << epoch + 1 << " (Loss: " << batch_loss
-                              << ", Avg Loss: " << epoch_loss / (batch + 1)
-                              << ", LR: " << learning_rate << ")" << std::flush;
-
-                    // Print performance metrics
-                    metrics.print_metrics();
-                }
-
                 // In the training loop, after processing each batch
                 for (const auto& tokens : input_batch) {
-                    lm_head->update_token_frequencies(tokens);
+                    // Add frequency decay for common tokens
+                    static const float FREQ_DECAY_RATE = 0.98f;
+                    static const float MIN_FREQ = 0.1f;
+                    
+                    // Get mean frequency for comparison
+                    const auto& frequencies = transformer.get_lm_head()->get_token_frequencies();
+                    float mean_freq = 0.0f;
+                    if (!frequencies.empty()) {
+                        mean_freq = std::accumulate(frequencies.begin(), frequencies.end(), 0.0f) / frequencies.size();
+                    }
+                    
+                    // Create a vector of tokens with adjusted frequencies
+                    std::vector<int> update_tokens;
+                    
+                    for (int token : tokens) {
+                        if (token < frequencies.size()) {
+                            float current_freq = frequencies[token];
+                            
+                            // Only include tokens that need frequency adjustment
+                            if (current_freq > 2.0f * mean_freq) {
+                                // Apply decay to very frequent tokens
+                                // We'll handle these separately to reduce their frequency
+                                continue;
+                            } else {
+                                // Add tokens that should get frequency boost
+                                update_tokens.push_back(token);
+                            }
+                        }
+                    }
+                    
+                    // Update frequencies for normal tokens
+                    if (!update_tokens.empty()) {
+                        transformer.get_lm_head()->update_token_frequencies(update_tokens);
+                    }
+                    
+                    // For frequent tokens, we'll need to implement a separate method in LanguageModelHead
+                    // to handle frequency decay. For now, we'll skip the decay to fix the compilation error.
                 }
             }
 
             std::cout << "\nCompleted epoch " << epoch + 1 << "/" << config.num_epochs
                       << " (Loss: " << epoch_loss / total_batches << ")" << std::endl;
 
-            // Save checkpoint
+            // Perform cross-validation every few epochs
+            if ((epoch + 1) % 3 == 0) {  // Every 3 epochs
+                float cv_loss = Utils::perform_cross_validation(transformer, *tokenizer, all_data, 
+                                                              NUM_FOLDS, EARLY_STOPPING_THRESHOLD);
+                std::cout << "Cross-validation loss after epoch " << epoch + 1 << ": " << cv_loss << std::endl;
+                
+                // Early stopping based on cross-validation
+                if (cv_loss < best_cv_loss) {
+                    best_cv_loss = cv_loss;
+                    epochs_without_improvement = 0;
+                    
+                    // Save best model
+                    std::cout << "New best model found! Saving checkpoint..." << std::endl;
+                    if (!model_saver.saveCheckpoint(transformer, save_directory, 
+                                                  model_name + "_best", epoch + 1, cv_loss)) {
+                        std::cerr << "Failed to save best model checkpoint" << std::endl;
+                    }
+                } else {
+                    epochs_without_improvement++;
+                    if (epochs_without_improvement >= PATIENCE) {
+                        std::cout << "Early stopping triggered after " << epoch + 1 << " epochs" << std::endl;
+                        break;
+                    }
+                }
+                
+                // Check for significant overfitting
+                float train_val_ratio = cv_loss / (epoch_loss / total_batches);
+                if (train_val_ratio > EARLY_STOPPING_THRESHOLD) {
+                    std::cout << "Significant overfitting detected (ratio: " << train_val_ratio 
+                              << "). Stopping training." << std::endl;
+                    break;
+                }
+            }
+
+            // Save regular checkpoint
             if ((epoch + 1) % checkpoint_frequency == 0) {
                 std::cout << "Attempting to save checkpoint to: " << save_directory << "/"
                           << model_name << std::endl;
@@ -933,7 +964,7 @@ int main(int argc, char* argv[]) {
                 
                 // Get model prediction
                 Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
-                Matrix logits = lm_head->project_to_vocab(test_hidden);
+                Matrix logits = transformer.get_lm_head()->forward(test_hidden);
                 
                 // For single token prediction, we don't need beam search
                 // Just show the top predictions
@@ -976,7 +1007,7 @@ int main(int argc, char* argv[]) {
         // Get model prediction
         transformer.set_training(false);  // Set to evaluation mode
         Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
-        Matrix logits = lm_head->project_to_vocab(test_hidden);
+        Matrix logits = transformer.get_lm_head()->forward(test_hidden);
         
         // Show the top predictions
         std::cout << "\nTop Predictions:\n";

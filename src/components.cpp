@@ -391,10 +391,21 @@ Matrix matmul(const Matrix& A, const Matrix& B) {
     return C;
     #else
     // Original CPU implementation
+    if (A.cols() != B.rows()) {
+        throw std::runtime_error("Matrix multiplication dimension mismatch: " +
+            std::to_string(A.rows()) + "x" + std::to_string(A.cols()) + " * " +
+            std::to_string(B.rows()) + "x" + std::to_string(B.cols()));
+    }
+    
+    // Result matrix has dimensions [A.rows() x B.cols()]
     Matrix C(A.rows(), B.cols());
+    
+    // Perform matrix multiplication
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < A.rows(); i++) {
         for (size_t j = 0; j < B.cols(); j++) {
             float sum = 0.0f;
+            #pragma omp simd reduction(+:sum)
             for (size_t k = 0; k < A.cols(); k++) {
                 sum += A(i, k) * B(k, j);
             }

@@ -102,6 +102,7 @@ set(CORE_SOURCES
     src/tiktoken_tokenizer.cpp
     src/matrix.cpp
     src/data_augmentation.cpp
+    src/lm_head.cpp
     # Add training components
     src/training/loss_tracker.cpp
     src/training/gradient_manager.cpp
@@ -127,10 +128,8 @@ set(UTIL_SOURCES
     src/optimizer.cpp
 )
 
-
 # Language model components
 set(LM_SOURCES
-    src/lm_head.cpp
     src/vocabulary.cpp
 )
 

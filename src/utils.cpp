@@ -75,15 +75,22 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
         
         // Set actual tokens with higher weight for noun phrase tokens
         for (size_t i = 0; i < sequence.size(); i++) {
-            float weight = (i >= noun_phrase_start) ? 1.0f : 0.5f;  // Higher weight for noun phrase tokens
-            target_distribution(current_pos, sequence[i]) = weight;
+            // Ensure token ID is within vocab_size bounds
+            int token_id = sequence[i];
+            if (token_id >= 0 && static_cast<size_t>(token_id) < vocab_size) {
+                float weight = (i >= noun_phrase_start) ? 1.0f : 0.5f;
+                target_distribution(current_pos, token_id) = weight;
+            }
             current_pos++;
         }
         
         // Pad remaining positions with pad token
-        for (size_t i = sequence.size(); i < input_max_seq_len; i++) {
-            target_distribution(current_pos, tokenizer.get_pad_token_id()) = 1.0f;
-            current_pos++;
+        int pad_token = tokenizer.get_pad_token_id();
+        if (pad_token >= 0 && static_cast<size_t>(pad_token) < vocab_size) {
+            for (size_t i = sequence.size(); i < input_max_seq_len; i++) {
+                target_distribution(current_pos, pad_token) = 1.0f;
+                current_pos++;
+            }
         }
     }
     
@@ -109,13 +116,25 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
 }
 
 float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distribution, const Tokenizer& tokenizer) {
-    // Input validation
+    // Input validation with detailed error messages
     if (logits.empty() || target_distribution.empty()) {
+        std::cout << "Logits shape: " << (logits.empty() ? "empty" : 
+                  (std::to_string(logits.rows()) + "x" + std::to_string(logits.cols()))) << std::endl;
+        std::cout << "Target distribution shape: " << (target_distribution.empty() ? "empty" : 
+                  (std::to_string(target_distribution.rows()) + "x" + std::to_string(target_distribution.cols()))) << std::endl;
         throw std::runtime_error("Empty logits or target distribution in compute_batch_loss");
     }
 
-    if (logits.size() != target_distribution.size()) {
-        throw std::runtime_error("Dimension mismatch between logits and target distribution");
+    // Detailed dimension check
+    std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << std::endl;
+    std::cout << "Target distribution shape: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
+
+    if (logits.rows() != target_distribution.rows() || logits.cols() != target_distribution.cols()) {
+        throw std::runtime_error("Dimension mismatch between logits (" + 
+                               std::to_string(logits.rows()) + "x" + std::to_string(logits.cols()) + 
+                               ") and target distribution (" + 
+                               std::to_string(target_distribution.rows()) + "x" + 
+                               std::to_string(target_distribution.cols()) + ")");
     }
 
     float total_loss = 0.0f;
@@ -125,7 +144,7 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
     // Pre-compute which tokens are nouns - do this once for the whole vocabulary
     static std::vector<bool> is_noun_cache;
     static bool cache_initialized = false;
-    
+    std::cout << "Vocab size: " << vocab_size << std::endl;
     if (!cache_initialized) {
         is_noun_cache.resize(vocab_size);
         for (size_t j = 0; j < vocab_size; ++j) {
@@ -139,40 +158,47 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
     std::vector<float> max_logits(batch_size, -std::numeric_limits<float>::infinity());
     std::vector<float> sums(batch_size, 0.0f);
 
-    #pragma omp parallel for reduction(+:total_loss)
-    for (size_t i = 0; i < batch_size; ++i) {
-        // Find max logit for numerical stability over ALL tokens
-        for (size_t j = 0; j < vocab_size; ++j) {
-            max_logits[i] = std::max(max_logits[i], logits(i, j));
-        }
+    try {
+        #pragma omp parallel for reduction(+:total_loss)
+        for (size_t i = 0; i < batch_size; ++i) {
+            // Find max logit for numerical stability over ALL tokens
+            for (size_t j = 0; j < vocab_size; ++j) {
+                max_logits[i] = std::max(max_logits[i], logits(i, j));
+            }
 
-        // Compute sum of exp(logits - max_logit) over ALL tokens
-        for (size_t j = 0; j < vocab_size; ++j) {
-            sums[i] += std::exp(logits(i, j) - max_logits[i]);
-        }
+            // Compute sum of exp(logits - max_logit) over ALL tokens
+            for (size_t j = 0; j < vocab_size; ++j) {
+                sums[i] += std::exp(logits(i, j) - max_logits[i]);
+            }
 
-        // Compute cross entropy loss
-        float sequence_loss = 0.0f;
-        for (size_t j = 0; j < vocab_size; ++j) {
-            if (target_distribution(i, j) > 0.0f) {
-                float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
-                sequence_loss -= target_distribution(i, j) * log_prob;
-                
-                // Add noun prediction bonus/penalty
-                if (is_noun_cache[j]) {
-                    float pred_prob = std::exp(logits(i, j) - max_logits[i]) / sums[i];
-                    sequence_loss -= 0.1f * target_distribution(i, j) * pred_prob; // Bonus for correct noun predictions
+            // Compute cross entropy loss
+            float sequence_loss = 0.0f;
+            for (size_t j = 0; j < vocab_size; ++j) {
+                if (target_distribution(i, j) > 0.0f) {
+                    float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
+                    sequence_loss -= target_distribution(i, j) * log_prob;
+                    
+                    // Add noun prediction bonus/penalty
+                    if (is_noun_cache[j]) {
+                        float pred_prob = std::exp(logits(i, j) - max_logits[i]) / sums[i];
+                        sequence_loss -= 0.1f * target_distribution(i, j) * pred_prob; // Bonus for correct noun predictions
+                    }
                 }
             }
+            
+            total_loss += sequence_loss;
         }
-        
-        total_loss += sequence_loss;
+    } catch (const std::exception& e) {
+        std::cerr << "Error in loss computation: " << e.what() << std::endl;
+        throw;
     }
 
     float avg_loss = total_loss / static_cast<float>(batch_size);
-
+    std::cout << "Average loss: " << avg_loss << std::endl;
     // Check for NaN/Inf
     if (!std::isfinite(avg_loss)) {
+        std::cout << "Warning: Non-finite loss detected. Loss value: " << avg_loss << std::endl;
+        std::cout << "Total loss: " << total_loss << ", batch_size: " << batch_size << std::endl;
         throw std::runtime_error("Loss computation resulted in non-finite value");
     }
 
@@ -522,93 +548,42 @@ std::string Utils::get_token_category(const std::string& token, const TokenCateg
 }
 
 // Modify the print_top_predictions function to show token categories
-void Utils::print_top_predictions(
-    const Matrix& logits,
-    const Tokenizer& tokenizer,
-    Transformer& transformer,
-    int k,
-    std::mt19937* gen
-) {
-    static TokenCategories categories = analyze_token_categories(create_training_data());
-    
-    // Create a local generator - either use the provided one or create a new one
-    std::mt19937 local_gen = gen ? *gen : get_new_generator();
-    
-    // Get the last row of logits for next token prediction
+void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, Transformer& transformer, int k, std::mt19937* gen) {
+    // Get the last row of logits (predictions for the next token)
     std::vector<float> last_logits;
-    for (size_t j = 0; j < logits.cols(); j++) {
-        last_logits.push_back(logits(logits.rows() - 1, j));
+    for (size_t i = 0; i < logits.cols(); i++) {
+        last_logits.push_back(logits(logits.rows() - 1, i));
     }
-    
-    // Add random noise to logits
-    std::normal_distribution<float> noise_dist(0.0f, 0.1f);
-    for (float& logit : last_logits) {
-        logit += noise_dist(local_gen);
-    }
-    
-    // Apply dynamic temperature scaling
-    std::uniform_real_distribution<float> temp_dist(0.7f, 1.3f);
-    float temperature = temp_dist(local_gen);
-    
-    std::vector<std::pair<float, int>> token_probs;
+
+    // Apply softmax to get probabilities
     float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
-    
+    std::vector<float> probabilities(last_logits.size());
     float sum_exp = 0.0f;
     for (size_t i = 0; i < last_logits.size(); i++) {
-        float scaled_logit = (last_logits[i] - max_logit) / temperature;
-        float prob = std::exp(scaled_logit);
-        sum_exp += prob;
-        token_probs.push_back({prob, i});
+        probabilities[i] = std::exp(last_logits[i] - max_logit);
+        sum_exp += probabilities[i];
     }
-    
-    // Normalize probabilities
-    for (auto& [prob, _] : token_probs) {
+    for (float& prob : probabilities) {
         prob /= sum_exp;
     }
-    
-    // Add random variation to probabilities
-    std::uniform_real_distribution<float> var_dist(0.8f, 1.2f);
-    for (auto& [prob, _] : token_probs) {
-        prob *= var_dist(local_gen);
-    }
-    
-    // Renormalize after variation
-    sum_exp = 0.0f;
-    for (const auto& [prob, _] : token_probs) {
-        sum_exp += prob;
-    }
-    for (auto& [prob, _] : token_probs) {
-        prob /= sum_exp;
-    }
-    
-    // Sort by probability
-    std::sort(token_probs.begin(), token_probs.end(),
-              [](const auto& a, const auto& b) { return a.first > b.first; });
-    
-    // Apply nucleus sampling to get diverse predictions
-    float p = 0.9f;  // Keep top 90% of probability mass
-    float cumsum = 0.0f;
-    std::vector<std::pair<float, int>> filtered_probs;
-    
-    for (const auto& [prob, token_id] : token_probs) {
-        cumsum += prob;
-        filtered_probs.push_back({prob, token_id});
-        if (cumsum >= p) break;
-    }
-    
-    // Shuffle the filtered predictions to add more randomness
-    std::shuffle(filtered_probs.begin(), filtered_probs.end(), local_gen);
-    
-    // Print top k predictions with categories
-    std::cout << "\nTop " << k << " predictions:\n";
-    for (int i = 0; i < k && i < filtered_probs.size(); i++) {
-        int token_id = filtered_probs[i].second;
-        float prob = filtered_probs[i].first;
-        std::string token = tokenizer.decode({token_id});
-        std::string category = get_token_category(token, categories);
-        
-        std::cout << std::fixed << std::setprecision(4)
-                  << prob * 100 << "% - " << token << " [" << category << "]\n";
+
+    // Create index vector
+    std::vector<size_t> indices(probabilities.size());
+    std::iota(indices.begin(), indices.end(), 0);
+
+    // Sort indices by probability
+    std::sort(indices.begin(), indices.end(),
+              [&probabilities](size_t a, size_t b) {
+                  return probabilities[a] > probabilities[b];
+              });
+
+    // Print top k predictions
+    std::cout << "\nTop " << k << " predictions:" << std::endl;
+    for (int i = 0; i < k && i < static_cast<int>(indices.size()); i++) {
+        size_t idx = indices[i];
+        std::string token = tokenizer.decode({static_cast<int>(idx)});
+        std::cout << i + 1 << ". \"" << token << "\" (p=" 
+                  << std::fixed << std::setprecision(4) << probabilities[idx] << ")" << std::endl;
     }
 }
 
@@ -849,4 +824,132 @@ void Utils::trim(std::string& s) {
     s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
         return !std::isspace(ch);
     }).base(), s.end());
+}
+
+// Add new cross-validation function
+std::vector<std::pair<std::vector<std::pair<std::string, std::string>>, 
+                     std::vector<std::pair<std::string, std::string>>>> 
+Utils::create_cross_validation_folds(const std::vector<std::pair<std::string, std::string>>& data, size_t num_folds) {
+    std::vector<std::pair<std::vector<std::pair<std::string, std::string>>,
+                         std::vector<std::pair<std::string, std::string>>>> folds;
+    
+    // Create a copy of the data that we can shuffle
+    std::vector<std::pair<std::string, std::string>> shuffled_data = data;
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(shuffled_data.begin(), shuffled_data.end(), g);
+    
+    // Calculate fold size
+    size_t fold_size = shuffled_data.size() / num_folds;
+    
+    // Create folds
+    for (size_t i = 0; i < num_folds; i++) {
+        std::vector<std::pair<std::string, std::string>> validation_fold;
+        std::vector<std::pair<std::string, std::string>> training_fold;
+        
+        // Calculate start and end indices for current validation fold
+        size_t start_idx = i * fold_size;
+        size_t end_idx = (i == num_folds - 1) ? shuffled_data.size() : (i + 1) * fold_size;
+        
+        // Split data into training and validation
+        for (size_t j = 0; j < shuffled_data.size(); j++) {
+            if (j >= start_idx && j < end_idx) {
+                validation_fold.push_back(shuffled_data[j]);
+            } else {
+                training_fold.push_back(shuffled_data[j]);
+            }
+        }
+        
+        folds.push_back({training_fold, validation_fold});
+    }
+    
+    return folds;
+}
+
+float Utils::perform_cross_validation(Transformer& transformer, const Tokenizer& tokenizer,
+                                    const std::vector<std::pair<std::string, std::string>>& data,
+                                    size_t num_folds, float early_stopping_threshold) {
+    std::cout << "\n=== Starting " << num_folds << "-fold Cross Validation ===\n";
+    
+    auto folds = create_cross_validation_folds(data, num_folds);
+    std::vector<float> fold_scores;
+    float total_val_loss = 0.0f;
+    size_t early_stops = 0;
+    
+    for (size_t fold = 0; fold < folds.size(); fold++) {
+        std::cout << "\nProcessing Fold " << fold + 1 << "/" << num_folds << std::endl;
+        
+        const auto& [train_data, val_data] = folds[fold];
+        
+        // Track validation loss history for early stopping
+        std::deque<float> val_loss_history;
+        const size_t patience = 3;  // Number of consecutive increases before early stopping
+        float best_val_loss = std::numeric_limits<float>::max();
+        size_t no_improvement_count = 0;
+        
+        // Training loop for this fold
+        for (size_t epoch = 0; epoch < 5; epoch++) {  // Do 5 epochs per fold
+            // Train on training data
+            float train_loss = 0.0f;
+            for (const auto& pair : train_data) {
+                std::vector<int> input_tokens = tokenizer.encode(pair.first);
+                Matrix output = transformer.forward(input_tokens, "", tokenizer);
+                Matrix target_distribution = create_batch_target_distribution(
+                    {tokenizer.encode(pair.second)}, tokenizer, tokenizer.vocab_size(), input_tokens.size());
+                train_loss += compute_batch_loss(output, target_distribution, tokenizer);
+            }
+            train_loss /= train_data.size();
+            
+            // Evaluate on validation data
+            float val_loss = evaluate_validation(transformer, tokenizer, val_data);
+            val_loss_history.push_back(val_loss);
+            if (val_loss_history.size() > patience) {
+                val_loss_history.pop_front();
+            }
+            
+            std::cout << "Fold " << fold + 1 << ", Epoch " << epoch + 1 
+                      << " - Train Loss: " << train_loss 
+                      << ", Val Loss: " << val_loss << std::endl;
+            
+            // Early stopping check
+            if (val_loss < best_val_loss) {
+                best_val_loss = val_loss;
+                no_improvement_count = 0;
+            } else {
+                no_improvement_count++;
+                if (no_improvement_count >= patience) {
+                    std::cout << "Early stopping triggered on fold " << fold + 1 << std::endl;
+                    early_stops++;
+                    break;
+                }
+            }
+            
+            // Check for overfitting
+            float loss_ratio = val_loss / train_loss;
+            if (loss_ratio > early_stopping_threshold) {
+                std::cout << "Overfitting detected (val/train ratio: " << loss_ratio 
+                          << " > " << early_stopping_threshold << ")" << std::endl;
+                early_stops++;
+                break;
+            }
+        }
+        
+        fold_scores.push_back(best_val_loss);
+        total_val_loss += best_val_loss;
+    }
+    
+    // Compute and print statistics
+    float mean_val_loss = total_val_loss / num_folds;
+    float variance = 0.0f;
+    for (float score : fold_scores) {
+        variance += (score - mean_val_loss) * (score - mean_val_loss);
+    }
+    variance /= num_folds;
+    
+    std::cout << "\nCross Validation Results:" << std::endl;
+    std::cout << "Mean Validation Loss: " << mean_val_loss << std::endl;
+    std::cout << "Standard Deviation: " << std::sqrt(variance) << std::endl;
+    std::cout << "Early Stops: " << early_stops << "/" << num_folds << std::endl;
+    
+    return mean_val_loss;
 }
