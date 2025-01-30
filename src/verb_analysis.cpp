@@ -1,12 +1,13 @@
 #include "../include/verb_analysis.hpp"
 #include <sstream>
+#include <cctype>
 
 // Initialize static members
 const std::vector<std::string> VerbPhraseAnalyzer::verb_suffixes = {
-    "ate", "ize", "ify", "ise", "ect", "ent", "age", "ute"
+    "ate", "ize", "ify", "ise", "ect", "ent", "age", "ute", "ing", "ed", "es", "s"
 };
 
-const std::unordered_set<std::string> VerbPhraseAnalyzer::common_verbs = {
+std::unordered_set<std::string> VerbPhraseAnalyzer::common_verbs = {
     // Organization/Management
     "organize", "manage", "coordinate", "direct", "lead", "guide", "plan", "arrange", "structure",
     "architect", "design", "develop", "implement", "execute", "oversee", "supervise", "mentor", "teach",
@@ -41,16 +42,21 @@ bool VerbPhraseAnalyzer::isVerb(const std::string& word) {
 }
 
 bool VerbPhraseAnalyzer::endsWithVerb(const std::string& phrase) {
+    // If it's a marked verb pattern, extract and check the marked word
+    if (hasMarkedVerb(phrase)) {
+        std::string verb = extractMarkedVerb(phrase);
+        return !verb.empty() && isVerb(verb);
+    }
+
+    // Otherwise check the last word
     std::istringstream iss(phrase);
     std::vector<std::string> words;
     std::string word;
     
-    // Split phrase into words
     while (iss >> word) {
         words.push_back(word);
     }
     
-    // Check if the last word is a verb
     if (!words.empty()) {
         return isVerb(words.back());
     }
@@ -60,6 +66,7 @@ bool VerbPhraseAnalyzer::endsWithVerb(const std::string& phrase) {
 
 std::vector<std::string> VerbPhraseAnalyzer::extractVerbPhrases(const std::string& filename) {
     std::vector<std::string> phrases;
+    std::vector<std::string> marked_verb_phrases;
     std::ifstream file(filename);
     std::string line;
 
@@ -73,8 +80,11 @@ std::vector<std::string> VerbPhraseAnalyzer::extractVerbPhrases(const std::strin
 
         // Process marked verbs in training data
         if (hasMarkedVerb(line)) {
-            processTrainingLine(line);
-            phrases.push_back(line);  // Add the full pattern for training
+            std::string verb = extractMarkedVerb(line);
+            if (!verb.empty() && isVerb(verb)) {
+                processTrainingLine(line);
+                marked_verb_phrases.push_back(line);
+            }
         }
         // Also check for regular verb phrases
         else if (endsWithVerb(line)) {
@@ -83,14 +93,32 @@ std::vector<std::string> VerbPhraseAnalyzer::extractVerbPhrases(const std::strin
     }
 
     file.close();
-    return phrases;
+    
+    // Combine both types of phrases, with marked verbs first
+    std::vector<std::string> all_phrases;
+    all_phrases.insert(all_phrases.end(), marked_verb_phrases.begin(), marked_verb_phrases.end());
+    all_phrases.insert(all_phrases.end(), phrases.begin(), phrases.end());
+    return all_phrases;
 }
 
 void VerbPhraseAnalyzer::analyzeAndLogPhrases(const std::vector<std::string>& phrases, std::ofstream& log_file) {
-    // Count unique phrases
-    std::set<std::string> unique_phrases(phrases.begin(), phrases.end());
+    // Separate marked and unmarked verb phrases
+    std::vector<std::string> marked_phrases;
+    std::vector<std::string> regular_phrases;
     
-    // Count frequencies
+    for (const auto& phrase : phrases) {
+        if (hasMarkedVerb(phrase)) {
+            marked_phrases.push_back(phrase);
+        } else {
+            regular_phrases.push_back(phrase);
+        }
+    }
+    
+    // Count unique phrases
+    std::set<std::string> unique_marked(marked_phrases.begin(), marked_phrases.end());
+    std::set<std::string> unique_regular(regular_phrases.begin(), regular_phrases.end());
+    
+    // Count frequencies for all phrases
     std::map<std::string, int> phrase_frequencies;
     for (const auto& phrase : phrases) {
         phrase_frequencies[phrase]++;
@@ -105,8 +133,11 @@ void VerbPhraseAnalyzer::analyzeAndLogPhrases(const std::vector<std::string>& ph
                  return a.second > b.second;
              });
     
-    // Log unique phrases count
-    log_file << "Found " << unique_phrases.size() << " unique verb phrases\n\n";
+    // Log statistics
+    log_file << "Verb Phrase Statistics:\n";
+    log_file << "- Marked verb phrases: " << unique_marked.size() << "\n";
+    log_file << "- Regular verb phrases: " << unique_regular.size() << "\n";
+    log_file << "- Total unique verb phrases: " << unique_marked.size() + unique_regular.size() << "\n\n";
     
     // Log top 10 most common phrases
     log_file << "Top 10 most common verb phrases:\n";
@@ -115,6 +146,16 @@ void VerbPhraseAnalyzer::analyzeAndLogPhrases(const std::vector<std::string>& ph
                 << sorted_phrases[i].second << " occurrences\n";
     }
     log_file << "\n";
+    
+    // Log some examples of marked verbs
+    if (!marked_phrases.empty()) {
+        log_file << "Examples of marked verb phrases:\n";
+        size_t example_count = std::min(size_t(5), marked_phrases.size());
+        for (size_t i = 0; i < example_count; ++i) {
+            log_file << "- " << marked_phrases[i] << "\n";
+        }
+        log_file << "\n";
+    }
 }
 
 std::string VerbPhraseAnalyzer::trim(const std::string& str) {
@@ -134,6 +175,11 @@ std::string VerbPhraseAnalyzer::extractMarkedVerb(const std::string& line) {
     std::istringstream iss(rest);
     std::string word;
     iss >> word;  // Get first word after hash
+    
+    // Remove any trailing punctuation
+    word.erase(std::remove_if(word.begin(), word.end(), 
+        [](char c) { return std::ispunct(c); }), word.end());
+    
     return word;
 }
 
@@ -147,7 +193,11 @@ void VerbPhraseAnalyzer::processTrainingLine(const std::string& line) {
     if (hasMarkedVerb(line)) {
         std::string verb = extractMarkedVerb(line);
         if (!verb.empty()) {
+            // Add both the original form and a lowercase version
             common_verbs.insert(verb);
+            std::string lower_verb = verb;
+            std::transform(lower_verb.begin(), lower_verb.end(), lower_verb.begin(), ::tolower);
+            common_verbs.insert(lower_verb);
         }
     }
 } 

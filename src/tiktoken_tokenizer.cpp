@@ -13,32 +13,53 @@
 
 TiktokenTokenizer::TiktokenTokenizer() = default;
 
-// Helper to identify adjectives in phrases
-bool is_adjective_ending(const std::string& phrase) {
-    static const std::unordered_set<std::string> common_adjective_endings = {
+// Helper to identify if a phrase is a verb or adjective
+bool is_phrase_type(const std::string& phrase, bool check_verbs = false) {
+    // Check for marked patterns
+    if (check_verbs) {
+        if (phrase.find('#') != std::string::npos) {
+            return true;
+        }
+    } else {
+        if (phrase.find('*') != std::string::npos) {
+            return true;
+        }
+    }
+    
+    // Common endings for the respective type
+    static const std::unordered_set<std::string> adjective_endings = {
         "able", "ible", "al", "ful", "ic", "ive", "less", "ous", "y"
     };
     
-    // Common adjectives that don't follow standard patterns
+    static const std::unordered_set<std::string> verb_endings = {
+        "ate", "ize", "ify", "ise", "ect", "ent", "age", "ute", "ing", "ed", "es", "s"
+    };
+    
+    const auto& endings = check_verbs ? verb_endings : adjective_endings;
+    
+    // Common words of the respective type
     static const std::unordered_set<std::string> common_adjectives = {
         " bright", " dark", " hot", " cold", " big", " small", " tall", " short",
         " red", " blue", " green", " black", " white", " yellow", " good", " bad",
         " fast", " slow", " hard", " soft", " loud", " quiet", " rich", " poor",
         " young", " old", " new", " old", " happy", " sad", " clean", " dirty"
     };
-
-    // Check if this is a marked adjective pattern
-    if (phrase.find('*') != std::string::npos) {
+    
+    static const std::unordered_set<std::string> common_verbs = {
+        " organize", " manage", " coordinate", " direct", " lead", " guide", " plan",
+        " create", " build", " make", " write", " speak", " teach", " learn",
+        " analyze", " study", " work", " play", " help", " start", " finish"
+    };
+    
+    const auto& common_words = check_verbs ? common_verbs : common_adjectives;
+    
+    // First check if it's a common word
+    if (common_words.find(phrase) != common_words.end()) {
         return true;
     }
     
-    // First check if it's a common adjective
-    if (common_adjectives.find(phrase) != common_adjectives.end()) {
-        return true;
-    }
-    
-    // Then check for adjective endings
-    for (const auto& ending : common_adjective_endings) {
+    // Then check for endings
+    for (const auto& ending : endings) {
         if (phrase.length() > ending.length() && 
             phrase.substr(phrase.length() - ending.length()) == ending) {
             return true;
@@ -69,6 +90,27 @@ std::vector<std::pair<std::string, std::string>> extract_phrase_pairs(const std:
             
             // Add a space prefix to target if needed
             if (!target.empty() && target[0] != ' ' && target[0] != '*') {
+                target = " " + target;
+            }
+            
+            if (!context.empty() && !target.empty()) {
+                pairs.emplace_back(context, target);
+            }
+            continue;
+        }
+
+        // For marked verb patterns (with #)
+        size_t hash_pos = line.find('#');
+        if (hash_pos != std::string::npos) {
+            std::string context = line.substr(0, hash_pos);
+            std::string target = line.substr(hash_pos); // Keep the # in the target
+            
+            // Trim context
+            context.erase(0, context.find_first_not_of(" \t\r\n"));
+            context.erase(context.find_last_not_of(" \t\r\n") + 1);
+            
+            // Add a space prefix to target if needed
+            if (!target.empty() && target[0] != ' ' && target[0] != '#') {
                 target = " " + target;
             }
             
@@ -138,23 +180,28 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         auto training_pairs = extract_phrase_pairs(training_path.string());
         auto validation_pairs = extract_phrase_pairs(validation_path.string());
         
-        // Collect target phrases and their frequencies, separating adjectives
+        // Collect target phrases and their frequencies
         std::unordered_map<std::string, int> adjective_freq;
+        std::unordered_map<std::string, int> verb_freq;
         std::unordered_map<std::string, int> other_target_freq;
         std::vector<std::string> all_targets;
         
-        // First pass: separate adjectives and other targets
+        // First pass: separate adjectives, verbs and other targets
         for (const auto& [context, target] : training_pairs) {
-            if (is_adjective_ending(target)) {
+            if (is_phrase_type(target, false)) {  // Check for adjectives
                 adjective_freq[target]++;
+            } else if (is_phrase_type(target, true)) {  // Check for verbs
+                verb_freq[target]++;
             } else {
                 other_target_freq[target]++;
             }
             all_targets.push_back(target);
         }
         for (const auto& [context, target] : validation_pairs) {
-            if (is_adjective_ending(target)) {
+            if (is_phrase_type(target, false)) {  // Check for adjectives
                 adjective_freq[target]++;
+            } else if (is_phrase_type(target, true)) {  // Check for verbs
+                verb_freq[target]++;
             } else {
                 other_target_freq[target]++;
             }
@@ -163,6 +210,7 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         
         std::cout << "Extracted " << all_targets.size() << " total phrases" << std::endl;
         std::cout << "Found " << adjective_freq.size() << " unique adjective phrases" << std::endl;
+        std::cout << "Found " << verb_freq.size() << " unique verb phrases" << std::endl;
         std::cout << "Found " << other_target_freq.size() << " other unique phrases" << std::endl;
         
         // Initialize vocabulary with special tokens
@@ -175,17 +223,34 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         std::sort(sorted_adjectives.begin(), sorted_adjectives.end(),
                  [](const auto& a, const auto& b) { return a.second > b.second; });
         
+        // Sort verbs by frequency
+        std::vector<std::pair<std::string, int>> sorted_verbs(verb_freq.begin(), verb_freq.end());
+        std::sort(sorted_verbs.begin(), sorted_verbs.end(),
+                 [](const auto& a, const auto& b) { return a.second > b.second; });
+        
         // Sort other targets by frequency
         std::vector<std::pair<std::string, int>> sorted_others(other_target_freq.begin(), other_target_freq.end());
         std::sort(sorted_others.begin(), sorted_others.end(),
                  [](const auto& a, const auto& b) { return a.second > b.second; });
         
-        // Reserve space for adjectives (ensure they get good token IDs)
+        // Reserve space for adjectives and verbs (ensure they get good token IDs)
         size_t adjective_quota = std::min(size_t(target_vocab_size * 0.3), sorted_adjectives.size());
+        size_t verb_quota = std::min(size_t(target_vocab_size * 0.3), sorted_verbs.size());
         
-        // Add adjectives first to ensure they get good token IDs
+        // Add adjectives and verbs first to ensure they get good token IDs
         for (const auto& [phrase, freq] : sorted_adjectives) {
             if (vocab.size() >= tokens::MASK_ID + 1 + adjective_quota) break;
+            
+            // Ensure the phrase starts with a space
+            std::string token = phrase;
+            if (!token.empty() && token[0] != ' ') {
+                token = " " + token;
+            }
+            vocab.push_back(token);
+        }
+        
+        for (const auto& [phrase, freq] : sorted_verbs) {
+            if (vocab.size() >= tokens::MASK_ID + 1 + adjective_quota + verb_quota) break;
             
             // Ensure the phrase starts with a space
             std::string token = phrase;
@@ -281,20 +346,32 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         std::cout << "- Total vocabulary size: " << vocab_size_ << std::endl;
         std::cout << "- Special tokens: 6" << std::endl;
         
-        // Count marked adjectives
+        // Count marked patterns
         size_t marked_adjective_count = 0;
+        size_t marked_verb_count = 0;
+        
         for (const auto& [phrase, _] : sorted_adjectives) {
             if (phrase.find('*') != std::string::npos) {
                 marked_adjective_count++;
             }
         }
         
+        for (const auto& [phrase, _] : sorted_verbs) {
+            if (phrase.find('#') != std::string::npos) {
+                marked_verb_count++;
+            }
+        }
+        
         std::cout << "- Marked adjective phrases: " << marked_adjective_count << std::endl;
         std::cout << "- Regular adjective phrases: " << (sorted_adjectives.size() - marked_adjective_count) << std::endl;
         std::cout << "- Total adjective phrases: " << sorted_adjectives.size() << std::endl;
-        std::cout << "- Other phrases: " << std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota) << std::endl;
+        std::cout << "- Marked verb phrases: " << marked_verb_count << std::endl;
+        std::cout << "- Regular verb phrases: " << (sorted_verbs.size() - marked_verb_count) << std::endl;
+        std::cout << "- Total verb phrases: " << sorted_verbs.size() << std::endl;
+        std::cout << "- Other phrases: " << std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota - verb_quota) << std::endl;
         std::cout << "- Individual words: " << (vocab_size_ - 6 - std::min(adjective_quota, sorted_adjectives.size()) 
-                                              - std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota)) << std::endl;
+                                              - std::min(verb_quota, sorted_verbs.size()) 
+                                              - std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota - verb_quota)) << std::endl;
         
         // Print most common adjectives
         std::cout << "\nTop 10 most common adjective phrases:" << std::endl;
@@ -305,12 +382,36 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
             adjective_count++;
         }
         
+        // Print most common verbs if any exist
+        if (!sorted_verbs.empty()) {
+            std::cout << "\nTop 10 most common verb phrases:" << std::endl;
+            size_t verb_count = 0;
+            for (const auto& [phrase, freq] : sorted_verbs) {
+                if (verb_count >= 10) break;
+                std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
+                verb_count++;
+            }
+        }
+        
         // Print most common marked adjectives if any exist
         if (marked_adjective_count > 0) {
             std::cout << "\nTop 5 most common marked adjective phrases:" << std::endl;
             size_t marked_count = 0;
             for (const auto& [phrase, freq] : sorted_adjectives) {
                 if (phrase.find('*') != std::string::npos) {
+                    std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
+                    marked_count++;
+                    if (marked_count >= 5) break;
+                }
+            }
+        }
+        
+        // Print most common marked verbs if any exist
+        if (marked_verb_count > 0) {
+            std::cout << "\nTop 5 most common marked verb phrases:" << std::endl;
+            size_t marked_count = 0;
+            for (const auto& [phrase, freq] : sorted_verbs) {
+                if (phrase.find('#') != std::string::npos) {
                     std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
                     marked_count++;
                     if (marked_count >= 5) break;

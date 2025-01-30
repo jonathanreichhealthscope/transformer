@@ -15,15 +15,15 @@ public:
     static std::string extractMarkedVerb(const std::string& line);
     static bool hasMarkedVerb(const std::string& line);
     static void processTrainingLine(const std::string& line);
+    static bool isVerb(const std::string& word);
 
 private:
     static std::string trim(const std::string& str);
-    static bool isVerb(const std::string& word);
     static bool endsWithVerb(const std::string& phrase);
     
     // Common verb suffixes
     static const std::vector<std::string> verb_suffixes;
     
     // Common verbs (partial list - can be expanded)
-    static const std::unordered_set<std::string> common_verbs;
+    static std::unordered_set<std::string> common_verbs;
 }; 
