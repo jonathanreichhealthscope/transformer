@@ -13,7 +13,7 @@
 
 TiktokenTokenizer::TiktokenTokenizer() = default;
 
-// Helper to identify if a phrase ends with an adjective
+// Helper to identify adjectives in phrases
 bool is_adjective_ending(const std::string& phrase) {
     static const std::unordered_set<std::string> common_adjective_endings = {
         "able", "ible", "al", "ful", "ic", "ive", "less", "ous", "y"
@@ -26,6 +26,11 @@ bool is_adjective_ending(const std::string& phrase) {
         " fast", " slow", " hard", " soft", " loud", " quiet", " rich", " poor",
         " young", " old", " new", " old", " happy", " sad", " clean", " dirty"
     };
+
+    // Check if this is a marked adjective pattern
+    if (phrase.find('*') != std::string::npos) {
+        return true;
+    }
     
     // First check if it's a common adjective
     if (common_adjectives.find(phrase) != common_adjectives.end()) {
@@ -51,16 +56,37 @@ std::vector<std::pair<std::string, std::string>> extract_phrase_pairs(const std:
     
     while (std::getline(file, line)) {
         if (line.empty()) continue;
+
+        // For marked adjective patterns (with *)
+        size_t asterisk_pos = line.find('*');
+        if (asterisk_pos != std::string::npos) {
+            std::string context = line.substr(0, asterisk_pos);
+            std::string target = line.substr(asterisk_pos); // Keep the * in the target
+            
+            // Trim context
+            context.erase(0, context.find_first_not_of(" \t\r\n"));
+            context.erase(context.find_last_not_of(" \t\r\n") + 1);
+            
+            // Add a space prefix to target if needed
+            if (!target.empty() && target[0] != ' ' && target[0] != '*') {
+                target = " " + target;
+            }
+            
+            if (!context.empty() && !target.empty()) {
+                pairs.emplace_back(context, target);
+            }
+            continue;
+        }
+
+        // For regular patterns (with |)
         size_t sep_pos = line.find('|');
         if (sep_pos != std::string::npos) {
             std::string context = line.substr(0, sep_pos);
             std::string target = line.substr(sep_pos + 1);
             
-            // Only trim the context, preserve exact target format
             context.erase(0, context.find_first_not_of(" \t\r\n"));
             context.erase(context.find_last_not_of(" \t\r\n") + 1);
             
-            // Add a space prefix to target if it doesn't have one
             if (!target.empty() && target[0] != ' ') {
                 target = " " + target;
             }
@@ -254,17 +280,42 @@ void TiktokenTokenizer::initialize(const std::string& encoding_name) {
         std::cout << "\nVocabulary statistics:" << std::endl;
         std::cout << "- Total vocabulary size: " << vocab_size_ << std::endl;
         std::cout << "- Special tokens: 6" << std::endl;
-        std::cout << "- Adjective phrases: " << std::min(adjective_quota, sorted_adjectives.size()) << std::endl;
+        
+        // Count marked adjectives
+        size_t marked_adjective_count = 0;
+        for (const auto& [phrase, _] : sorted_adjectives) {
+            if (phrase.find('*') != std::string::npos) {
+                marked_adjective_count++;
+            }
+        }
+        
+        std::cout << "- Marked adjective phrases: " << marked_adjective_count << std::endl;
+        std::cout << "- Regular adjective phrases: " << (sorted_adjectives.size() - marked_adjective_count) << std::endl;
+        std::cout << "- Total adjective phrases: " << sorted_adjectives.size() << std::endl;
         std::cout << "- Other phrases: " << std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota) << std::endl;
         std::cout << "- Individual words: " << (vocab_size_ - 6 - std::min(adjective_quota, sorted_adjectives.size()) 
                                               - std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota)) << std::endl;
         
         // Print most common adjectives
         std::cout << "\nTop 10 most common adjective phrases:" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(10), sorted_adjectives.size()); i++) {
-            const auto& [phrase, freq] = sorted_adjectives[i];
-            std::cout << std::setw(3) << (i + 1) << ". '" << phrase << "': " 
-                      << freq << " occurrences" << std::endl;
+        size_t adjective_count = 0;
+        for (const auto& [phrase, freq] : sorted_adjectives) {
+            if (adjective_count >= 10) break;
+            std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
+            adjective_count++;
+        }
+        
+        // Print most common marked adjectives if any exist
+        if (marked_adjective_count > 0) {
+            std::cout << "\nTop 5 most common marked adjective phrases:" << std::endl;
+            size_t marked_count = 0;
+            for (const auto& [phrase, freq] : sorted_adjectives) {
+                if (phrase.find('*') != std::string::npos) {
+                    std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
+                    marked_count++;
+                    if (marked_count >= 5) break;
+                }
+            }
         }
         
         // Print most common other phrases

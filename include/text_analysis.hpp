@@ -12,6 +12,9 @@ class AdjectivePhraseAnalyzer {
 public:
     static std::vector<std::string> extractAdjectivePhrases(const std::string& filename);
     static void analyzeAndLogPhrases(const std::vector<std::string>& phrases, std::ofstream& log_file);
+    static std::string extractMarkedAdjective(const std::string& line);
+    static bool hasMarkedAdjective(const std::string& line);
+    static void processTrainingLine(const std::string& line);
 
 private:
     static std::string trim(const std::string& str);
