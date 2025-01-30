@@ -151,6 +151,13 @@ class FeedForward {
      */
     void initialize_weights();
 
+    void reset_state() {
+        // Clear any cached intermediate computations
+        intermediate_cache = Matrix();
+        input_cache_ = Matrix();
+        dropout_mask_ = Matrix();
+    }
+
     // Add Transformer as friend
     friend class Transformer;
     friend class TransformerLayer;

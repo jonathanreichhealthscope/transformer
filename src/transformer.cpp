@@ -427,6 +427,31 @@ struct BatchSequence {
 };
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer) {
+    // Clear ALL states before processing new input
+    clear_kv_cache();
+    hidden_states = Matrix();
+    last_hidden_states = Matrix();
+    m_layer_activations.clear();
+    last_seq_boundaries.clear();
+    last_input_tokens_.clear();
+    last_input_query_.clear();
+    
+    // Clear gradient checkpoints
+    GradientCheckpoint::clear_cache();
+    
+    // Reset all layer states
+    for (auto& layer : layers) {
+        if (layer) {
+            layer->clear_cache();
+            if (auto* attention = layer->getAttention()) {
+                attention->reset_state();
+            }
+            if (auto* ffn = layer->getFeedForward()) {
+                ffn->reset_state();
+            }
+        }
+    }
+    
     // Reshape input into proper batch structure
     const size_t batch_size = 1;  // For single sequence input
     const size_t seq_len = input_tokens.size();
@@ -1078,21 +1103,94 @@ PhraseType Transformer::analyze_phrase_type(
     const Tokenizer& tokenizer
 ) {
     // Get the final token predictions
-    Matrix final_logits = Matrix(logits.row(logits.rows() - 1));  // Explicit conversion
+    Matrix final_logits = Matrix(logits.row(logits.rows() - 1));
     
-    // Calculate scores for each phrase type based on token probabilities
+    // Convert logits to probabilities
+    float max_logit = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < final_logits.cols(); i++) {
+        max_logit = std::max(max_logit, final_logits(0, i));
+    }
+    
+    std::vector<float> probabilities(final_logits.cols());
+    float sum_exp = 0.0f;
+    for (size_t i = 0; i < final_logits.cols(); i++) {
+        probabilities[i] = std::exp(final_logits(0, i) - max_logit);
+        sum_exp += probabilities[i];
+    }
+    for (float& prob : probabilities) {
+        prob /= sum_exp;
+    }
+    
+    // Calculate scores for each phrase type
     float verb_score = 0.0f;
     float adj_score = 0.0f;
     float general_score = 0.0f;
     
-    // Analyze token probabilities to determine the most likely phrase type
-    // This would involve checking against known verb and adjective patterns
-    // in the vocabulary
+    // Look at top K tokens for scoring
+    const size_t K = 10;
+    std::vector<std::pair<float, size_t>> top_tokens;
+    for (size_t i = 0; i < probabilities.size(); i++) {
+        top_tokens.push_back({probabilities[i], i});
+    }
+    std::sort(top_tokens.begin(), top_tokens.end(), std::greater<>());
     
-    // For now, using a simple heuristic based on highest probability tokens
-    // This should be replaced with a more sophisticated analysis based on
-    // your specific vocabulary and token patterns
+    // Analyze top tokens
+    for (size_t i = 0; i < std::min(K, top_tokens.size()); i++) {
+        float prob = top_tokens[i].first;
+        std::string token = tokenizer.decode({static_cast<int>(top_tokens[i].second)});
+        
+        // Check verb patterns
+        if (is_likely_verb(token)) {
+            verb_score += prob;
+        }
+        // Check adjective patterns
+        else if (is_likely_adjective(token)) {
+            adj_score += prob;
+        }
+        else {
+            general_score += prob;
+        }
+    }
     
+    // Add context-based scoring
+    std::string context = tokenizer.decode(last_input_tokens_);
+    std::transform(context.begin(), context.end(), context.begin(), ::tolower);
+    
+    // Common verb context patterns
+    const std::vector<std::string> verb_contexts = {
+        "want to", "like to", "need to", "try to", "going to",
+        "starts to", "begins to", "wants to", "likes to", "needs to"
+    };
+    
+    // Common adjective context patterns
+    const std::vector<std::string> adj_contexts = {
+        "is", "are", "was", "were", "looks", "seems", "feels",
+        "appears", "becomes", "remains", "stays", "the", "very"
+    };
+    
+    // Boost scores based on context
+    for (const auto& pattern : verb_contexts) {
+        if (context.find(pattern) != std::string::npos) {
+            verb_score *= 1.5f;
+            break;
+        }
+    }
+    
+    for (const auto& pattern : adj_contexts) {
+        if (context.find(pattern) != std::string::npos) {
+            adj_score *= 1.5f;
+            break;
+        }
+    }
+    
+    // Debug output
+    std::cout << "\nPhrase Type Analysis:\n";
+    std::cout << "Verb score: " << verb_score << "\n";
+    std::cout << "Adjective score: " << adj_score << "\n";
+    std::cout << "General score: " << general_score << "\n";
+    std::cout << "Context: '" << context << "'\n";
+    
+    // Return the type with highest score
     if (verb_score > adj_score && verb_score > general_score) {
         return PhraseType::VERB;
     } else if (adj_score > verb_score && adj_score > general_score) {
@@ -1105,13 +1203,25 @@ PhraseType Transformer::analyze_phrase_type(
 std::string Transformer::extract_prediction(
     const Matrix& logits,
     PhraseType phrase_type,
-    const Tokenizer& tokenizer
+    const Tokenizer& tokenizer,
+    std::mt19937* gen
 ) {
-    // Get the final token predictions
-    Matrix final_logits = Matrix(logits.row(logits.rows() - 1));  // Explicit conversion
+    // Create a local generator if none provided
+    std::mt19937 local_gen = gen ? *gen : Utils::get_new_generator();
     
-    // Apply softmax with temperature
-    const float temperature = 0.7f;  // Lower = more focused predictions, higher = more diverse
+    // Get the final token predictions
+    Matrix final_logits = Matrix(logits.row(logits.rows() - 1));
+    
+    // Apply dynamic temperature scaling based on a random factor
+    std::uniform_real_distribution<float> temp_dist(0.7f, 1.3f);
+    const float temperature = temp_dist(local_gen);  // Random temperature for each prediction
+    
+    // Add random noise to logits for more variety
+    std::normal_distribution<float> noise_dist(0.0f, 0.1f);
+    for (size_t i = 0; i < final_logits.cols(); i++) {
+        final_logits(0, i) += noise_dist(local_gen);
+    }
+    
     float max_logit = -std::numeric_limits<float>::infinity();
     
     // Find max for numerical stability
@@ -1119,7 +1229,7 @@ std::string Transformer::extract_prediction(
         max_logit = std::max(max_logit, final_logits(0, i));
     }
     
-    // Compute softmax probabilities
+    // Compute softmax probabilities with temperature
     std::vector<float> probabilities(final_logits.cols());
     float sum_exp = 0.0f;
     
@@ -1134,30 +1244,58 @@ std::string Transformer::extract_prediction(
         prob /= sum_exp;
     }
     
-    // Apply type-specific boosts
+    // Apply type-specific boosts with random variation
     switch (phrase_type) {
         case PhraseType::VERB:
-            boost_verb_probabilities(probabilities, tokenizer);
+            boost_verb_probabilities(probabilities, tokenizer, &local_gen);
             break;
         case PhraseType::ADJECTIVE:
-            boost_adjective_probabilities(probabilities, tokenizer);
+            boost_adjective_probabilities(probabilities, tokenizer, &local_gen);
             break;
         default:
             break;
     }
     
-    // Sample from the distribution
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::discrete_distribution<> dist(probabilities.begin(), probabilities.end());
-    int predicted_token = dist(gen);
+    // Apply nucleus sampling
+    float p = 0.9f;  // Keep top 90% of probability mass
+    float cumsum = 0.0f;
+    std::vector<size_t> valid_indices;
+    
+    // Sort indices by probability
+    std::vector<size_t> indices(probabilities.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(),
+              [&](size_t a, size_t b) { return probabilities[a] > probabilities[b]; });
+    
+    // Keep tokens until we reach the probability threshold
+    for (size_t idx : indices) {
+        cumsum += probabilities[idx];
+        valid_indices.push_back(idx);
+        if (cumsum >= p) break;
+    }
+    
+    // Sample from the valid indices
+    std::discrete_distribution<> dist(valid_indices.size(), 0.0, 1.0,
+        [&](double i) { return probabilities[valid_indices[static_cast<size_t>(i)]]; });
+    
+    int predicted_token = valid_indices[dist(local_gen)];
     
     // Decode the predicted token
     return tokenizer.decode({predicted_token});
 }
 
-void Transformer::boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer) {
-    const float boost_factor = 1.5f;
+void Transformer::boost_verb_probabilities(
+    std::vector<float>& probabilities,
+    const Tokenizer& tokenizer,
+    std::mt19937* gen
+) {
+    // Create a local generator if none provided
+    std::mt19937 local_gen = gen ? *gen : Utils::get_new_generator();
+    
+    // Get random boost factor
+    std::uniform_real_distribution<float> boost_dist(1.3f, 1.7f);
+    const float boost_factor = boost_dist(local_gen);
+    
     for (size_t i = 0; i < probabilities.size(); i++) {
         std::string token = tokenizer.decode({static_cast<int>(i)});
         if (is_likely_verb(token)) {
@@ -1171,8 +1309,18 @@ void Transformer::boost_verb_probabilities(std::vector<float>& probabilities, co
     }
 }
 
-void Transformer::boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer) {
-    const float boost_factor = 1.5f;
+void Transformer::boost_adjective_probabilities(
+    std::vector<float>& probabilities,
+    const Tokenizer& tokenizer,
+    std::mt19937* gen
+) {
+    // Create a local generator if none provided
+    std::mt19937 local_gen = gen ? *gen : Utils::get_new_generator();
+    
+    // Get random boost factor
+    std::uniform_real_distribution<float> boost_dist(1.3f, 1.7f);
+    const float boost_factor = boost_dist(local_gen);
+    
     for (size_t i = 0; i < probabilities.size(); i++) {
         std::string token = tokenizer.decode({static_cast<int>(i)});
         if (is_likely_adjective(token)) {
@@ -1186,25 +1334,75 @@ void Transformer::boost_adjective_probabilities(std::vector<float>& probabilitie
     }
 }
 
-bool Transformer::is_likely_verb(const std::string& token) {
-    const std::vector<std::string> verb_endings = {"ing", "ed", "ate", "ize", "ify"};
+bool Transformer::is_likely_verb(const std::string& token) const {
+    // Common verb endings
+    const std::vector<std::string> verb_endings = {
+        "ing", "ed", "ate", "ize", "ify", "ise", "ect",
+        "ent", "age", "ute", "end", "ish", "ade", "ine",
+        "ume", "ure", "ide", "ive", "ete", "act"
+    };
+
+    // Common verbs that don't follow standard patterns
+    const std::unordered_set<std::string> common_verbs = {
+        "go", "do", "make", "take", "come", "see", "get",
+        "know", "find", "give", "tell", "work", "call", "try",
+        "ask", "need", "feel", "let", "put", "mean", "keep",
+        "run", "set", "move", "play", "pay", "hear", "help",
+        "talk", "turn", "start", "show", "wait", "plan", "learn"
+    };
+
+    // First check if it's a common verb
+    std::string lower_token = token;
+    std::transform(lower_token.begin(), lower_token.end(), lower_token.begin(), ::tolower);
+    if (common_verbs.find(lower_token) != common_verbs.end()) {
+        return true;
+    }
+
+    // Then check for verb endings
     for (const auto& ending : verb_endings) {
-        if (token.length() > ending.length() && 
-            token.substr(token.length() - ending.length()) == ending) {
+        if (lower_token.length() > ending.length() && 
+            lower_token.substr(lower_token.length() - ending.length()) == ending) {
             return true;
         }
     }
+
     return false;
 }
 
-bool Transformer::is_likely_adjective(const std::string& token) {
-    const std::vector<std::string> adj_endings = {"ful", "ous", "ible", "able", "al", "ive"};
+bool Transformer::is_likely_adjective(const std::string& token) const {
+    // Common adjective endings
+    const std::vector<std::string> adj_endings = {
+        "ful", "ous", "ible", "able", "al", "ive", "less",
+        "ish", "like", "ic", "ian", "en", "ent", "ant",
+        "ary", "ing", "ed", "y", "ly", "some"
+    };
+
+    // Common adjectives that don't follow standard patterns
+    const std::unordered_set<std::string> common_adjectives = {
+        "good", "bad", "new", "old", "high", "low", "big",
+        "small", "large", "little", "long", "short", "great",
+        "hot", "cold", "warm", "cool", "easy", "hard", "fast",
+        "slow", "early", "late", "young", "right", "wrong",
+        "true", "false", "open", "close", "light", "dark",
+        "heavy", "soft", "hard", "weak", "strong", "rich",
+        "poor", "safe", "clean", "dirty", "quiet", "loud"
+    };
+
+    // First check if it's a common adjective
+    std::string lower_token = token;
+    std::transform(lower_token.begin(), lower_token.end(), lower_token.begin(), ::tolower);
+    if (common_adjectives.find(lower_token) != common_adjectives.end()) {
+        return true;
+    }
+
+    // Then check for adjective endings
     for (const auto& ending : adj_endings) {
-        if (token.length() > ending.length() && 
-            token.substr(token.length() - ending.length()) == ending) {
+        if (lower_token.length() > ending.length() && 
+            lower_token.substr(lower_token.length() - ending.length()) == ending) {
             return true;
         }
     }
+
     return false;
 }
 

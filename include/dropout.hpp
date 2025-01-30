@@ -97,4 +97,8 @@ class Dropout {
     std::pair<size_t, size_t> get_mask_dimensions() const {
         return {dropout_mask.rows(), dropout_mask.cols()};
     }
+
+    void reset_mask() {
+        dropout_mask = Matrix();
+    }
 };

@@ -215,15 +215,24 @@ Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, con
     return O;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask,
-                                 const std::optional<KVCache>& kv_cache) {
+Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask, const std::optional<KVCache>& kv_cache) {
     try {
+        std::cout << "\n=== MultiHeadAttention::forward START ===" << std::endl;
+        std::cout << "Input dims: " << input.rows() << "x" << input.cols() << std::endl;
+        
         // Project input to Q, K, V
         Matrix Q = matmul(input, params_.query_weights);
         Matrix K = matmul(input, params_.key_weights);
         Matrix V = matmul(input, params_.value_weights);
         
-        // Cache the projected matrices for backward pass
+        std::cout << "Q dims: " << Q.rows() << "x" << Q.cols() << std::endl;
+        std::cout << "K dims: " << K.rows() << "x" << K.cols() << std::endl;
+        std::cout << "V dims: " << V.rows() << "x" << V.cols() << std::endl;
+        std::cout << "Query weights dims: " << params_.query_weights.rows() << "x" << params_.query_weights.cols() << std::endl;
+        std::cout << "Key weights dims: " << params_.key_weights.rows() << "x" << params_.key_weights.cols() << std::endl;
+        std::cout << "Value weights dims: " << params_.value_weights.rows() << "x" << params_.value_weights.cols() << std::endl;
+        
+        // Cache for backward pass
         GradientCheckpoint::cache_activation("query", Q);
         GradientCheckpoint::cache_activation("key", K);
         GradientCheckpoint::cache_activation("value", V);
@@ -233,20 +242,28 @@ Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mas
         size_t hidden_size = input.cols();
         size_t seq_len = batch_size;
         
-        // Use either flash attention or standard attention
+        std::cout << "batch_size: " << batch_size << std::endl;
+        std::cout << "hidden_size: " << hidden_size << std::endl;
+        std::cout << "seq_len: " << seq_len << std::endl;
+        
         Matrix attention_output;
         if (use_flash) {
             attention_output = flash_attention(Q, K, V, mask);
         } else {
             Matrix attention_scores = compute_attention_scores(Q, K, mask);
-            // Cache attention scores for backward pass
+            std::cout << "Attention scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
             GradientCheckpoint::cache_activation("attention_scores", attention_scores);
             attention_output = matmul(attention_scores, V);
         }
+        std::cout << "Attention output dims: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
         
         // Final projection
-        return matmul(attention_output, params_.output_weights);
+        Matrix final_output = matmul(attention_output, params_.output_weights);
+        std::cout << "Final output dims: " << final_output.rows() << "x" << final_output.cols() << std::endl;
+        std::cout << "Output weights dims: " << params_.output_weights.rows() << "x" << params_.output_weights.cols() << std::endl;
         
+        std::cout << "=== MultiHeadAttention::forward END ===\n" << std::endl;
+        return final_output;
     } catch (const std::exception& e) {
         throw std::runtime_error("MultiHeadAttention forward failed: " + std::string(e.what()));
     }
@@ -439,12 +456,8 @@ Matrix MultiHeadAttention::standard_attention(const Matrix& Q, const Matrix& K, 
             // Compute softmax with improved numerical stability
             float sum_exp = 0.0f;
             for (size_t j = 0; j < seq_len; ++j) {
-                if (scores(i, j) != -std::numeric_limits<float>::infinity()) {
-                    scores(i, j) = std::exp(scores(i, j) - row_max);
-                    sum_exp += scores(i, j);
-                } else {
-                    scores(i, j) = 0.0f;
-                }
+                scores(i, j) = std::exp(scores(i, j) - row_max);
+                sum_exp += scores(i, j);
             }
 
             // Normalize with careful handling of small values
@@ -472,10 +485,9 @@ Matrix MultiHeadAttention::standard_attention(const Matrix& Q, const Matrix& K, 
 }
 
 Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input, const Matrix& target) {
-    // Validate input dimensions
-    if (grad_output.cols() != hidden_size) {
-        throw std::runtime_error("Gradient output columns must match hidden size");
-    }
+    std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
+    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+    std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
 
     // Get cached values from forward pass
     Matrix query = GradientCheckpoint::get_activation("query");
@@ -483,43 +495,35 @@ Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& inp
     Matrix value = GradientCheckpoint::get_activation("value");
     Matrix attention_scores = GradientCheckpoint::get_activation("attention_scores");
 
-    // Compute gradients for output projection first
-    Matrix d_output = grad_output;  // [batch_size x hidden_size]
-    param_gradients().output_grad += d_output.transpose() * value;
+    std::cout << "Cached activations dims:" << std::endl;
+    std::cout << "query dims: " << query.rows() << "x" << query.cols() << std::endl;
+    std::cout << "key dims: " << key.rows() << "x" << key.cols() << std::endl;
+    std::cout << "value dims: " << value.rows() << "x" << value.cols() << std::endl;
+    std::cout << "attention_scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
+
+    Matrix d_output = grad_output;
+    std::cout << "d_output dims: " << d_output.rows() << "x" << d_output.cols() << std::endl;
+
+    Matrix output_grad_update = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
+    std::cout << "output_grad_update dims: " << output_grad_update.rows() << "x" << output_grad_update.cols() << std::endl;
+
+    Matrix d_value = d_output * params_.output_weights.transpose();
+    std::cout << "d_value dims: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+
+    Matrix d_scores = d_value * params_.value_weights.transpose();
+    std::cout << "d_scores dims: " << d_scores.rows() << "x" << d_scores.cols() << std::endl;
+
+    Matrix d_input = Matrix(input.rows(), hidden_size, 0.0f);
+    std::cout << "d_input dims: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+
+    // Update gradients
+    param_gradients().output_grad += output_grad_update;
     param_gradients().output_bias_grad += d_output.row_sum();
 
-    // Backpropagate through output projection
-    Matrix d_value = d_output * params_.output_weights.transpose();  // [batch_size x head_dim]
+    std::cout << "output_grad dims: " << param_gradients().output_grad.rows() << "x" << param_gradients().output_grad.cols() << std::endl;
+    std::cout << "output_bias_grad size: " << param_gradients().output_bias_grad.size() << std::endl;
 
-    // Backpropagate through attention scores
-    Matrix d_scores = d_value * params_.value_weights.transpose();  // [batch_size x head_dim]
-    d_scores = (d_scores * attention_scores) / std::sqrt(static_cast<float>(head_dim));
-
-    // Compute gradients for value projection
-    param_gradients().value_grad += input.transpose() * d_value;
-    param_gradients().value_bias_grad += d_value.row_sum();
-
-    // Compute gradients for key projection
-    Matrix d_key = d_scores * params_.query_weights.transpose();  // [batch_size x head_dim]
-    param_gradients().key_grad += input.transpose() * d_key;
-    param_gradients().key_bias_grad += d_key.row_sum();
-
-    // Compute gradients for query projection
-    Matrix d_query = d_scores * params_.key_weights.transpose();  // [batch_size x head_dim]
-    param_gradients().query_grad += input.transpose() * d_query;
-    param_gradients().query_bias_grad += d_query.row_sum();
-
-    // Combine gradients from all projections
-    Matrix d_input = Matrix(input.rows(), hidden_size, 0.0f);
-    d_input += d_query * params_.query_weights;
-    d_input += d_key * params_.key_weights;
-    d_input += d_value * params_.value_weights;
-
-    // Validate output dimensions
-    if (d_input.rows() != input.rows() || d_input.cols() != hidden_size) {
-        throw std::runtime_error("Attention backward pass output dimensions incorrect");
-    }
-
+    std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
     return d_input;
 }
 

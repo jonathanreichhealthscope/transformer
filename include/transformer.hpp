@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <random>
 
 // Forward declarations
 class TransformerLayer;
@@ -89,9 +90,27 @@ class TransformerLayer {
                    const std::optional<KVCache>& kv_cache = std::nullopt);
 
     /**
-     * @brief Clears the key-value cache of this layer.
+     * @brief Clears all cached states and resets layer components.
      */
-    void clear_cache();
+    void clear_cache() {
+        kv_cache.clear();
+        if (self_attention) {
+            self_attention->reset_state();
+        }
+        if (feed_forward) {
+            feed_forward->reset_state();
+        }
+        if (attention_dropout) {
+            attention_dropout->reset_mask();
+        }
+        if (ffn_dropout) {
+            ffn_dropout->reset_mask();
+        }
+    }
+
+    void set_training(bool mode) {
+        training = mode;
+    }
 
     /**
      * @brief Saves the layer's parameters to an output stream.
@@ -179,10 +198,6 @@ class TransformerLayer {
         }
         return *this;
     }
-
-    void set_training(bool mode) {
-        training = mode;
-    }
 };
 
 /**
@@ -231,6 +246,32 @@ private:
     size_t update_step = 0;
     std::optional<std::vector<Matrix>> parameter_grads;
 
+    // Randomization helpers
+    float get_dynamic_temperature(std::mt19937& gen) const {
+        std::uniform_real_distribution<float> temp_dist(0.7f, 1.3f);
+        return temp_dist(gen);
+    }
+
+    void add_random_noise(Matrix& logits, std::mt19937& gen) const {
+        std::normal_distribution<float> noise_dist(0.0f, 0.1f);
+        for (size_t i = 0; i < logits.cols(); i++) {
+            logits(0, i) += noise_dist(gen);
+        }
+    }
+
+    std::vector<float> apply_nucleus_sampling(
+        const std::vector<float>& probabilities,
+        float p,
+        std::mt19937& gen
+    ) const;
+
+    void apply_random_boost(
+        std::vector<float>& probabilities,
+        std::mt19937& gen,
+        float min_boost = 0.8f,
+        float max_boost = 1.2f
+    ) const;
+
     // Private methods
     void unscale_gradients(MultiHeadAttention::Gradients& grads, float scale);
     void unscale_gradients(FeedForward::Gradients& grads, float scale);
@@ -240,10 +281,27 @@ private:
     void clear_gradients();
 
     // Helper methods for phrase prediction
-    void boost_verb_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
-    void boost_adjective_probabilities(std::vector<float>& probabilities, const Tokenizer& tokenizer);
-    bool is_likely_verb(const std::string& token);
-    bool is_likely_adjective(const std::string& token);
+    void boost_verb_probabilities(
+        std::vector<float>& probabilities,
+        const Tokenizer& tokenizer,
+        std::mt19937* gen = nullptr
+    );
+
+    void boost_adjective_probabilities(
+        std::vector<float>& probabilities,
+        const Tokenizer& tokenizer,
+        std::mt19937* gen = nullptr
+    );
+
+    bool is_likely_verb(const std::string& token) const;
+    bool is_likely_adjective(const std::string& token) const;
+
+    std::string extract_prediction(
+        const Matrix& logits,
+        PhraseType phrase_type,
+        const Tokenizer& tokenizer,
+        std::mt19937* gen = nullptr
+    );
 
 public:
     Transformer() = default;
@@ -419,19 +477,6 @@ private:
      */
     PhraseType analyze_phrase_type(
         const Matrix& logits,
-        const Tokenizer& tokenizer
-    );
-
-    /**
-     * @brief Extracts the final phrase prediction from logits
-     * @param logits The output logits from the model
-     * @param phrase_type The predicted phrase type
-     * @param tokenizer The tokenizer instance
-     * @return The predicted final phrase
-     */
-    std::string extract_prediction(
-        const Matrix& logits,
-        PhraseType phrase_type,
         const Tokenizer& tokenizer
     );
 };

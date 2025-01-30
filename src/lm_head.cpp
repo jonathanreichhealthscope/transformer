@@ -110,14 +110,18 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
 }
 
 Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
-    // Store hidden states for backward pass
+    std::cout << "\n=== LanguageModelHead::forward START ===" << std::endl;
+    std::cout << "Input hidden_states dims: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+    
     this->hidden_states = hidden_states;
     
-    // Apply layer normalization first
     Matrix normalized = layer_norm->forward(hidden_states);
+    std::cout << "After layer_norm dims: " << normalized.rows() << "x" << normalized.cols() << std::endl;
     
-    // Project to vocabulary size
     Matrix logits = matmul(normalized, projection);
+    std::cout << "After projection dims: " << logits.rows() << "x" << logits.cols() << std::endl;
+    std::cout << "Projection matrix dims: " << projection.rows() << "x" << projection.cols() << std::endl;
+    std::cout << "Bias vector size: " << bias.size() << std::endl;
     
     // Add bias terms
     #pragma omp parallel for collapse(2)
@@ -156,6 +160,9 @@ Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
     if (!training) {
         bias_completion_format(logits);
     }
+    
+    std::cout << "Final logits dims: " << logits.rows() << "x" << logits.cols() << std::endl;
+    std::cout << "=== LanguageModelHead::forward END ===\n" << std::endl;
     
     return logits;
 }
@@ -324,9 +331,26 @@ void LanguageModelHead::set_training(bool training_mode) {
 }
 
 Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
+    std::cout << "\n=== LanguageModelHead::backward_pass START ===" << std::endl;
+    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+    std::cout << "hidden_states dims: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+    
+    Matrix hidden_states_t = hidden_states.transpose();
+    std::cout << "hidden_states_t dims: " << hidden_states_t.rows() << "x" << hidden_states_t.cols() << std::endl;
+    
+    Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
+    std::cout << "grad_proj dims: " << grad_proj.rows() << "x" << grad_proj.cols() << std::endl;
+    
+    Vector grad_bias = grad_output.row_sum();
+    std::cout << "grad_bias size: " << grad_bias.size() << std::endl;
+    
+    std::cout << "projection dims: " << projection.rows() << "x" << projection.cols() << std::endl;
+    std::cout << "m_proj dims: " << m_proj.rows() << "x" << m_proj.cols() << std::endl;
+    std::cout << "v_proj dims: " << v_proj.rows() << "x" << v_proj.cols() << std::endl;
+    
     // Compute gradients for projection and bias
     std::cout << "Computing gradients for projection and bias" << std::endl;
-    Matrix grad_proj = matmul(hidden_states.transpose(), grad_output);
+    grad_proj = matmul(hidden_states.transpose(), grad_output);
     
     // Gradient clipping for stability
     const float grad_clip = 1.0f;
@@ -336,7 +360,7 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
         }
     }
     
-    Vector grad_bias = grad_output.row_sum();
+    grad_bias = grad_output.row_sum();
     for (size_t i = 0; i < grad_bias.size(); ++i) {
         grad_bias[i] = std::max(-grad_clip, std::min(grad_clip, grad_bias[i]));
     }
@@ -522,12 +546,9 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
     std::cout << "Bias vector updated" << std::endl;
     // Compute gradient with respect to input
     Matrix grad_input = matmul(grad_output, projection.transpose());
-    if (grad_input.cols() != hidden_states.cols()) {
-        throw std::runtime_error("Language model head gradient output dimension (" +
-                                 std::to_string(grad_input.cols()) +
-                                 ") must match hidden size (" +
-                                 std::to_string(hidden_states.cols()) + ")");
-    }
+    std::cout << "grad_input dims: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
+    std::cout << "=== LanguageModelHead::backward_pass END ===\n" << std::endl;
+    
     return grad_input;
 }
 

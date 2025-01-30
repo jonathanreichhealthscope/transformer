@@ -251,9 +251,6 @@ void Matrix::fill(float value) {
 }
 
 Matrix& Matrix::operator+=(const Matrix& other) {
-    std::cout << "Matrix addition dimensions:" << std::endl;
-    std::cout << "Left matrix: " << rows_ << "x" << cols_ << std::endl;
-    std::cout << "Right matrix: " << other.rows_ << "x" << other.cols_ << std::endl;
     
     if (rows_ != other.rows_ || cols_ != other.cols_) {
         throw std::invalid_argument("Matrix dimensions must match for addition");

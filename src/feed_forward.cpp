@@ -90,53 +90,50 @@ FeedForward::FeedForward(size_t hidden_size, size_t intermediate_size, float dro
 
 Matrix FeedForward::forward(const Matrix& input) {
     try {
-        // Debug dimensions
-        std::cout << "Input: " << input.rows() << "x" << input.cols() << std::endl;
-        std::cout << "W1: " << params_.ff1_weights.rows() << "x" << params_.ff1_weights.cols() << std::endl;
-        std::cout << "W2: " << params_.ff2_weights.rows() << "x" << params_.ff2_weights.cols() << std::endl;
-        std::cout << "B1: " << params_.ff1_bias.size() << std::endl;
-        std::cout << "B2: " << params_.ff2_bias.size() << std::endl;
+        std::cout << "\n=== FeedForward::forward START ===" << std::endl;
+        std::cout << "Input dims: " << input.rows() << "x" << input.cols() << std::endl;
+        std::cout << "FF1 weights dims: " << params_.ff1_weights.rows() << "x" << params_.ff1_weights.cols() << std::endl;
+        std::cout << "FF2 weights dims: " << params_.ff2_weights.rows() << "x" << params_.ff2_weights.cols() << std::endl;
+        std::cout << "FF1 bias size: " << params_.ff1_bias.size() << std::endl;
+        std::cout << "FF2 bias size: " << params_.ff2_bias.size() << std::endl;
 
-#ifdef USE_CUDA
-        try {
-            auto& memory_mgr = cuda::MemoryManager::instance();
-            // TODO: Implement CUDA path
-            throw std::runtime_error("CUDA implementation not yet available");
-        } catch (const std::runtime_error& e) {
-            std::cerr << "CUDA forward failed, falling back to CPU: " << e.what() << std::endl;
-#endif
-            // CPU implementation
-            // First layer
-            Matrix intermediate = matmul(input, params_.ff1_weights);
-            for (size_t i = 0; i < intermediate.rows(); ++i) {
-                for (size_t j = 0; j < intermediate.cols(); ++j) {
-                    intermediate(i, j) += params_.ff1_bias[j];
-                }
+        // First layer
+        Matrix intermediate = matmul(input, params_.ff1_weights);
+        std::cout << "After FF1 dims: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+
+        for (size_t i = 0; i < intermediate.rows(); ++i) {
+            for (size_t j = 0; j < intermediate.cols(); ++j) {
+                intermediate(i, j) += params_.ff1_bias[j];
             }
-
-            // Apply ReLU
-            for (size_t i = 0; i < intermediate.rows(); ++i) {
-                for (size_t j = 0; j < intermediate.cols(); ++j) {
-                    intermediate(i, j) = std::max(0.0f, intermediate(i, j));
-                }
-            }
-
-            // Cache intermediate values for backward pass
-            intermediate_cache = intermediate;
-            input_cache_ = input;
-
-            // Second layer
-            Matrix output = matmul(intermediate, params_.ff2_weights);
-            for (size_t i = 0; i < output.rows(); ++i) {
-                for (size_t j = 0; j < output.cols(); ++j) {
-                    output(i, j) += params_.ff2_bias[j];
-                }
-            }
-
-            return output;
-#ifdef USE_CUDA
         }
-#endif
+
+        // Apply ReLU
+        for (size_t i = 0; i < intermediate.rows(); ++i) {
+            for (size_t j = 0; j < intermediate.cols(); ++j) {
+                intermediate(i, j) = std::max(0.0f, intermediate(i, j));
+            }
+        }
+        std::cout << "After ReLU dims: " << intermediate.rows() << "x" << intermediate.cols() << std::endl;
+
+        // Cache intermediate values
+        intermediate_cache = intermediate;
+        input_cache_ = input;
+        std::cout << "Cached intermediate dims: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+        std::cout << "Cached input dims: " << input_cache_.rows() << "x" << input_cache_.cols() << std::endl;
+
+        // Second layer
+        Matrix output = matmul(intermediate, params_.ff2_weights);
+        std::cout << "Final output dims: " << output.rows() << "x" << output.cols() << std::endl;
+        
+        for (size_t i = 0; i < output.rows(); ++i) {
+            for (size_t j = 0; j < output.cols(); ++j) {
+                output(i, j) += params_.ff2_bias[j];
+            }
+        }
+
+        std::cout << "=== FeedForward::forward END ===\n" << std::endl;
+        return output;
+
     } catch (const std::exception& e) {
         throw std::runtime_error("FeedForward forward failed: " + std::string(e.what()));
     }
@@ -182,58 +179,21 @@ std::unique_ptr<FeedForward> FeedForward::load(std::istream& is) {
 
 Matrix FeedForward::backward(const Matrix& grad_output, const Matrix& input) {
     try {
-        // Initial debug dimensions
         std::cout << "\n=== FeedForward::backward START ===" << std::endl;
-        std::cout << "Input dimensions:" << std::endl;
-        std::cout << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-        std::cout << "ff2_weights: " << params_.ff2_weights.rows() << "x" << params_.ff2_weights.cols() << std::endl;
-        std::cout << "ff1_weights: " << params_.ff1_weights.rows() << "x" << params_.ff1_weights.cols() << std::endl;
-        std::cout << "intermediate_cache: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
-        std::cout << "input_cache_: " << input_cache_.rows() << "x" << input_cache_.cols() << std::endl;
+        std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+        std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
+        std::cout << "ff2_weights dims: " << params_.ff2_weights.rows() << "x" << params_.ff2_weights.cols() << std::endl;
+        std::cout << "ff1_weights dims: " << params_.ff1_weights.rows() << "x" << params_.ff1_weights.cols() << std::endl;
+        std::cout << "intermediate_cache dims: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
+        std::cout << "input_cache_ dims: " << input_cache_.rows() << "x" << input_cache_.cols() << std::endl;
 
-        // Compute gradients for second layer
-        std::cout << "\nComputing second layer gradients..." << std::endl;
-        
-        // Create transposed weight matrix
         Matrix w2_transpose = params_.ff2_weights.transpose();
-        std::cout << "w2_transpose dimensions: " << w2_transpose.rows() << "x" << w2_transpose.cols() << std::endl;
-        
-        // Initialize d_intermediate with correct dimensions
-        Matrix d_intermediate(grad_output.rows(), w2_transpose.cols());
-        std::cout << "d_intermediate initialized with dimensions: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
-        
-        // Compute gradient through second layer
-        std::cout << "Computing matmul(grad_output, w2_transpose)..." << std::endl;
-        d_intermediate = matmul(grad_output, w2_transpose);
-        std::cout << "d_intermediate after matmul dimensions: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
-        
-        // Update second layer gradients
-        std::cout << "\nComputing second layer weight gradients..." << std::endl;
-        std::cout << "intermediate_cache transpose dimensions: " << intermediate_cache.rows() << "x" << intermediate_cache.cols() << std::endl;
-        grads_.ff2_grad = matmul(intermediate_cache.transpose(), grad_output);
-        std::cout << "ff2_grad dimensions: " << grads_.ff2_grad.rows() << "x" << grads_.ff2_grad.cols() << std::endl;
-        
-        // Accumulate bias gradients for second layer
-        std::cout << "\nAccumulating second layer bias gradients..." << std::endl;
-        if (grads_.ff2_bias_grad.size() != grad_output.cols()) {
-            std::cout << "Resizing ff2_bias_grad from " << grads_.ff2_bias_grad.size() 
-                      << " to " << grad_output.cols() << std::endl;
-            grads_.ff2_bias_grad = FloatVector(grad_output.cols());
-        }
-        
-        for (size_t j = 0; j < grad_output.cols(); ++j) {
-            float bias_grad = 0.0f;
-            for (size_t i = 0; i < grad_output.rows(); ++i) {
-                bias_grad += grad_output(i, j);
-            }
-            grads_.ff2_bias_grad[j] = bias_grad;
-        }
-        std::cout << "ff2_bias_grad size: " << grads_.ff2_bias_grad.size() << std::endl;
+        std::cout << "w2_transpose dims: " << w2_transpose.rows() << "x" << w2_transpose.cols() << std::endl;
+
+        Matrix d_intermediate = matmul(grad_output, w2_transpose);
+        std::cout << "d_intermediate dims: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
 
         // Apply ReLU gradient
-        std::cout << "\nApplying ReLU gradient..." << std::endl;
-        std::cout << "Before ReLU gradient - d_intermediate dimensions: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
         for (size_t i = 0; i < intermediate_cache.rows(); ++i) {
             for (size_t j = 0; j < intermediate_cache.cols(); ++j) {
                 if (intermediate_cache(i, j) <= 0) {
@@ -241,53 +201,24 @@ Matrix FeedForward::backward(const Matrix& grad_output, const Matrix& input) {
                 }
             }
         }
-        std::cout << "After ReLU gradient - d_intermediate dimensions: " << d_intermediate.rows() << "x" << d_intermediate.cols() << std::endl;
 
-        // Compute gradients for first layer
-        std::cout << "\nComputing first layer gradients..." << std::endl;
         Matrix w1_transpose = params_.ff1_weights.transpose();
-        std::cout << "w1_transpose dimensions: " << w1_transpose.rows() << "x" << w1_transpose.cols() << std::endl;
-        
-        // Initialize d_input with correct dimensions
-        Matrix d_input(d_intermediate.rows(), w1_transpose.cols());
-        std::cout << "d_input initialized with dimensions: " << d_input.rows() << "x" << d_input.cols() << std::endl;
-        
-        // Compute input gradients
-        std::cout << "Computing matmul(d_intermediate, w1_transpose)..." << std::endl;
-        d_input = matmul(d_intermediate, w1_transpose);
-        std::cout << "d_input after matmul dimensions: " << d_input.rows() << "x" << d_input.cols() << std::endl;
-        
-        // Update first layer gradients
-        std::cout << "\nComputing first layer weight gradients..." << std::endl;
-        grads_.ff1_grad = matmul(input.transpose(), d_intermediate);
-        std::cout << "ff1_grad dimensions: " << grads_.ff1_grad.rows() << "x" << grads_.ff1_grad.cols() << std::endl;
-        
-        // Accumulate bias gradients for first layer
-        std::cout << "\nAccumulating first layer bias gradients..." << std::endl;
-        if (grads_.ff1_bias_grad.size() != d_intermediate.cols()) {
-            std::cout << "Resizing ff1_bias_grad from " << grads_.ff1_bias_grad.size() 
-                      << " to " << d_intermediate.cols() << std::endl;
-            grads_.ff1_bias_grad = FloatVector(d_intermediate.cols());
-        }
-        
-        for (size_t j = 0; j < d_intermediate.cols(); ++j) {
-            float bias_grad = 0.0f;
-            for (size_t i = 0; i < d_intermediate.rows(); ++i) {
-                bias_grad += d_intermediate(i, j);
-            }
-            grads_.ff1_bias_grad[j] = bias_grad;
-        }
-        std::cout << "ff1_bias_grad size: " << grads_.ff1_bias_grad.size() << std::endl;
+        std::cout << "w1_transpose dims: " << w1_transpose.rows() << "x" << w1_transpose.cols() << std::endl;
 
-        std::cout << "\n=== FeedForward::backward END ===" << std::endl;
+        Matrix d_input = matmul(d_intermediate, w1_transpose);
+        std::cout << "d_input dims: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+
+        // Update gradients
+        grads_.ff1_grad = matmul(input.transpose(), d_intermediate);
+        grads_.ff2_grad = matmul(intermediate_cache.transpose(), grad_output);
+        std::cout << "ff1_grad dims: " << grads_.ff1_grad.rows() << "x" << grads_.ff1_grad.cols() << std::endl;
+        std::cout << "ff2_grad dims: " << grads_.ff2_grad.rows() << "x" << grads_.ff2_grad.cols() << std::endl;
+
+        std::cout << "=== FeedForward::backward END ===\n" << std::endl;
         return d_input;
+
     } catch (const std::exception& e) {
         std::cerr << "\nError in FeedForward::backward: " << e.what() << std::endl;
-        std::cerr << "Last known dimensions:" << std::endl;
-        std::cerr << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cerr << "input: " << input.rows() << "x" << input.cols() << std::endl;
-        std::cerr << "ff2_weights: " << params_.ff2_weights.rows() << "x" << params_.ff2_weights.cols() << std::endl;
-        std::cerr << "ff1_weights: " << params_.ff1_weights.rows() << "x" << params_.ff1_weights.cols() << std::endl;
         throw;
     }
 }

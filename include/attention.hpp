@@ -252,6 +252,16 @@ class MultiHeadAttention {
     // Add the direct matrix version of forward
     Matrix forward(const Matrix& input, const Matrix& attention_mask);
 
+    void reset_state() {
+        // Clear all cached computations
+        cached_keys = Matrix();
+        cached_values = Matrix();
+        cached_attention_weights = Matrix();
+        cached_query_layer = Matrix();
+        cached_key_layer = Matrix();
+        cached_value_layer = Matrix();
+    }
+
   private:
     Parameters params_;
     Gradients grads_;
@@ -269,6 +279,14 @@ class MultiHeadAttention {
     size_t num_kv_heads;     ///< Number of key/value heads for GQA
     size_t max_seq_length;   ///< Maximum sequence length supported
     bool use_fp16_;         ///< Whether to use FP16 computation
+
+    // Cache variables
+    Matrix cached_keys;              ///< Cached key projections
+    Matrix cached_values;            ///< Cached value projections
+    Matrix cached_attention_weights; ///< Cached attention scores
+    Matrix cached_query_layer;       ///< Cached query layer output
+    Matrix cached_key_layer;         ///< Cached key layer output
+    Matrix cached_value_layer;       ///< Cached value layer output
 
     // RoPE caches
     Matrix cos_cached;       ///< Cached cosine values for RoPE
@@ -377,6 +395,17 @@ class MultiHeadAttention {
     void initialize_rope_cache(size_t max_seq_len, size_t dim_idx);
     float get_cos_cached(size_t pos, size_t dim_idx) const;
     float get_sin_cached(size_t pos, size_t dim_idx) const;
+
+    // Helper method for computing outer product
+    Matrix outer_product(const Vector& a, const Vector& b) const {
+        Matrix result(a.size(), b.size());
+        for (size_t i = 0; i < a.size(); ++i) {
+            for (size_t j = 0; j < b.size(); ++j) {
+                result(i, j) = a[i] * b[j];
+            }
+        }
+        return result;
+    }
 };
 
 // Add sliding window attention

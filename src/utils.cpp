@@ -14,6 +14,11 @@
 #include <unordered_set>
 #include "../include/data_augmentation.hpp"
 
+// Initialize static members
+std::random_device Utils::rd;
+std::mt19937 Utils::random_generator;
+std::atomic<uint64_t> Utils::prediction_counter(0);
+
 bool starts_with(const std::string& str, const std::string& prefix) {
     return str.size() >= prefix.size() && 
            str.compare(0, prefix.size(), prefix) == 0;
@@ -517,9 +522,17 @@ std::string Utils::get_token_category(const std::string& token, const TokenCateg
 }
 
 // Modify the print_top_predictions function to show token categories
-void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokenizer, 
-                                Transformer& transformer, int k) {
+void Utils::print_top_predictions(
+    const Matrix& logits,
+    const Tokenizer& tokenizer,
+    Transformer& transformer,
+    int k,
+    std::mt19937* gen
+) {
     static TokenCategories categories = analyze_token_categories(create_training_data());
+    
+    // Create a local generator - either use the provided one or create a new one
+    std::mt19937 local_gen = gen ? *gen : get_new_generator();
     
     // Get the last row of logits for next token prediction
     std::vector<float> last_logits;
@@ -527,8 +540,16 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         last_logits.push_back(logits(logits.rows() - 1, j));
     }
     
-    // Apply temperature scaling and compute probabilities
-    float temperature = 0.7f;
+    // Add random noise to logits
+    std::normal_distribution<float> noise_dist(0.0f, 0.1f);
+    for (float& logit : last_logits) {
+        logit += noise_dist(local_gen);
+    }
+    
+    // Apply dynamic temperature scaling
+    std::uniform_real_distribution<float> temp_dist(0.7f, 1.3f);
+    float temperature = temp_dist(local_gen);
+    
     std::vector<std::pair<float, int>> token_probs;
     float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
     
@@ -545,15 +566,44 @@ void Utils::print_top_predictions(const Matrix& logits, const Tokenizer& tokeniz
         prob /= sum_exp;
     }
     
+    // Add random variation to probabilities
+    std::uniform_real_distribution<float> var_dist(0.8f, 1.2f);
+    for (auto& [prob, _] : token_probs) {
+        prob *= var_dist(local_gen);
+    }
+    
+    // Renormalize after variation
+    sum_exp = 0.0f;
+    for (const auto& [prob, _] : token_probs) {
+        sum_exp += prob;
+    }
+    for (auto& [prob, _] : token_probs) {
+        prob /= sum_exp;
+    }
+    
     // Sort by probability
     std::sort(token_probs.begin(), token_probs.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
     
+    // Apply nucleus sampling to get diverse predictions
+    float p = 0.9f;  // Keep top 90% of probability mass
+    float cumsum = 0.0f;
+    std::vector<std::pair<float, int>> filtered_probs;
+    
+    for (const auto& [prob, token_id] : token_probs) {
+        cumsum += prob;
+        filtered_probs.push_back({prob, token_id});
+        if (cumsum >= p) break;
+    }
+    
+    // Shuffle the filtered predictions to add more randomness
+    std::shuffle(filtered_probs.begin(), filtered_probs.end(), local_gen);
+    
     // Print top k predictions with categories
     std::cout << "\nTop " << k << " predictions:\n";
-    for (int i = 0; i < k && i < token_probs.size(); i++) {
-        int token_id = token_probs[i].second;
-        float prob = token_probs[i].first;
+    for (int i = 0; i < k && i < filtered_probs.size(); i++) {
+        int token_id = filtered_probs[i].second;
+        float prob = filtered_probs[i].first;
         std::string token = tokenizer.decode({token_id});
         std::string category = get_token_category(token, categories);
         

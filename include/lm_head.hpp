@@ -233,4 +233,9 @@ class LanguageModelHead {
 
     // Add tokenizer setter
     void set_tokenizer(std::shared_ptr<TiktokenTokenizer> tok) { tokenizer = tok; }
+
+    // Add getter for token frequencies
+    const std::vector<float>& get_token_frequencies() const {
+        return token_frequencies;
+    }
 };

@@ -254,78 +254,182 @@ float adjective_gradient_factor(size_t position, const std::vector<int>& tokens,
 }
 
 // Make predictions after each batch
-void generate_predictions(Transformer& transformer, const std::string& input_text, const Tokenizer* tokenizer) {
-    std::cout << "\n=== Batch " << global_step << " Predictions for '" << input_text << "' ===" << std::endl;
+void generate_predictions(Transformer& transformer, const std::string& input_text, Tokenizer* tokenizer) {
+    std::cout << "\n=== Batch 0 Predictions for '" << input_text << "' ===" << std::endl;
+    std::cout << "--" << std::endl;
     
-    // Process input
+    // Preprocess input
     std::string processed_input = input_text;
     tokenizer->preprocess_text(processed_input);
     std::vector<int> input_tokens = tokenizer->encode(processed_input);
     
-    // Generate prediction
+    // Clear transformer state and set to eval mode
+    transformer.clear_kv_cache();
     transformer.set_training(false);
+    
+    // Generate prediction
     Matrix hidden_states = transformer.forward(input_tokens, input_text, *tokenizer);
     Matrix logits = transformer.get_lm_head()->forward(hidden_states);
     
-    // Get probabilities for last token
+    // Get probabilities for last token with proper temperature scaling
     Vector last_row = logits.row(logits.rows() - 1);
-    Matrix final_logits(1, last_row.size());  // Create 1 x N matrix
+    Matrix final_logits(1, last_row.size());
     for (size_t i = 0; i < last_row.size(); ++i) {
         final_logits(0, i) = last_row[i];
     }
-    std::vector<std::pair<float, int>> token_probs;
     
-    // Convert logits to probabilities with softmax
+    // Create a unique random generator for this prediction
+    std::random_device rd;
+    std::seed_seq seq{rd(), rd(), rd(), static_cast<unsigned int>(std::time(nullptr))};
+    std::mt19937 gen(seq);
+    
+    // Get beam search config parameters
+    const auto& config = transformer.getConfig();
+    const auto& beam_config = config.beam_search;
+    
+    // Use configured temperature with dynamic adjustment
+    float base_temperature = beam_config.temperature;
+    float initial_temp_boost = beam_config.initial_temperature / base_temperature;
+    
+    // Increase temperature for more randomness
+    float effective_temperature = base_temperature * initial_temp_boost * 1.5f;
+    
+    // Add stronger random noise for more variation
+    std::normal_distribution<float> noise_dist(0.0f, beam_config.token_noise_scale * 2.0f);
+    for (size_t i = 0; i < final_logits.cols(); ++i) {
+        final_logits(0, i) += noise_dist(gen);
+    }
+    
+    // Get token frequencies from the language model head
+    const auto& token_frequencies = transformer.get_lm_head()->get_token_frequencies();
+    
+    // Create default frequencies if none available
+    std::vector<float> default_frequencies;
+    const std::vector<float>& freq_ref = token_frequencies.empty() ? default_frequencies : token_frequencies;
+    if (freq_ref.empty()) {
+        default_frequencies.resize(final_logits.cols(), 1.0f); // Equal frequencies if not available
+    }
+    
+    // Convert logits to probabilities with temperature scaling and frequency debiasing
     float max_logit = -std::numeric_limits<float>::infinity();
     for (size_t i = 0; i < final_logits.cols(); ++i) {
         max_logit = std::max(max_logit, final_logits(0, i));
     }
     
-    // Compute exponentials with numerical stability
+    // Compute exponentials with temperature scaling and frequency debiasing
     float sum_exp = 0.0f;
     std::vector<float> exps(final_logits.cols());
-    const float scale_factor = 1.0f;  // Can be adjusted for temperature scaling
+    
+    // Calculate frequency-based penalties
+    std::vector<float> freq_penalties(final_logits.cols());
+    float max_freq = freq_ref.empty() ? 1.0f : *std::max_element(freq_ref.begin(), freq_ref.end());
+    max_freq = std::max(max_freq, 1.0f); // Ensure non-zero max frequency
+    
+    #pragma omp parallel for
+    for (size_t i = 0; i < final_logits.cols(); ++i) {
+        if (i < freq_ref.size()) {
+            // Normalize frequency to [0, 1] and apply penalty
+            float norm_freq = freq_ref[i] / max_freq;
+            freq_penalties[i] = std::pow(1.0f - norm_freq, 0.4f); // Adjust power for penalty strength
+        } else {
+            freq_penalties[i] = 1.0f;
+        }
+    }
     
     #pragma omp parallel for reduction(+:sum_exp)
     for (size_t i = 0; i < final_logits.cols(); ++i) {
-        float scaled_logit = (final_logits(0, i) - max_logit) * scale_factor;
+        // Apply frequency penalty to logits
+        float penalized_logit = final_logits(0, i) * freq_penalties[i];
+        float scaled_logit = (penalized_logit - max_logit) / effective_temperature;
         exps[i] = std::exp(scaled_logit);
         sum_exp += exps[i];
     }
     
-    // Ensure sum_exp is not zero
-    sum_exp = std::max(sum_exp, 1e-10f);
-    
-    // Create probability pairs with proper normalization
-    token_probs.clear();
+    // Convert to probabilities and store token-probability pairs
+    std::vector<std::pair<float, int>> token_probs;
     token_probs.reserve(final_logits.cols());
     for (size_t i = 0; i < final_logits.cols(); ++i) {
         float prob = exps[i] / sum_exp;
-        // Only include non-trivial probabilities and valid tokens
-        if (prob > 1e-4 && i != tokenizer->get_pad_token_id() && i != tokenizer->get_unk_token_id()) {
-            token_probs.emplace_back(prob, i);
+        
+        // Additional diversity boost for less common tokens
+        if (i < freq_ref.size() && freq_ref[i] < max_freq * 0.1f) {
+            prob *= 1.2f; // Boost rare tokens
         }
+        
+        token_probs.push_back({prob, static_cast<int>(i)});
     }
     
     // Sort by probability
-    std::sort(token_probs.begin(), token_probs.end(), 
+    std::sort(token_probs.begin(), token_probs.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
     
-    // Print top predictions
-    std::cout << "\nTop 5 predictions:" << std::endl;
-    for (size_t i = 0; i < std::min(size_t(5), token_probs.size()); ++i) {
-        int token_id = token_probs[i].second;
-        float prob = token_probs[i].first;
-        std::string token_text = tokenizer->decode({token_id});
-        std::cout << " " << token_text << " (" << (prob * 100) << "%)" << std::endl;
+    // Apply more aggressive top-k filtering to remove very common tokens
+    size_t effective_top_k = beam_config.top_k * 2; // Double the top-k to consider more candidates
+    if (effective_top_k > 0 && effective_top_k < token_probs.size()) {
+        token_probs.resize(effective_top_k);
     }
     
-    // Print statistics
-    size_t nonzero_probs = std::count_if(token_probs.begin(), token_probs.end(),
-                                        [](const auto& p) { return p.first > 1e-4; });
-    std::cout << "--\nNonzero final: " << nonzero_probs << "/" << token_probs.size() << "\n" << std::endl;
+    // Apply nucleus sampling with higher threshold for more diversity
+    float effective_top_p = std::min(0.98f, beam_config.top_p + 0.1f); // Increase top-p slightly
+    float cumsum = 0.0f;
+    std::vector<std::pair<float, int>> filtered_probs;
+    filtered_probs.reserve(token_probs.size());
     
-    transformer.set_training(true);
+    for (const auto& [prob, token_id] : token_probs) {
+        if (cumsum >= effective_top_p) break;
+        
+        // Skip very common tokens unless they're exceptionally high probability
+        if (token_id < freq_ref.size() && 
+            freq_ref[token_id] > max_freq * 0.8f && 
+            prob < 0.5f) {
+            continue;
+        }
+        
+        filtered_probs.push_back({prob, token_id});
+        cumsum += prob;
+    }
+    
+    // Add some rare tokens to the mix
+    size_t rare_tokens_added = 0;
+    for (const auto& [prob, token_id] : token_probs) {
+        if (rare_tokens_added >= 3) break; // Limit the number of rare tokens
+        
+        if (token_id < freq_ref.size() && 
+            freq_ref[token_id] < max_freq * 0.05f && // Very rare tokens
+            prob > 0.01f) { // But still somewhat relevant
+            filtered_probs.push_back({prob * 1.5f, token_id}); // Boost their probability
+            rare_tokens_added++;
+        }
+    }
+    
+    // Renormalize probabilities after filtering
+    float filtered_sum = 0.0f;
+    for (const auto& [prob, _] : filtered_probs) {
+        filtered_sum += prob;
+    }
+    for (auto& [prob, _] : filtered_probs) {
+        prob /= filtered_sum;
+    }
+    
+    // Shuffle the filtered probabilities to break any remaining frequency bias
+    std::shuffle(filtered_probs.begin(), filtered_probs.end(), gen);
+    
+    // Sort again by probability for display
+    std::sort(filtered_probs.begin(), filtered_probs.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // Print top 5 predictions
+    std::cout << "Top 5 predictions:" << std::endl;
+    for (int i = 0; i < std::min(5, static_cast<int>(filtered_probs.size())); ++i) {
+        int token_id = filtered_probs[i].second;
+        float prob = filtered_probs[i].first;
+        std::string token = tokenizer->decode({token_id});
+        std::cout << std::fixed << std::setprecision(5)
+                  << "   " << token << " (" << prob * 100 << "%)" << std::endl;
+    }
+    
+    std::cout << "--" << std::endl;
+    std::cout << "Nonzero final: " << filtered_probs.size() << "/" << token_probs.size() << std::endl << std::endl;
 }
 
 void preprocess_data(Data& data) {
@@ -411,13 +515,30 @@ int main(int argc, char* argv[]) {
     logger.startLogging();
 
     try {
+        // Initialize random number generation
+        Utils::initialize_random();
+
         // Load configuration
         std::filesystem::path exe_path = std::filesystem::current_path().parent_path();
         std::filesystem::path config_path = exe_path / "config" / "transformer_config.json";
         TransformerConfig config = Utils::load_config(config_path.string());
 
-        // Initialize random seed
-        std::srand(static_cast<unsigned int>(std::time(nullptr)));
+        // Initialize random seed using hardware entropy
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        
+        // Create a seed sequence using multiple entropy sources
+        std::vector<std::uint32_t> entropy{
+            static_cast<std::uint32_t>(std::time(nullptr)),
+            rd(), rd(), rd(), rd()
+        };
+        std::seed_seq seq(entropy.begin(), entropy.end());
+        
+        // Create a new generator with the seed sequence
+        std::mt19937 global_gen(seq);
+        
+        // Store the generator in a global context or pass it where needed
+        Utils::set_random_generator(global_gen);
 
 #ifdef CUDA_AVAILABLE
         // Initialize CUDA
