@@ -313,218 +313,340 @@ Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matri
     return scores;
 }
 
-void MultiHeadAttention::save(std::ostream& os) const {
-    std::cout << "\n=== MultiHeadAttention::save START ===" << std::endl;
-
-    // Save dimensions and configuration
-    std::cout << "Saving configuration..." << std::endl;
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-    std::cout << "- Head dimension: " << head_dim << std::endl;
-    os.write(reinterpret_cast<const char*>(&num_heads), sizeof(num_heads));
-    os.write(reinterpret_cast<const char*>(&head_dim), sizeof(head_dim));
-
-    // Save projection matrices
-    std::cout << "\nSaving projection matrices..." << std::endl;
-    std::cout << "Query projection shape: " << params_.query_weights.rows() << "x" << params_.query_weights.cols()
-              << std::endl;
-    params_.query_weights.save(os);
-    std::cout << "Key projection shape: " << params_.key_weights.rows() << "x" << params_.key_weights.cols() << std::endl;
-    params_.key_weights.save(os);
-    std::cout << "Value projection shape: " << params_.value_weights.rows() << "x" << params_.value_weights.cols()
-              << std::endl;
-    params_.value_weights.save(os);
-    std::cout << "Output projection shape: " << params_.output_weights.rows() << "x" << params_.output_weights.cols()
-              << std::endl;
-    params_.output_weights.save(os);
-
-    std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
-}
-
-std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, const TransformerConfig& config) {
-    std::cout << "\n=== MultiHeadAttention::load START ===" << std::endl;
-
-    // Read configuration
-    std::cout << "Reading configuration..." << std::endl;
-    size_t num_heads, head_dim;
-    is.read(reinterpret_cast<char*>(&num_heads), sizeof(num_heads));
-    is.read(reinterpret_cast<char*>(&head_dim), sizeof(head_dim));
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-    std::cout << "- Head dimension: " << head_dim << std::endl;
-
-    size_t hidden_size = num_heads * head_dim;
-
-    // Create attention instance with config parameters
-    auto attention = std::make_unique<MultiHeadAttention>(
-        hidden_size, num_heads, head_dim, config.dropout_rate, 
-        config.use_flash_attention, config.use_rope, 
-        config.use_sliding_window, config.window_size, 
-        config.use_gqa, num_heads, config.max_seq_length, config.use_fp16);
-
-    // Load projection matrices
-    std::cout << "\nLoading projection matrices..." << std::endl;
-    attention->params_.query_weights = Matrix::load(is);
-    attention->params_.key_weights = Matrix::load(is);
-    attention->params_.value_weights = Matrix::load(is);
-    attention->params_.output_weights = Matrix::load(is);
-
-    // Validate loaded matrices
-    std::cout << "\nValidating loaded matrices..." << std::endl;
-    auto validate_matrix = [](const Matrix& m, const std::string& name) {
-        if (m.empty()) {
-            throw std::runtime_error(name + " is empty after loading");
-        }
-        std::cout << name << " statistics:" << std::endl;
-        std::cout << "- Shape: " << m.rows() << "x" << m.cols() << std::endl;
-        std::cout << "- Range: [" << m.min() << ", " << m.max() << "]" << std::endl;
-        if (std::isnan(m.min()) || std::isnan(m.max()) || std::isinf(m.min()) ||
-            std::isinf(m.max())) {
-            throw std::runtime_error("Invalid values in " + name + " after loading");
-        }
-    };
-
-    validate_matrix(attention->params_.query_weights, "Query projection");
-    validate_matrix(attention->params_.key_weights, "Key projection");
-    validate_matrix(attention->params_.value_weights, "Value projection");
-    validate_matrix(attention->params_.output_weights, "Output projection");
-
-    std::cout << "=== MultiHeadAttention::load END ===\n" << std::endl;
-    return attention;
-}
-
-Matrix MultiHeadAttention::standard_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
-                                           const AttentionMask& mask) {
-    std::cout << "\n=== MultiHeadAttention::standard_attention START ===" << std::endl;
-
-    // Calculate dimensions
-    size_t seq_len = Q.rows();
-    size_t head_size = Q.cols() / num_heads;
-
-    std::cout << "Dimensions:" << std::endl;
-    std::cout << "- Sequence length: " << seq_len << std::endl;
-    std::cout << "- Head size: " << head_size << std::endl;
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-
-    // Always create a proper mask
-    Matrix effective_mask(seq_len, seq_len, 1.0f);
-
-    if (!mask.mask.empty()) {
-        effective_mask = mask.mask;
-    }
-
-    // First reshape inputs to separate heads
-    Tensor Q_4d = reshape_for_attention(Q, 1, num_heads, seq_len, head_size);
-    Tensor K_4d = reshape_for_attention(K, 1, num_heads, seq_len, head_size);
-    Tensor V_4d = reshape_for_attention(V, 1, num_heads, seq_len, head_size);
-
-    // Process each head separately with improved numerical stability
-    Matrix final_output(seq_len, num_heads * head_size);
-    const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
-    const float max_score = 100.0f; // Prevent exp overflow
-
-    for (size_t h = 0; h < num_heads; ++h) {
-        // Extract matrices for current head
-        Matrix Q_head(seq_len, head_size);
-        Matrix K_head(seq_len, head_size);
-        Matrix V_head(seq_len, head_size);
-
-        // Copy data for current head
-        for (size_t s = 0; s < seq_len; ++s) {
-            for (size_t d = 0; d < head_size; ++d) {
-                Q_head(s, d) = Q_4d.at(0, h, s, d);
-                K_head(s, d) = K_4d.at(0, h, s, d);
-                V_head(s, d) = V_4d.at(0, h, s, d);
-            }
-        }
-
-        // Compute attention scores with numerical stability
-        Matrix scores = matmul(Q_head, K_head.transpose());
-        scores *= scale;
-
-        // Apply mask and numerical stability improvements
-        for (size_t i = 0; i < seq_len; ++i) {
-            // Find max for numerical stability in softmax
-            float row_max = -std::numeric_limits<float>::infinity();
-            for (size_t j = 0; j < seq_len; ++j) {
-                if (effective_mask(i, j) == 0.0f) {
-                    scores(i, j) = -std::numeric_limits<float>::infinity();
-                } else {
-                    scores(i, j) = std::min(scores(i, j), max_score);
-                    row_max = std::max(row_max, scores(i, j));
-                }
-            }
-
-            // Compute softmax with improved numerical stability
-            float sum_exp = 0.0f;
-            for (size_t j = 0; j < seq_len; ++j) {
-                scores(i, j) = std::exp(scores(i, j) - row_max);
-                sum_exp += scores(i, j);
-            }
-
-            // Normalize with careful handling of small values
-            const float eps = 1e-6f;
-            if (sum_exp < eps)
-                sum_exp = eps;
-
-            for (size_t j = 0; j < seq_len; ++j) {
-                scores(i, j) /= sum_exp;
-            }
-        }
-
-        // Compute attention output for this head
-        Matrix head_output = matmul(scores, V_head);
-
-        // Store this head's output in the final result
-        for (size_t s = 0; s < seq_len; ++s) {
-            for (size_t d = 0; d < head_size; ++d) {
-                final_output(s, h * head_size + d) = head_output(s, d);
-            }
-        }
-    }
-
-    return final_output;
-}
-
 Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input, const Matrix& target) {
-    std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
-    std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-    std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
+    Matrix output_weights_t;  // Move declaration to outer scope
+    try {
+        std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
+        std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+        std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
 
-    // Get cached values from forward pass
-    Matrix query = GradientCheckpoint::get_activation("query");
-    Matrix key = GradientCheckpoint::get_activation("key");
-    Matrix value = GradientCheckpoint::get_activation("value");
-    Matrix attention_scores = GradientCheckpoint::get_activation("attention_scores");
+        // Validate input dimensions
+        if (grad_output.rows() != input.rows()) {
+            throw std::runtime_error("Batch dimension mismatch: grad_output rows (" + 
+                std::to_string(grad_output.rows()) + ") != input rows (" + 
+                std::to_string(input.rows()) + ")");
+        }
 
-    std::cout << "Cached activations dims:" << std::endl;
-    std::cout << "query dims: " << query.rows() << "x" << query.cols() << std::endl;
-    std::cout << "key dims: " << key.rows() << "x" << key.cols() << std::endl;
-    std::cout << "value dims: " << value.rows() << "x" << value.cols() << std::endl;
-    std::cout << "attention_scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
+        // Get cached values from forward pass
+        Matrix query = GradientCheckpoint::get_activation("query");
+        Matrix key = GradientCheckpoint::get_activation("key");
+        Matrix value = GradientCheckpoint::get_activation("value");
+        Matrix attention_scores = GradientCheckpoint::get_activation("attention_scores");
 
-    Matrix d_output = grad_output;
-    std::cout << "d_output dims: " << d_output.rows() << "x" << d_output.cols() << std::endl;
+        std::cout << "Retrieved cached activations:" << std::endl;
+        std::cout << "query dims: " << query.rows() << "x" << query.cols() << std::endl;
+        std::cout << "key dims: " << key.rows() << "x" << key.cols() << std::endl;
+        std::cout << "value dims: " << value.rows() << "x" << value.cols() << std::endl;
+        std::cout << "attention_scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
 
-    Matrix output_grad_update = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
-    std::cout << "output_grad_update dims: " << output_grad_update.rows() << "x" << output_grad_update.cols() << std::endl;
+        // Validate cached activations
+        if (query.rows() != input.rows() || key.rows() != input.rows() || value.rows() != input.rows()) {
+            throw std::runtime_error("Cached activation batch dimension mismatch");
+        }
 
-    Matrix d_value = d_output * params_.output_weights.transpose();
-    std::cout << "d_value dims: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+        // Initialize weight gradients with correct dimensions
+        Matrix output_weight_grad = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
+        Vector output_bias_grad = Vector(params_.output_weights.cols(), 0.0f);
+        std::cout << "output_weight_grad dims: " << output_weight_grad.rows() << "x" << output_weight_grad.cols() << std::endl;
+        std::cout << "output_bias_grad size: " << output_bias_grad.size() << std::endl;
 
-    Matrix d_scores = d_value * params_.value_weights.transpose();
-    std::cout << "d_scores dims: " << d_scores.rows() << "x" << d_scores.cols() << std::endl;
+        // Compute gradients for backward flow
+        Matrix d_output = grad_output;  // 864x128
+        
+        // Fix: Transpose the output weights correctly
+        output_weights_t = params_.output_weights.transpose();  // 128x128 -> 128x128
+        std::cout << "output_weights_t dims: " << output_weights_t.rows() << "x" << output_weights_t.cols() << std::endl;
+        
+        // Now the multiplication should be valid: (864x128) * (128x128)
+        Matrix d_value = matmul(d_output, output_weights_t);
+        std::cout << "d_value dims: " << d_value.rows() << "x" << d_value.cols() << std::endl;
 
-    Matrix d_input = Matrix(input.rows(), hidden_size, 0.0f);
-    std::cout << "d_input dims: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+        // Accumulate weight gradients over batch
+        size_t batch_size = grad_output.rows();
+        for (size_t i = 0; i < batch_size; ++i) {
+            Vector example_grad = d_output.row(i);  // 1x128
+            Vector example_value = value.row(i);    // 1x128
+            
+            // Validate dimensions for this example
+            if (example_grad.size() != params_.output_weights.cols() || 
+                example_value.size() != params_.output_weights.rows()) {
+                throw std::runtime_error("Example dimension mismatch at index " + std::to_string(i) +
+                    ". example_grad size: " + std::to_string(example_grad.size()) +
+                    ", example_value size: " + std::to_string(example_value.size()) +
+                    ", expected: " + std::to_string(params_.output_weights.cols()) +
+                    "x" + std::to_string(params_.output_weights.rows()));
+            }
 
-    // Update gradients
-    param_gradients().output_grad += output_grad_update;
-    param_gradients().output_bias_grad += d_output.row_sum();
+            // Fix: Ensure correct vector orientations for outer product
+            // example_value should be a column vector (128x1)
+            // example_grad should be a row vector (1x128)
+            Vector example_value_col = example_value;  // 128x1
+            Vector example_grad_row = example_grad;    // 1x128
+            
+            Matrix example_grad_outer = outer_product(example_value_col, example_grad_row);  // Should be 128x128
+            
+            if (example_grad_outer.rows() != output_weight_grad.rows() || 
+                example_grad_outer.cols() != output_weight_grad.cols()) {
+                throw std::runtime_error("Outer product dimension mismatch: got " +
+                    std::to_string(example_grad_outer.rows()) + "x" + std::to_string(example_grad_outer.cols()) +
+                    ", expected " + std::to_string(output_weight_grad.rows()) + "x" + std::to_string(output_weight_grad.cols()));
+            }
 
-    std::cout << "output_grad dims: " << param_gradients().output_grad.rows() << "x" << param_gradients().output_grad.cols() << std::endl;
-    std::cout << "output_bias_grad size: " << param_gradients().output_bias_grad.size() << std::endl;
+            output_weight_grad += example_grad_outer;
+            output_bias_grad += example_grad;
+        }
+        std::cout << "output_weight_grad dims: " << output_weight_grad.rows() << "x" << output_weight_grad.cols() << std::endl; 
+        std::cout << "output_bias_grad dims: " << output_bias_grad.size() << std::endl;
+        std::cout << "d_value dims: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+        std::cout << "params_.value_weights dims: " << params_.value_weights.rows() << "x" << params_.value_weights.cols() << std::endl;
+        
+        // Fix: Remove transpose to make dimensions compatible (864x128) * (128x128) -> (864x128)
+        Matrix d_scores = matmul(d_value, params_.value_weights);
+        std::cout << "d_scores dims: " << d_scores.rows() << "x" << d_scores.cols() << std::endl;
+        std::cout << "attention_scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
+        
+        // Fix: Use matmul instead of element-wise multiplication to handle the dimension mismatch
+        d_scores = matmul(attention_scores, d_scores) / std::sqrt(static_cast<float>(head_dim));
 
-    std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
-    return d_input;
+        // Initialize QKV gradients
+        Matrix query_weight_grad = Matrix(params_.query_weights.rows(), params_.query_weights.cols(), 0.0f);
+        Matrix key_weight_grad = Matrix(params_.key_weights.rows(), params_.key_weights.cols(), 0.0f);
+        Matrix value_weight_grad = Matrix(params_.value_weights.rows(), params_.value_weights.cols(), 0.0f);
+
+        // Accumulate QKV gradients over batch
+        for (size_t i = 0; i < batch_size; ++i) {
+            Vector input_row = input.row(i);
+            Vector d_value_row = d_value.row(i);
+            Vector d_key_row = d_scores.row(i);
+            Vector d_query_row = d_scores.row(i);
+
+            // Validate dimensions
+            if (input_row.size() != params_.query_weights.rows() || 
+                d_query_row.size() != params_.query_weights.cols()) {
+                throw std::runtime_error("QKV dimension mismatch at index " + std::to_string(i));
+            }
+
+            query_weight_grad += outer_product(input_row, d_query_row);
+            key_weight_grad += outer_product(input_row, d_key_row);
+            value_weight_grad += outer_product(input_row, d_value_row);
+        }
+
+        // Update parameter gradients
+        param_gradients().output_grad = output_weight_grad;
+        param_gradients().query_grad = query_weight_grad;
+        param_gradients().key_grad = key_weight_grad;
+        param_gradients().value_grad = value_weight_grad;
+        param_gradients().output_bias_grad = output_bias_grad;
+
+        // Compute input gradients for backward flow
+        Matrix d_input = Matrix(input.rows(), hidden_size, 0.0f);
+        d_input += matmul(d_scores, params_.query_weights);
+        d_input += matmul(d_scores, params_.key_weights);
+        d_input += matmul(d_value, params_.value_weights);
+
+        // Final validation with detailed error message
+        if (d_input.rows() != input.rows() || d_input.cols() != input.cols()) {
+            throw std::runtime_error("Final d_input dimensions incorrect: got " + 
+                std::to_string(d_input.rows()) + "x" + std::to_string(d_input.cols()) + 
+                ", expected " + std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
+        }
+
+        std::cout << "Final dimensions:" << std::endl;
+        std::cout << "d_input: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+        std::cout << "output_weight_grad: " << output_weight_grad.rows() << "x" << output_weight_grad.cols() << std::endl;
+        std::cout << "query_weight_grad: " << query_weight_grad.rows() << "x" << query_weight_grad.cols() << std::endl;
+        std::cout << "key_weight_grad: " << key_weight_grad.rows() << "x" << key_weight_grad.cols() << std::endl;
+        std::cout << "value_weight_grad: " << value_weight_grad.rows() << "x" << value_weight_grad.cols() << std::endl;
+        std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
+
+        return d_input;
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nError in MultiHeadAttention::backward: " << e.what() << std::endl;
+        std::cerr << "Current dimensions:" << std::endl;
+        std::cerr << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+        std::cerr << "input: " << input.rows() << "x" << input.cols() << std::endl;
+        std::cerr << "params_.output_weights: " << params_.output_weights.rows() << "x" << params_.output_weights.cols() << std::endl;
+        std::cerr << "output_weights_t: " << output_weights_t.rows() << "x" << output_weights_t.cols() << std::endl;
+        throw;
+    }
+}
+
+Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
+    // Original implementation
+    int seq_len = input.rows();
+    Matrix d_query(seq_len, seq_len);  // Attention scores dimensions
+    
+    // First compute attention score gradients
+    cuda::compute_attention_scores(grad, input, d_query, 1.0f / std::sqrt(float(input.cols())), num_heads);
+    
+    std::cout << "compute_query_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+
+    return d_query;
+}
+
+Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
+    Matrix d_key(grad.rows(), grad.cols());
+#ifdef USE_CUDA
+    cuda::matmul(grad, params_.key_weights.transpose(), d_key);
+#else
+    d_key = matmul(grad, params_.key_weights.transpose());
+#endif
+    return d_key;
+}
+
+Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
+    Matrix d_value(grad.rows(), grad.cols());
+#ifdef USE_CUDA
+    cuda::matmul(grad, params_.value_weights.transpose(), d_value);
+#else
+    d_value = matmul(grad, params_.value_weights.transpose());
+#endif
+    return d_value;
+}
+
+Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value) {
+    // Original implementation
+    Matrix combined = d_query;
+    combined += d_key;
+    combined += d_value;
+    
+    std::cout << "combine_gradients dimensions:" << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
+    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
+    
+    return combined;
+}
+
+void MultiHeadAttention::initialize_weights() {
+    // Xavier/Glorot initialization
+    float scale = std::sqrt(2.0f / (hidden_size + head_dim));
+    
+    // Initialize projection matrices using parameter accessors
+    params_.query_weights.initialize_random(scale);
+    params_.key_weights.initialize_random(scale);
+    params_.value_weights.initialize_random(scale);
+    params_.output_weights.initialize_random(scale);
+    
+    // Initialize bias vectors with small values
+    params_.query_bias.initialize_constant(0.01f);
+    params_.key_bias.initialize_constant(0.01f);
+    params_.value_bias.initialize_constant(0.01f);
+    params_.output_bias.initialize_constant(0.01f);
+}
+
+float compute_grad_norm(const Matrix& grad) {
+    float norm = 0.0f;
+    #pragma omp parallel for reduction(+:norm)
+    for (size_t i = 0; i < grad.rows(); ++i) {
+        for (size_t j = 0; j < grad.cols(); ++j) {
+            norm += grad(i, j) * grad(i, j);
+        }
+    }
+    return std::sqrt(norm);
+}
+
+size_t count_params(const Matrix& param) {
+    return param.rows() * param.cols();
+}
+
+void MultiHeadAttention::initialize_rope_cache(size_t max_seq_len, size_t dim) {
+    std::cout << "Initializing RoPE cache:" << std::endl;
+    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
+    std::cout << "- dim: " << dim << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+
+    cos_cached = Matrix(max_seq_len, dim * num_heads);
+    sin_cached = Matrix(max_seq_len, dim * num_heads);
+
+    std::cout << "Created cache matrices:" << std::endl;
+    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
+    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
+
+    for (size_t pos = 0; pos < max_seq_len; pos++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            for (size_t i = 0; i < dim; i++) {
+                size_t idx = h * dim + i;
+                float theta = std::pow(10000.0f, -2.0f * i / dim);
+                cos_cached(pos, idx) = std::cos(pos * theta);
+                sin_cached(pos, idx) = std::sin(pos * theta);
+            }
+        }
+    }
+}
+
+float MultiHeadAttention::get_cos_cached(size_t pos, size_t dim_idx) const {
+    if (pos >= cos_cached.rows() || dim_idx >= cos_cached.cols()) {
+        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
+                                 ", dim=" + std::to_string(dim_idx));
+    }
+    return cos_cached(pos, dim_idx);
+}
+
+float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
+    if (pos >= sin_cached.rows() || dim_idx >= sin_cached.cols()) {
+        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
+                                 ", dim=" + std::to_string(dim_idx));
+    }
+    return sin_cached(pos, dim_idx);
+}
+
+void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
+    // Process each row separately for proper attention distribution
+    for (size_t row = 0; row < x.rows(); row++) {
+        // Find max value in this row for numerical stability
+        float max_val = -std::numeric_limits<float>::infinity();
+        for (size_t col = 0; col < x.cols(); col++) {
+            max_val = std::max(max_val, x(row, col));
+        }
+
+        // Subtract max value and compute exp for this row
+        float row_sum = 0.0f;
+        for (size_t col = 0; col < x.cols(); col++) {
+            x(row, col) = std::exp(x(row, col) - max_val);
+            row_sum += x(row, col);
+        }
+
+        // Check for numerical instability in this row
+        if (row_sum < 1e-10) {
+            std::cerr << "WARNING: Row " << row << " has near-zero softmax sum\n";
+            // Fall back to uniform attention for this row only
+            float uniform_val = 1.0f / x.cols();
+            for (size_t col = 0; col < x.cols(); col++) {
+                x(row, col) = uniform_val;
+            }
+            continue;
+        }
+
+        // Normalize this row
+        for (size_t col = 0; col < x.cols(); col++) {
+            x(row, col) /= row_sum;
+        }
+    }
+
+    // Validate results
+    float min_val = std::numeric_limits<float>::infinity();
+    float max_val = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < x.rows(); i++) {
+        float row_sum = 0.0f;
+        for (size_t j = 0; j < x.cols(); j++) {
+            min_val = std::min(min_val, x(i, j));
+            max_val = std::max(max_val, x(i, j));
+            row_sum += x(i, j);
+        }
+        if (std::abs(row_sum - 1.0f) > 1e-6) {
+            std::cerr << "WARNING: Row " << i << " softmax sum = " << row_sum << "\n";
+        }
+    }
+    
+    std::cout << "Softmax output statistics:\n"
+              << "Min: " << min_val << "\n"
+              << "Max: " << max_val << "\n";
 }
 
 Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size,
@@ -813,179 +935,94 @@ Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, c
     return Tensor(output, dims);
 }
 
-void MultiHeadAttention::initialize_rope_cache(size_t max_seq_len, size_t dim) {
-    std::cout << "Initializing RoPE cache:" << std::endl;
-    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
-    std::cout << "- dim: " << dim << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
+void MultiHeadAttention::save(std::ostream& os) const {
+    std::cout << "\n=== MultiHeadAttention::save START ===" << std::endl;
 
-    cos_cached = Matrix(max_seq_len, dim * num_heads);
-    sin_cached = Matrix(max_seq_len, dim * num_heads);
+    // Save dimensions and configuration
+    std::cout << "Saving configuration..." << std::endl;
+    std::cout << "- Number of heads: " << num_heads << std::endl;
+    std::cout << "- Head dimension: " << head_dim << std::endl;
+    os.write(reinterpret_cast<const char*>(&num_heads), sizeof(num_heads));
+    os.write(reinterpret_cast<const char*>(&head_dim), sizeof(head_dim));
+    os.write(reinterpret_cast<const char*>(&hidden_size), sizeof(hidden_size));
+    os.write(reinterpret_cast<const char*>(&dropout_prob), sizeof(dropout_prob));
+    os.write(reinterpret_cast<const char*>(&use_rope), sizeof(use_rope));
+    os.write(reinterpret_cast<const char*>(&use_flash), sizeof(use_flash));
+    os.write(reinterpret_cast<const char*>(&use_sliding_window), sizeof(use_sliding_window));
+    os.write(reinterpret_cast<const char*>(&window_size), sizeof(window_size));
+    os.write(reinterpret_cast<const char*>(&use_gqa), sizeof(use_gqa));
+    os.write(reinterpret_cast<const char*>(&num_kv_heads), sizeof(num_kv_heads));
+    os.write(reinterpret_cast<const char*>(&max_seq_length), sizeof(max_seq_length));
+    os.write(reinterpret_cast<const char*>(&use_fp16_), sizeof(use_fp16_));
 
-    std::cout << "Created cache matrices:" << std::endl;
-    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
-    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
+    // Save weight matrices
+    std::cout << "Saving weight matrices..." << std::endl;
+    params_.query_weights.save(os);
+    params_.key_weights.save(os);
+    params_.value_weights.save(os);
+    params_.output_weights.save(os);
 
-    for (size_t pos = 0; pos < max_seq_len; pos++) {
-        for (size_t h = 0; h < num_heads; h++) {
-            for (size_t i = 0; i < dim; i++) {
-                size_t idx = h * dim + i;
-                float theta = std::pow(10000.0f, -2.0f * i / dim);
-                cos_cached(pos, idx) = std::cos(pos * theta);
-                sin_cached(pos, idx) = std::sin(pos * theta);
-            }
-        }
-    }
+    // Save bias vectors
+    std::cout << "Saving bias vectors..." << std::endl;
+    os.write(reinterpret_cast<const char*>(params_.query_bias.data()), params_.query_bias.size() * sizeof(float));
+    os.write(reinterpret_cast<const char*>(params_.key_bias.data()), params_.key_bias.size() * sizeof(float));
+    os.write(reinterpret_cast<const char*>(params_.value_bias.data()), params_.value_bias.size() * sizeof(float));
+    os.write(reinterpret_cast<const char*>(params_.output_bias.data()), params_.output_bias.size() * sizeof(float));
+
+    std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
 }
 
-float MultiHeadAttention::get_cos_cached(size_t pos, size_t dim_idx) const {
-    if (pos >= cos_cached.rows() || dim_idx >= cos_cached.cols()) {
-        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
-                                 ", dim=" + std::to_string(dim_idx));
-    }
-    return cos_cached(pos, dim_idx);
+std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, const TransformerConfig& config) {
+    std::cout << "\n=== MultiHeadAttention::load START ===" << std::endl;
+
+    // Read configuration
+    size_t num_heads, head_dim, hidden_size;
+    float dropout_prob;
+    bool use_rope, use_flash, use_sliding_window, use_gqa, use_fp16;
+    size_t window_size, num_kv_heads, max_seq_length;
+
+    is.read(reinterpret_cast<char*>(&num_heads), sizeof(num_heads));
+    is.read(reinterpret_cast<char*>(&head_dim), sizeof(head_dim));
+    is.read(reinterpret_cast<char*>(&hidden_size), sizeof(hidden_size));
+    is.read(reinterpret_cast<char*>(&dropout_prob), sizeof(dropout_prob));
+    is.read(reinterpret_cast<char*>(&use_rope), sizeof(use_rope));
+    is.read(reinterpret_cast<char*>(&use_flash), sizeof(use_flash));
+    is.read(reinterpret_cast<char*>(&use_sliding_window), sizeof(use_sliding_window));
+    is.read(reinterpret_cast<char*>(&window_size), sizeof(window_size));
+    is.read(reinterpret_cast<char*>(&use_gqa), sizeof(use_gqa));
+    is.read(reinterpret_cast<char*>(&num_kv_heads), sizeof(num_kv_heads));
+    is.read(reinterpret_cast<char*>(&max_seq_length), sizeof(max_seq_length));
+    is.read(reinterpret_cast<char*>(&use_fp16), sizeof(use_fp16));
+
+    std::cout << "Loaded configuration:" << std::endl;
+    std::cout << "- Number of heads: " << num_heads << std::endl;
+    std::cout << "- Head dimension: " << head_dim << std::endl;
+    std::cout << "- Hidden size: " << hidden_size << std::endl;
+
+    // Create attention instance
+    auto attention = std::make_unique<MultiHeadAttention>(
+        hidden_size, num_heads, head_dim,
+        dropout_prob, use_flash, use_rope,
+        use_sliding_window, window_size,
+        use_gqa, num_kv_heads,
+        max_seq_length, use_fp16
+    );
+
+    // Load weight matrices
+    std::cout << "Loading weight matrices..." << std::endl;
+    attention->params_.query_weights = Matrix::load(is);
+    attention->params_.key_weights = Matrix::load(is);
+    attention->params_.value_weights = Matrix::load(is);
+    attention->params_.output_weights = Matrix::load(is);
+
+    // Load bias vectors
+    std::cout << "Loading bias vectors..." << std::endl;
+    is.read(reinterpret_cast<char*>(attention->params_.query_bias.data()), attention->params_.query_bias.size() * sizeof(float));
+    is.read(reinterpret_cast<char*>(attention->params_.key_bias.data()), attention->params_.key_bias.size() * sizeof(float));
+    is.read(reinterpret_cast<char*>(attention->params_.value_bias.data()), attention->params_.value_bias.size() * sizeof(float));
+    is.read(reinterpret_cast<char*>(attention->params_.output_bias.data()), attention->params_.output_bias.size() * sizeof(float));
+
+    std::cout << "=== MultiHeadAttention::load END ===\n" << std::endl;
+    return attention;
 }
 
-float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
-    if (pos >= sin_cached.rows() || dim_idx >= sin_cached.cols()) {
-        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
-                                 ", dim=" + std::to_string(dim_idx));
-    }
-    return sin_cached(pos, dim_idx);
-}
-
-void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
-    // Process each row separately for proper attention distribution
-    for (size_t row = 0; row < x.rows(); row++) {
-        // Find max value in this row for numerical stability
-        float max_val = -std::numeric_limits<float>::infinity();
-        for (size_t col = 0; col < x.cols(); col++) {
-            max_val = std::max(max_val, x(row, col));
-        }
-
-        // Subtract max value and compute exp for this row
-        float row_sum = 0.0f;
-        for (size_t col = 0; col < x.cols(); col++) {
-            x(row, col) = std::exp(x(row, col) - max_val);
-            row_sum += x(row, col);
-        }
-
-        // Check for numerical instability in this row
-        if (row_sum < 1e-10) {
-            std::cerr << "WARNING: Row " << row << " has near-zero softmax sum\n";
-            // Fall back to uniform attention for this row only
-            float uniform_val = 1.0f / x.cols();
-            for (size_t col = 0; col < x.cols(); col++) {
-                x(row, col) = uniform_val;
-            }
-            continue;
-        }
-
-        // Normalize this row
-        for (size_t col = 0; col < x.cols(); col++) {
-            x(row, col) /= row_sum;
-        }
-    }
-
-    // Validate results
-    float min_val = std::numeric_limits<float>::infinity();
-    float max_val = -std::numeric_limits<float>::infinity();
-    for (size_t i = 0; i < x.rows(); i++) {
-        float row_sum = 0.0f;
-        for (size_t j = 0; j < x.cols(); j++) {
-            min_val = std::min(min_val, x(i, j));
-            max_val = std::max(max_val, x(i, j));
-            row_sum += x(i, j);
-        }
-        if (std::abs(row_sum - 1.0f) > 1e-6) {
-            std::cerr << "WARNING: Row " << i << " softmax sum = " << row_sum << "\n";
-        }
-    }
-    
-    std::cout << "Softmax output statistics:\n"
-              << "Min: " << min_val << "\n"
-              << "Max: " << max_val << "\n";
-}
-
-Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
-    // Original implementation
-    int seq_len = input.rows();
-    Matrix d_query(seq_len, seq_len);  // Attention scores dimensions
-    
-    // First compute attention score gradients
-    cuda::compute_attention_scores(grad, input, d_query, 1.0f / std::sqrt(float(input.cols())), num_heads);
-    
-    std::cout << "compute_query_gradients dimensions:" << std::endl;
-    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
-
-    return d_query;
-}
-
-Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
-    Matrix d_key(grad.rows(), grad.cols());
-#ifdef USE_CUDA
-    cuda::matmul(grad, params_.key_weights.transpose(), d_key);
-#else
-    d_key = matmul(grad, params_.key_weights.transpose());
-#endif
-    return d_key;
-}
-
-Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
-    Matrix d_value(grad.rows(), grad.cols());
-#ifdef USE_CUDA
-    cuda::matmul(grad, params_.value_weights.transpose(), d_value);
-#else
-    d_value = matmul(grad, params_.value_weights.transpose());
-#endif
-    return d_value;
-}
-
-Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value) {
-    // Original implementation
-    Matrix combined = d_query;
-    combined += d_key;
-    combined += d_value;
-    
-    std::cout << "combine_gradients dimensions:" << std::endl;
-    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
-    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
-    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
-    std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
-    
-    return combined;
-}
-
-void MultiHeadAttention::initialize_weights() {
-    // Xavier/Glorot initialization
-    float scale = std::sqrt(2.0f / (hidden_size + head_dim));
-    
-    // Initialize projection matrices using parameter accessors
-    params_.query_weights.initialize_random(scale);
-    params_.key_weights.initialize_random(scale);
-    params_.value_weights.initialize_random(scale);
-    params_.output_weights.initialize_random(scale);
-    
-    // Initialize bias vectors with small values
-    params_.query_bias.initialize_constant(0.01f);
-    params_.key_bias.initialize_constant(0.01f);
-    params_.value_bias.initialize_constant(0.01f);
-    params_.output_bias.initialize_constant(0.01f);
-}
-
-float compute_grad_norm(const Matrix& grad) {
-    float norm = 0.0f;
-    #pragma omp parallel for reduction(+:norm)
-    for (size_t i = 0; i < grad.rows(); ++i) {
-        for (size_t j = 0; j < grad.cols(); ++j) {
-            norm += grad(i, j) * grad(i, j);
-        }
-    }
-    return std::sqrt(norm);
-}
-
-size_t count_params(const Matrix& param) {
-    return param.rows() * param.cols();
-}
