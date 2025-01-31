@@ -75,6 +75,16 @@ void TransformerConfig::load_from_json(const std::string& config_path) {
             head_dim = model.value("head_dim", head_dim);
             intermediate_size = model.value("intermediate_size", intermediate_size);
             max_seq_length = model.value("max_seq_length", max_seq_length);
+
+            // Print loaded configuration for debugging
+            std::cout << "Loaded model configuration:" << std::endl;
+            std::cout << "- vocab_size: " << vocab_size << std::endl;
+            std::cout << "- hidden_size: " << hidden_size << std::endl;
+            std::cout << "- num_heads: " << num_heads << std::endl;
+            std::cout << "- num_layers: " << num_layers << std::endl;
+            std::cout << "- head_dim: " << head_dim << std::endl;
+            std::cout << "- intermediate_size: " << intermediate_size << std::endl;
+            std::cout << "- max_seq_length: " << max_seq_length << std::endl;
         }
 
         // Load training parameters

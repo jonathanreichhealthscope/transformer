@@ -121,7 +121,7 @@ MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, s
 
     // Initialize RoPE cache if needed and not already initialized
     if (use_rope) {
-        initialize_static_rope_cache(max_seq_length_, head_dim, num_heads);
+        initialize_static_rope_cache(max_seq_length, head_dim, num_heads);
     }
 
     std::cout << "=== MultiHeadAttention::constructor END ===\n" << std::endl;

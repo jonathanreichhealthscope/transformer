@@ -6,7 +6,7 @@
         "num_layers": 4,
         "head_dim": 32,
         "intermediate_size": 256,
-        "max_seq_length": 32
+        "max_seq_length": 512
     },
     "training": {
         "batch_size": 32,
