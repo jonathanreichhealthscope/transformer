@@ -19,15 +19,15 @@ constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Reasonable default value
 
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     : hidden_size_(hidden_size), vocab_size_(vocab_size), 
-      projection(vocab_size, hidden_size),  // [vocab_size x hidden_size] = [2492 x 128]
-      bias(vocab_size, 0.0f),  // [vocab_size] = [2492]
+      projection(hidden_size, vocab_size),  // [hidden_size x vocab_size] for correct dimensionality
+      bias(vocab_size, 0.0f),  // [vocab_size] stays the same
       token_frequencies(vocab_size, 0.0f),
       pruning_threshold(1e-6f),
       active_tokens(vocab_size, 1),
       training_steps(0),
       is_training_(false),
-      m_proj(vocab_size, hidden_size, 0.0f),  // Match projection dimensions
-      v_proj(vocab_size, hidden_size, 0.0f),  // Match projection dimensions
+      m_proj(hidden_size, vocab_size, 0.0f),  // Match projection dimensions
+      v_proj(hidden_size, vocab_size, 0.0f),  // Match projection dimensions
       m_bias(vocab_size, 0.0f),
       v_bias(vocab_size, 0.0f),
       t(0),
@@ -56,36 +56,31 @@ LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
     std::cout << "- Hidden size: " << hidden_size << std::endl;
     std::cout << "- Vocab size: " << vocab_size << std::endl;
     std::cout << "- Projection matrix: " << projection.rows() << "x" << projection.cols() << std::endl;
-    std::cout << "- Projection matrix shape: [vocab_size x hidden_size] = [" << vocab_size << " x " << hidden_size << "]" << std::endl;
+    std::cout << "- Projection matrix shape: [hidden_size x vocab_size] = [" << hidden_size << " x " << vocab_size << "]" << std::endl;
 }
 
 Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
+    if (hidden_states.cols() != hidden_size_) {
+        throw std::runtime_error("Hidden dimension mismatch: " + std::to_string(hidden_states.cols()) +
+                               " != " + std::to_string(hidden_size_));
+    }
+    
     // Cache hidden states for backward pass
     hidden_states_ = hidden_states;
     
-    // Verify input dimensions
-    if (hidden_states.cols() != hidden_size_) {
-        throw std::runtime_error("Hidden states dimension mismatch: expected " + 
-            std::to_string(hidden_size_) + " but got " + std::to_string(hidden_states.cols()));
-    }
+    // Project hidden states to vocabulary space using transposed projection
+    // hidden_states: [batch_size x hidden_size]
+    // projection: [hidden_size x vocab_size]
+    // result: [batch_size x vocab_size]
+    Matrix logits = matmul(hidden_states, projection);
     
-    // Use cached transposed projection matrix if available, otherwise create and cache it
-    static Matrix projection_t;
-    static bool is_cached = false;
-    if (!is_cached) {
-        projection_t = projection.transpose();
-        is_cached = true;
-    }
-    
-    // Compute logits using cached transposed matrix
-    Matrix logits = matmul(hidden_states, projection_t);
-    
-    // Add bias term
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < logits.cols(); j++) {
+    // Add bias
+    for (size_t i = 0; i < logits.rows(); ++i) {
+        for (size_t j = 0; j < logits.cols(); ++j) {
             logits(i, j) += bias[j];
         }
-    }    
+    }
+    
     return logits;
 }
 
@@ -253,11 +248,29 @@ void LanguageModelHead::set_training(bool training_mode) {
 }
 
 Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
-    // Cache the transposed hidden states once
-    Matrix hidden_states_t = hidden_states.transpose();
+    // Verify input dimensions
+    if (grad_output.cols() != vocab_size_) {
+        throw std::runtime_error("Gradient output dimension mismatch in backward pass. Expected vocab_size: " + 
+                               std::to_string(vocab_size_) + ", got: " + std::to_string(grad_output.cols()));
+    }
+    if (hidden_states.cols() != hidden_size_) {
+        throw std::runtime_error("Hidden states dimension mismatch in backward pass. Expected hidden_size: " + 
+                               std::to_string(hidden_size_) + ", got: " + std::to_string(hidden_states.cols()));
+    }
+
+    std::cout << "\nLM Head Backward Pass Dimensions:" << std::endl;
+    std::cout << "- grad_output: [" << grad_output.rows() << " x " << grad_output.cols() << "]" << std::endl;
+    std::cout << "- hidden_states: [" << hidden_states.rows() << " x " << hidden_states.cols() << "]" << std::endl;
+    std::cout << "- projection: [" << projection.rows() << " x " << projection.cols() << "]" << std::endl;
     
-    // Compute gradients using the cached transposition
+    // Compute gradients for projection matrix
+    // hidden_states.T: [hidden_size x batch_size]
+    // grad_output: [batch_size x vocab_size]
+    // grad_proj: [hidden_size x vocab_size]
+    Matrix hidden_states_t = hidden_states.transpose();
     Matrix grad_proj = matmul(hidden_states_t, grad_output);
+    
+    // Compute bias gradients
     Vector grad_bias = grad_output.row_sum();
     
     // Update parameters using Adam optimizer
@@ -340,8 +353,21 @@ Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix&
         }
     }
     
-    // Compute gradient with respect to input using cached transposition
-    Matrix grad_input = matmul(grad_output, projection);
+    // Compute gradient with respect to input
+    // grad_output: [batch_size x vocab_size]
+    // projection.T: [vocab_size x hidden_size]
+    // result: [batch_size x hidden_size]
+    Matrix projection_t = projection.transpose();
+    Matrix grad_input = matmul(grad_output, projection_t);
+    
+    // Verify output dimensions
+    if (grad_input.cols() != hidden_size_) {
+        throw std::runtime_error("Output gradient dimension mismatch. Expected hidden_size: " + 
+                               std::to_string(hidden_size_) + ", got: " + std::to_string(grad_input.cols()));
+    }
+    
+    std::cout << "Gradient propagation dimensions:" << std::endl;
+    std::cout << "- Input gradient: [" << grad_input.rows() << " x " << grad_input.cols() << "]" << std::endl;
     
     return grad_input;
 }

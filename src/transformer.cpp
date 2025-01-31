@@ -419,7 +419,7 @@ struct BatchSequence {
     std::vector<size_t> lengths;  // Original sequence lengths
 };
 
-Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer) {
+Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& input_text, const Tokenizer& tokenizer) {
     std::cout << "\n=== Transformer::forward START ===" << std::endl << std::flush;
     if (!lm_head) {
         throw std::runtime_error("Language model head is not initialized");
@@ -526,8 +526,11 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
     // Store sequence info for backward pass
     last_seq_boundaries = seq_boundaries;
     last_input_tokens_ = input_tokens;
-    last_input_query_ = original_query;
+    last_input_query_ = input_text;
 
+    // Cache final hidden states for backward pass
+    GradientCheckpoint::cache_activation("final_hidden_states", hidden_states);
+    
     // Project through language model head to get logits
     std::cout << "Projecting through language model head..." << std::endl << std::flush;
     Matrix logits = lm_head->forward(hidden_states, training);
@@ -550,8 +553,20 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
     }
 
     try {
-        Matrix current_grad = grad_output;
-        const float global_max_grad_norm = config.gradient_clip_threshold;  // Use config value
+        std::cout << "\nStarting backward pass..." << std::endl;
+        std::cout << "Initial gradient dimensions: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
+        
+        // First, pass gradient through language model head to transform from vocab space to hidden space
+        Matrix hidden_states = GradientCheckpoint::get_activation("final_hidden_states");
+        if (hidden_states.empty()) {
+            throw std::runtime_error("No cached hidden states found for backward pass");
+        }
+        
+        std::cout << "Transforming gradient through LM head..." << std::endl;
+        Matrix current_grad = lm_head->backward_pass(grad_output, hidden_states);
+        std::cout << "Transformed gradient dimensions: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
+        
+        const float global_max_grad_norm = config.gradient_clip_threshold;
         static DynamicLossScaler loss_scaler;
         
         std::cout << "Starting backward pass with " << layers.size() << " layers" << std::endl;
@@ -573,7 +588,7 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
         static size_t accum_step = 0;
         const size_t grad_accum_steps = config.gradient_accumulation_steps;
         
-        // First backward pass to compute gradients
+        // Backward pass through transformer layers
         for (int i = layers.size() - 1; i >= 0; --i) {
             std::string ffn_key = "ffn_norm_" + std::to_string(i);
             std::string attn_key = "attn_norm_" + std::to_string(i);
@@ -582,6 +597,10 @@ void Transformer::backward(const Matrix& grad_output, const std::vector<int>& in
             Matrix attn_input = GradientCheckpoint::get_activation(attn_key);
             
             try {
+                std::cout << "Layer " << i << " backward pass..." << std::endl;
+                std::cout << "Current gradient dimensions: " << current_grad.rows() << "x" << current_grad.cols() << std::endl;
+                std::cout << "Layer input dimensions: " << attn_input.rows() << "x" << attn_input.cols() << std::endl;
+                
                 Matrix layer_grad = layers[i]->backward(current_grad, attn_input, Matrix());
                 if (!layer_grad.empty()) {
                     // Check for inf/nan if using FP16
