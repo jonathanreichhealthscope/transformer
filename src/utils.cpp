@@ -70,6 +70,8 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
     size_t batch_size = target_tokens.size();
     size_t total_tokens = batch_size * input_max_seq_len;
     
+    std::cout << "Creating target distribution with dimensions: " << total_tokens << "x" << vocab_size << std::endl;
+    
     // Create target distribution for all token positions
     Matrix target_distribution(total_tokens, vocab_size, 0.0f);
     
@@ -92,16 +94,18 @@ Matrix Utils::create_batch_target_distribution(const std::vector<std::vector<int
         for (size_t i = 0; i < sequence.size(); i++) {
             // Ensure token ID is within vocab_size bounds
             int token_id = sequence[i];
-            if (token_id >= 0 && static_cast<size_t>(token_id) < vocab_size) {
+            if (token_id >= 0 && static_cast<size_t>(token_id) < vocab_size) {  // Use the passed vocab_size
                 float weight = (i >= noun_phrase_start) ? 1.0f : 0.5f;
                 target_distribution(current_pos, token_id) = weight;
+            } else {
+                std::cout << "Warning: Token ID " << token_id << " is outside vocabulary size " << vocab_size << std::endl;
             }
             current_pos++;
         }
         
         // Pad remaining positions with pad token
         int pad_token = tokenizer.get_pad_token_id();
-        if (pad_token >= 0 && static_cast<size_t>(pad_token) < vocab_size) {
+        if (pad_token >= 0 && static_cast<size_t>(pad_token) < vocab_size) {  // Use the passed vocab_size
             for (size_t i = sequence.size(); i < input_max_seq_len; i++) {
                 target_distribution(current_pos, pad_token) = 1.0f;
                 current_pos++;
@@ -221,143 +225,156 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
 }
 
 TransformerConfig Utils::load_config(const std::string& config_path) {
+    std::ifstream config_file(config_path);
+    if (!config_file.is_open()) {
+        throw std::runtime_error("Could not open config file: " + config_path);
+    }
+
+    nlohmann::json j;
+    config_file >> j;
+
     TransformerConfig config;
-    try {
-        std::ifstream file(config_path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open config file: " + config_path);
+
+    // Load tokenizer config first
+    if (j.contains("tokenizer")) {
+        const auto& tok = j["tokenizer"];
+        config.tokenizer.use_subword = tok.value("use_subword", true);
+        // Only set vocab_size if it exists in the config
+        if (tok.contains("vocab_size")) {
+            size_t vocab_size = tok["vocab_size"].get<size_t>();
+            config.tokenizer.vocab_size = vocab_size;
+            // Ensure model vocab size matches tokenizer vocab size
+            if (j.contains("model")) {
+                j["model"]["vocab_size"] = vocab_size;
+            }
+            std::cout << "Setting vocabulary size from config: " << vocab_size << std::endl;
         }
+        config.tokenizer.model_path = tok.value("model_path", "model/tokenizer.model");
+    }
 
-        nlohmann::json j;
-        file >> j;
-
-        // Parse model settings
+    // Parse model settings
+    if (j.contains("model")) {
         auto& model = j["model"];
-        config.vocab_size = model["vocab_size"];
+        // Use tokenizer vocab size if available, otherwise use model vocab size
+        config.vocab_size = config.tokenizer.vocab_size > 0 ? 
+                           config.tokenizer.vocab_size : 
+                           model.value("vocab_size", 32000);
+        
+        std::cout << "Final vocabulary size in config: " << config.vocab_size << std::endl;
+        
+        // Load other model settings
         config.hidden_size = model["hidden_size"];
         config.num_heads = model["num_heads"];
         config.num_layers = model["num_layers"];
         config.head_dim = model["head_dim"];
         config.intermediate_size = model["intermediate_size"];
-
-        // Parse training settings
-        auto& training = j["training"];
-        config.batch_size = training["batch_size"];
-        config.num_epochs = training["num_epochs"];
-        config.dropout_rate = training["dropout_rate"];
-        config.weight_decay = training["weight_decay"];
-        
-        // Parse learning rate settings
-        if (j.contains("learning_rate")) {
-            auto& lr = j["learning_rate"];
-            config.initial_lr = lr.value("initial_lr", 1e-4f);
-            config.peak_lr = lr.value("peak_lr", 1e-3f);
-            config.warmup_steps = lr.value("warmup_steps", 100);
-            config.decay_factor = lr.value("decay_factor", 0.98f);
-        }
-        
-        // Parse early stopping settings
-        if (j.contains("early_stopping")) {
-            auto& es = j["early_stopping"];
-            config.early_stopping_patience = es.value("patience", 3);
-            config.early_stopping_threshold = es.value("threshold", 1.5f);
-        }
-        
-        // Parse optimization settings
-        if (j.contains("optimization")) {
-            auto& opt = j["optimization"];
-            config.gradient_clip_threshold = opt.value("gradient_clip_threshold", 5.0f);
-            config.layer_norm_epsilon = opt.value("layer_norm_epsilon", 1e-5f);
-            config.gradient_accumulation_steps = opt.value("gradient_accumulation_steps", 4);
-            config.use_gradient_checkpointing = opt.value("use_gradient_checkpointing", false);
-            config.use_fp16 = opt.value("use_fp16", false);
-            config.memory_pool_size = opt.value("memory_pool_size", 1024);
-        }
-
-        // Parse paths
-        if (j.contains("paths")) {
-            auto& paths = j["paths"];
-            config.paths.save_directory = paths["save_directory"];
-            config.paths.model_name = paths["model_name"];
-            config.paths.checkpoint_frequency = paths["checkpoint_frequency"];
-        }
-
-        // Parse attention settings
-        auto& attention = j["attention"];
-        config.use_flash_attention = attention["use_flash_attention"];
-        config.use_rope = attention["use_rope"];
-        config.use_sliding_window = attention["use_sliding_window"];
-        config.window_size = attention["window_size"];
-        if (attention.contains("use_gqa")) {
-            config.use_gqa = attention["use_gqa"].get<bool>();
-            if (config.use_gqa) {
-                if (attention.contains("num_kv_heads")) {
-                    config.num_kv_heads = attention["num_kv_heads"].get<size_t>();
-                } else {
-                    config.num_kv_heads = config.num_heads / 2; // Default to half the heads
-                }
-            } else {
-                config.num_kv_heads = config.num_heads;
-            }
-        }
-
-        // Parse tokenizer settings
-        if (j.contains("tokenizer")) {
-            const auto& tok = j["tokenizer"];
-            config.tokenizer.use_subword = tok.value("use_subword", true);
-            config.tokenizer.vocab_size = tok.value("vocab_size", 32000);
-            config.tokenizer.model_path = tok.value("model_path", "model/tokenizer.model");
-            config.tokenizer.special_tokens = tok.value("special_tokens", 
-                std::vector<std::string>{"<pad>", "", " ", "</s>", "<mask>"});
-        }
-
-        // Parse beam search settings
-        if (j.contains("beam_search")) {
-            auto& beam = j["beam_search"];
-            config.beam_search.use_beam_search = beam.value("use_beam_search", true);
-            config.beam_search.beam_size = beam["beam_size"];
-            config.beam_search.beams_per_group = beam.value("beams_per_group", 4);
-            config.beam_search.num_groups = beam.value("num_groups", 3);
-            config.beam_search.length_penalty = beam["length_penalty"];
-            config.beam_search.temperature = beam["temperature"];
-            config.beam_search.top_p = beam["top_p"];
-            config.beam_search.max_length = beam["max_length"];
-            config.beam_search.initial_temperature = beam.value("initial_temperature", 3.0f);
-            config.beam_search.initial_noise_scale = beam.value("initial_noise_scale", 0.8f);
-            config.beam_search.diversity_strength = beam.value("diversity_strength", 4.0f);
-            config.beam_search.top_k = beam.value("top_k", 100);
-            config.beam_search.token_noise_scale = beam.value("token_noise_scale", 0.1f);
-        }
-
-        // Parse checkpoint loading settings
-        if (j.contains("load_from_checkpoint")) {
-            config.load_from_checkpoint = j["load_from_checkpoint"].get<bool>();
-            if (config.load_from_checkpoint && j.contains("checkpoint_to_load")) {
-                config.checkpoint_to_load = j["checkpoint_to_load"].get<std::string>();
-            }
-        }
-
-        // Parse token prediction settings
-        if (j.contains("token_prediction")) {
-            auto& tp = j["token_prediction"];
-            config.token_prediction.temperature = tp.value("temperature", 1.0f);
-            config.token_prediction.top_k = tp.value("top_k", 5);
-            config.token_prediction.top_p = tp.value("top_p", 0.9f);
-            config.token_prediction.frequency_penalty = tp.value("frequency_penalty", 0.1f);
-            config.token_prediction.presence_penalty = tp.value("presence_penalty", 0.0f);
-            config.token_prediction.min_token_prob = tp.value("min_token_prob", 0.05f);
-            
-            if (tp.contains("category_bonus")) {
-                auto& cb = tp["category_bonus"];
-                config.token_prediction.category_bonus.verb = cb.value("verb", 0.2f);
-                config.token_prediction.category_bonus.adjective = cb.value("adjective", 0.2f);
-                config.token_prediction.category_bonus.noun = cb.value("noun", 0.3f);
-            }
-        }
-
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Error parsing config file: " + std::string(e.what()));
     }
+
+    // Parse training settings
+    auto& training = j["training"];
+    config.batch_size = training["batch_size"];
+    config.num_epochs = training["num_epochs"];
+    config.dropout_rate = training["dropout_rate"];
+    config.weight_decay = training["weight_decay"];
+    
+    // Parse learning rate settings
+    if (j.contains("learning_rate")) {
+        auto& lr = j["learning_rate"];
+        config.initial_lr = lr.value("initial_lr", 1e-4f);
+        config.peak_lr = lr.value("peak_lr", 1e-3f);
+        config.warmup_steps = lr.value("warmup_steps", 100);
+        config.decay_factor = lr.value("decay_factor", 0.98f);
+    }
+    
+    // Parse early stopping settings
+    if (j.contains("early_stopping")) {
+        auto& es = j["early_stopping"];
+        config.early_stopping_patience = es.value("patience", 3);
+        config.early_stopping_threshold = es.value("threshold", 1.5f);
+    }
+    
+    // Parse optimization settings
+    if (j.contains("optimization")) {
+        auto& opt = j["optimization"];
+        config.gradient_clip_threshold = opt.value("gradient_clip_threshold", 5.0f);
+        config.layer_norm_epsilon = opt.value("layer_norm_epsilon", 1e-5f);
+        config.gradient_accumulation_steps = opt.value("gradient_accumulation_steps", 4);
+        config.use_gradient_checkpointing = opt.value("use_gradient_checkpointing", false);
+        config.use_fp16 = opt.value("use_fp16", false);
+        config.memory_pool_size = opt.value("memory_pool_size", 1024);
+    }
+
+    // Parse paths
+    if (j.contains("paths")) {
+        auto& paths = j["paths"];
+        config.paths.save_directory = paths["save_directory"];
+        config.paths.model_name = paths["model_name"];
+        config.paths.checkpoint_frequency = paths["checkpoint_frequency"];
+    }
+
+    // Parse attention settings
+    auto& attention = j["attention"];
+    config.use_flash_attention = attention["use_flash_attention"];
+    config.use_rope = attention["use_rope"];
+    config.use_sliding_window = attention["use_sliding_window"];
+    config.window_size = attention["window_size"];
+    if (attention.contains("use_gqa")) {
+        config.use_gqa = attention["use_gqa"].get<bool>();
+        if (config.use_gqa) {
+            if (attention.contains("num_kv_heads")) {
+                config.num_kv_heads = attention["num_kv_heads"].get<size_t>();
+            } else {
+                config.num_kv_heads = config.num_heads / 2; // Default to half the heads
+            }
+        } else {
+            config.num_kv_heads = config.num_heads;
+        }
+    }
+
+    // Parse beam search settings
+    if (j.contains("beam_search")) {
+        auto& beam = j["beam_search"];
+        config.beam_search.use_beam_search = beam.value("use_beam_search", true);
+        config.beam_search.beam_size = beam["beam_size"];
+        config.beam_search.beams_per_group = beam.value("beams_per_group", 4);
+        config.beam_search.num_groups = beam.value("num_groups", 3);
+        config.beam_search.length_penalty = beam["length_penalty"];
+        config.beam_search.temperature = beam["temperature"];
+        config.beam_search.top_p = beam["top_p"];
+        config.beam_search.max_length = beam["max_length"];
+        config.beam_search.initial_temperature = beam.value("initial_temperature", 3.0f);
+        config.beam_search.initial_noise_scale = beam.value("initial_noise_scale", 0.8f);
+        config.beam_search.diversity_strength = beam.value("diversity_strength", 4.0f);
+        config.beam_search.top_k = beam.value("top_k", 100);
+        config.beam_search.token_noise_scale = beam.value("token_noise_scale", 0.1f);
+    }
+
+    // Parse checkpoint loading settings
+    if (j.contains("load_from_checkpoint")) {
+        config.load_from_checkpoint = j["load_from_checkpoint"].get<bool>();
+        if (config.load_from_checkpoint && j.contains("checkpoint_to_load")) {
+            config.checkpoint_to_load = j["checkpoint_to_load"].get<std::string>();
+        }
+    }
+
+    // Parse token prediction settings
+    if (j.contains("token_prediction")) {
+        auto& tp = j["token_prediction"];
+        config.token_prediction.temperature = tp.value("temperature", 1.0f);
+        config.token_prediction.top_k = tp.value("top_k", 5);
+        config.token_prediction.top_p = tp.value("top_p", 0.9f);
+        config.token_prediction.frequency_penalty = tp.value("frequency_penalty", 0.1f);
+        config.token_prediction.presence_penalty = tp.value("presence_penalty", 0.0f);
+        config.token_prediction.min_token_prob = tp.value("min_token_prob", 0.05f);
+        
+        if (tp.contains("category_bonus")) {
+            auto& cb = tp["category_bonus"];
+            config.token_prediction.category_bonus.verb = cb.value("verb", 0.2f);
+            config.token_prediction.category_bonus.adjective = cb.value("adjective", 0.2f);
+            config.token_prediction.category_bonus.noun = cb.value("noun", 0.3f);
+        }
+    }
+
     return config;
 }
 

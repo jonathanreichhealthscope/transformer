@@ -7,6 +7,7 @@
 #include "../include/phrase_analysis.hpp"
 #include "../include/training/training.hpp"  // Include unified training header
 #include "../include/hyperparameter_tuner.hpp"
+#include "../include/count_vocabulary.hpp"
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -520,12 +521,50 @@ int main(int argc, char* argv[]) {
     try {
         // Initialize random number generation
         Utils::initialize_random();
-
-        // Load configuration
         std::filesystem::path exe_path = std::filesystem::current_path().parent_path();
-        std::filesystem::path config_path = exe_path / "config" / "transformer_config.json";
-        TransformerConfig config = Utils::load_config(config_path.string());
 
+        // First, count vocabulary size from training and validation files
+        std::cout << "\nCounting unique tokens in training and validation files..." << std::endl;
+        size_t custom_vocab_size = transformer::VocabularyCounter::countUniqueTokens(
+            exe_path.string() + "/data/training_pairs.txt",
+            exe_path.string() + "/data/validation_pairs.txt"
+        );
+        std::cout << "Number of unique tokens found in data files: " << custom_vocab_size << std::endl;
+
+        // Load and update config with the counted vocabulary size
+        std::filesystem::path config_path = exe_path / "config" / "transformer_config.json";
+        
+        // Read the config file
+        std::ifstream config_file(config_path);
+        if (!config_file.is_open()) {
+            throw std::runtime_error("Could not open config file: " + config_path.string());
+        }
+        
+        nlohmann::json config_json;
+        config_file >> config_json;
+        config_file.close();
+        
+        // Update vocabulary size in config
+        size_t previous_vocab_size = 0;
+        if (config_json.contains("vocab_size") && !config_json["vocab_size"].is_null()) {
+            previous_vocab_size = config_json["vocab_size"].get<size_t>();
+        }
+        std::cout << "Previous vocabulary size in config: " << (previous_vocab_size == 0 ? "Not set" : std::to_string(previous_vocab_size)) << std::endl;
+        
+        config_json["vocab_size"] = custom_vocab_size;
+        std::cout << "Updated vocabulary size in config to: " << custom_vocab_size << std::endl;
+        
+        // Write updated config back to file
+        std::ofstream output_config_file(config_path);
+        if (!output_config_file.is_open()) {
+            throw std::runtime_error("Could not open config file for writing: " + config_path.string());
+        }
+        output_config_file << config_json.dump(4);
+        output_config_file.close();
+
+        // Now load the updated config for transformer initialization
+        TransformerConfig config = Utils::load_config(config_path.string());
+        
         // Initialize random seed using hardware entropy
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -561,25 +600,42 @@ int main(int argc, char* argv[]) {
         // Load training data first
         auto training_pairs = Utils::create_training_data();
         std::cout << "Loaded " << training_pairs.size() << " training pairs" << std::endl;
-
+        
         // Initialize tokenizer with config
-        std::cout << "Initializing tiktoken with encoding: gpt2" << std::endl;
+        std::cout << "\nInitializing tiktoken with encoding: gpt2" << std::endl;
         tokenizer = std::make_unique<Tokenizer>("gpt2");
         
         try {
-            tokenizer->initialize("cl100k_base");  // Or whatever default encoding you want to use
-            std::cout << "Initialized tokenizer. Vocabulary size: " 
-                      << tokenizer->vocab_size() << std::endl;
-                      
-            // Update config vocabulary size to match tokenizer
-            config.vocab_size = tokenizer->vocab_size();
-            std::cout << "Updated config vocabulary size to: " << config.vocab_size << std::endl;
+            tokenizer->initialize("cl100k_base");
+            std::cout << "Initialized tokenizer with default vocabulary size: " << tokenizer->vocab_size() << std::endl;
+            std::cout << "Using custom vocabulary size from data: " << custom_vocab_size << std::endl;
+            
+            // Set the custom vocabulary size in the tokenizer
+            tokenizer->set_vocab_size(custom_vocab_size);
+            
+            // Verify the vocabulary size was properly set
+            size_t current_vocab_size = tokenizer->vocab_size();
+            if (current_vocab_size != custom_vocab_size) {
+                throw std::runtime_error("Failed to set custom vocabulary size. Expected: " + 
+                                       std::to_string(custom_vocab_size) + ", Got: " + 
+                                       std::to_string(current_vocab_size));
+            }
+            std::cout << "Successfully updated tokenizer vocabulary size to: " << current_vocab_size << std::endl;
+            
+            // Override config vocabulary size with our custom size
+            config.vocab_size = custom_vocab_size;
+            config.tokenizer.vocab_size = custom_vocab_size;
+            std::cout << "Updated config vocabulary sizes:"
+                      << "\n- config.vocab_size: " << config.vocab_size
+                      << "\n- config.tokenizer.vocab_size: " << config.tokenizer.vocab_size << std::endl;
+
         } catch (const std::exception& e) {
             std::cerr << "Failed to initialize tokenizer: " << e.what() << std::endl;
             return 1;
         }
 
         // Initialize model with updated config
+        std::cout << "\nInitializing transformer with custom vocabulary size: " << config.vocab_size << std::endl;
         Transformer transformer(config);
         std::cout << "\nTransformer initialized with language model head" << std::endl << std::flush;
 
@@ -813,7 +869,7 @@ int main(int argc, char* argv[]) {
 
                 // Create target distribution for entire batch using only valid sequences
                 Matrix target_distribution = Utils::create_batch_target_distribution(
-                    valid_target_batch, *tokenizer, config.vocab_size, max_seq_len);
+                    valid_target_batch, *tokenizer, custom_vocab_size, max_seq_len);
 
                 // Process the batch as a single sequence
                 std::vector<int> flattened_batch;

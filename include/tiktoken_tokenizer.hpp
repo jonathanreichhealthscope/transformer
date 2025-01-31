@@ -35,8 +35,11 @@ public:
     std::vector<std::string> get_vocabulary_vector() const;
     int get_sep_token_id() const { return tokens::SEP_ID; }
 
+    // Vocabulary management
+    void set_vocab_size(size_t size) override;
+    void print_vocabulary_stats() const;  // New method for debugging
+
     // Configuration
-    void set_vocab_size(size_t size) { target_vocab_size = size; }
     static void set_debug_logging(bool enable) { debug_logging_ = enable; }
     static constexpr const char* SEP_TOKEN = "|";
 

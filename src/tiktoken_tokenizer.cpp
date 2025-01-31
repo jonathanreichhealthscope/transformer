@@ -15,30 +15,178 @@
 struct TiktokenTokenizer::Impl {
     bool initialized_ = false;
     std::unordered_map<std::string, int> vocab;
-    size_t vocab_size_ = 32000; // Default GPT-2 vocab size
+    size_t vocab_size_ = 2857;  // This will be properly set by set_vocab_size
+    std::unordered_map<std::string, int> original_vocab;
 
     void initialize(const std::string& encoding_name) {
-        // TODO: Implement actual tiktoken initialization
+        if (initialized_) return;
+        
+        // Initialize with special tokens first
+        vocab[tokens::PAD_TOKEN] = tokens::PAD_ID;
+        vocab[tokens::UNK_TOKEN] = tokens::UNK_ID;
+        vocab[tokens::BOS_TOKEN] = tokens::BOS_ID;
+        vocab[tokens::EOS_TOKEN] = tokens::EOS_ID;
+        vocab[tokens::MASK_TOKEN] = tokens::MASK_ID;
+        vocab[tokens::SEP_TOKEN] = tokens::SEP_ID;
+        
+        // Store initial vocabulary size
+        vocab_size_ = tokens::NUM_SPECIAL_TOKENS;
+        
+        // Store original vocab for potential resizing
+        original_vocab = vocab;
+        
         initialized_ = true;
+        std::cout << "Initialized tokenizer with " << vocab_size_ 
+                  << " tokens (special tokens only)" << std::endl;
     }
 
     bool is_initialized() const { return initialized_; }
 
     std::vector<int> encode(const std::string& text) const {
         if (!initialized_) throw std::runtime_error("Tokenizer not initialized");
-        // TODO: Implement actual encoding
-        return {0}; // Placeholder
+        
+        std::vector<int> tokens;
+        std::istringstream iss(text);
+        std::string word;
+        
+        // Split text into words
+        while (iss >> word) {
+            // Check if the word exists in our vocabulary
+            auto it = vocab.find(word);
+            if (it != vocab.end() && static_cast<size_t>(it->second) < vocab_size_) {
+                tokens.push_back(it->second);
+            } else {
+                // If word not found or ID is outside current vocab size, use UNK token
+                tokens.push_back(tokens::UNK_ID);
+                std::cout << "Unknown token or out of vocab range: '" << word 
+                          << "' (vocab_size: " << vocab_size_ << ")" << std::endl;
+            }
+        }
+        
+        if (tokens.empty()) {
+            std::cout << "Warning: Empty tokens generated for text: '" << text << "'" << std::endl;
+            return {tokens::UNK_ID};  // Return UNK token for empty input
+        }
+        
+        return tokens;
     }
 
     std::string decode(const std::vector<int>& tokens) const {
         if (!initialized_) throw std::runtime_error("Tokenizer not initialized");
-        // TODO: Implement actual decoding
-        return ""; // Placeholder
+        
+        std::string result;
+        bool first = true;
+        
+        for (int token_id : tokens) {
+            // Skip if token ID is outside our current vocabulary size
+            if (token_id < 0 || static_cast<size_t>(token_id) >= vocab_size_) {
+                std::cout << "Warning: Token ID " << token_id 
+                          << " is outside vocabulary range (0-" << vocab_size_ - 1 
+                          << ")" << std::endl;
+                continue;
+            }
+            
+            // Find the token string for this ID
+            std::string token_str;
+            bool found = false;
+            for (const auto& [str, id] : vocab) {
+                if (id == token_id) {
+                    token_str = str;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                std::cout << "Warning: No string found for token ID " << token_id << std::endl;
+                token_str = tokens::UNK_TOKEN;
+            }
+            
+            // Add space between tokens (except for first token and special tokens)
+            if (!first && !token_str.empty() && 
+                token_id != tokens::PAD_ID && 
+                token_id != tokens::UNK_ID && 
+                token_id != tokens::BOS_ID && 
+                token_id != tokens::EOS_ID && 
+                token_id != tokens::MASK_ID && 
+                token_id != tokens::SEP_ID) {
+                result += " ";
+            }
+            
+            result += token_str;
+            first = false;
+        }
+        
+        return result;
     }
 
     size_t vocab_size() const {
         if (!initialized_) throw std::runtime_error("Tokenizer not initialized");
         return vocab_size_;
+    }
+
+    void resize_vocabulary(size_t new_size) {
+        if (!initialized_) {
+            throw std::runtime_error("Cannot resize vocabulary before initialization");
+        }
+        
+        std::cout << "Resizing vocabulary from " << vocab_size_ << " to " << new_size << std::endl;
+        
+        // Ensure we don't go below the number of special tokens
+        const size_t min_size = tokens::NUM_SPECIAL_TOKENS;
+        if (new_size < min_size) {
+            std::cout << "Warning: Requested vocab size " << new_size 
+                      << " is below minimum size " << min_size 
+                      << ". Using minimum size." << std::endl;
+            new_size = min_size;
+        }
+        
+        // If we haven't stored the original vocab yet, do so
+        if (original_vocab.empty()) {
+            original_vocab = vocab;
+            std::cout << "Stored original vocabulary with " << original_vocab.size() << " tokens" << std::endl;
+        }
+        
+        // Clear current vocab
+        vocab.clear();
+        
+        // First, add all special tokens
+        for (int i = 0; i < tokens::NUM_SPECIAL_TOKENS; i++) {
+            std::string special_token = get_special_token_string(i);
+            auto it = original_vocab.find(special_token);
+            if (it != original_vocab.end()) {
+                vocab[it->first] = it->second;
+                std::cout << "Added special token: " << it->first << " with ID: " << it->second << std::endl;
+            }
+        }
+        
+        // Then add remaining tokens up to new_size
+        size_t current_size = vocab.size();
+        for (const auto& [token, id] : original_vocab) {
+            if (current_size >= new_size) break;
+            
+            // Skip if it's already in vocab (special tokens)
+            if (vocab.find(token) == vocab.end()) {
+                vocab[token] = id;
+                current_size++;
+            }
+        }
+        
+        vocab_size_ = new_size;
+        std::cout << "Vocabulary resized. New size: " << vocab_size_ 
+                  << ", Active tokens: " << vocab.size() << std::endl;
+    }
+    
+    std::string get_special_token_string(int index) const {
+        switch(index) {
+            case 0: return tokens::PAD_TOKEN;
+            case 1: return tokens::UNK_TOKEN;
+            case 2: return tokens::BOS_TOKEN;
+            case 3: return tokens::EOS_TOKEN;
+            case 4: return tokens::MASK_TOKEN;
+            case 5: return tokens::SEP_TOKEN;
+            default: return "";
+        }
     }
 };
 
@@ -62,17 +210,55 @@ bool TiktokenTokenizer::is_initialized() const {
 }
 
 std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
-    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
-    return pimpl_->encode(text);
+    if (!pimpl_ || !pimpl_->initialized_) {
+        throw std::runtime_error("Tokenizer not initialized");
+    }
+    
+    // Use the truncated vocabulary for encoding
+    std::vector<int> tokens;
+    std::string current_token;
+    std::istringstream iss(text);
+    
+    while (iss >> current_token) {
+        auto it = pimpl_->vocab.find(current_token);
+        if (it != pimpl_->vocab.end()) {
+            tokens.push_back(it->second);
+        } else {
+            tokens.push_back(get_unk_token_id());
+        }
+    }
+    
+    return tokens;
 }
 
 std::string TiktokenTokenizer::decode(const std::vector<int>& tokens) const {
-    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
-    return pimpl_->decode(tokens);
+    if (!pimpl_ || !pimpl_->initialized_) {
+        throw std::runtime_error("Tokenizer not initialized");
+    }
+    
+    std::string result;
+    for (int token : tokens) {
+        // Find the token string in our truncated vocabulary
+        bool found = false;
+        for (const auto& [str, id] : pimpl_->vocab) {
+            if (id == token) {
+                result += (result.empty() ? "" : " ") + str;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            result += (result.empty() ? "" : " ") + tokens::UNK_TOKEN;
+        }
+    }
+    
+    return result;
 }
 
 size_t TiktokenTokenizer::vocab_size() const {
-    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
+    if (!pimpl_) {
+        throw std::runtime_error("Tokenizer implementation not initialized");
+    }
     return pimpl_->vocab_size();
 }
 
@@ -393,5 +579,56 @@ std::string TiktokenTokenizer::decode_token(int token_id) const {
         return it->second;
     }
     
-    return "<unk>";  // Return unknown token string if not found
-} 
+    return "";
+}
+
+// Implement the public set_vocab_size method
+void TiktokenTokenizer::set_vocab_size(size_t size) {
+    if (!pimpl_) {
+        throw std::runtime_error("Tokenizer implementation not initialized");
+    }
+    
+    std::cout << "Setting vocabulary size to " << size << std::endl;
+    
+    try {
+        // Resize the vocabulary
+        pimpl_->resize_vocabulary(size);
+        
+        // Verify the change
+        size_t new_size = pimpl_->vocab_size();
+        if (new_size != size && new_size != tokens::NUM_SPECIAL_TOKENS) {
+            throw std::runtime_error("Failed to set vocabulary size. Expected: " + 
+                                   std::to_string(size) + ", Got: " + 
+                                   std::to_string(new_size));
+        }
+        
+        std::cout << "Successfully set vocabulary size to " << new_size << std::endl;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error setting vocabulary size: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+// Add a method to verify the vocabulary size
+void TiktokenTokenizer::print_vocabulary_stats() const {
+    if (!pimpl_) {
+        throw std::runtime_error("Tokenizer implementation not initialized");
+    }
+    
+    std::cout << "\nVocabulary Statistics:" << std::endl;
+    std::cout << "- Total vocabulary size: " << pimpl_->vocab_size_ << std::endl;
+    std::cout << "- Active tokens: " << pimpl_->vocab.size() << std::endl;
+    std::cout << "- Special tokens: " << tokens::NUM_SPECIAL_TOKENS << std::endl;
+    
+    // Print first few tokens for verification
+    std::cout << "\nFirst few tokens:" << std::endl;
+    int count = 0;
+    for (const auto& [token, id] : pimpl_->vocab) {
+        if (count++ < 10) {
+            std::cout << "  " << token << " -> " << id << std::endl;
+        } else {
+            break;
+        }
+    }
+}

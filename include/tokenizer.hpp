@@ -52,6 +52,13 @@ public:
 
     void initialize(const std::string& encoding_name = "cl100k_base");
 
+    // Add method to set vocabulary size
+    void set_vocab_size(size_t size) {
+        if (tokenizer_) {
+            tokenizer_->set_vocab_size(size);
+        }
+    }
+
 protected:
     // Token category sets
     std::unordered_set<std::string> verb_tokens_;

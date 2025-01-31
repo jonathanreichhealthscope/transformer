@@ -17,4 +17,7 @@ public:
     virtual int get_bos_token_id() const = 0;
     virtual int get_eos_token_id() const = 0;
     virtual int get_mask_token_id() const = 0;
+
+    // Vocabulary management
+    virtual void set_vocab_size(size_t size) = 0;
 }; 
