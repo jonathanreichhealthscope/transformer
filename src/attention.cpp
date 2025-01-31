@@ -350,160 +350,66 @@ Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matri
 }
 
 Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input, const Matrix& target) {
-    Matrix output_weights_t;  // Move declaration to outer scope
     try {
         std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
-        std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cout << "input dims: " << input.rows() << "x" << input.cols() << std::endl;
-
-        // Validate input dimensions
-        if (grad_output.rows() != input.rows()) {
-            throw std::runtime_error("Batch dimension mismatch: grad_output rows (" + 
-                std::to_string(grad_output.rows()) + ") != input rows (" + 
-                std::to_string(input.rows()) + ")");
+        
+        // Constants for gradient clipping and stability
+        const float clip_threshold = 5.0f;  // Match global threshold
+        const float eps = 1e-6f;
+        
+        Matrix output_weights_t = params_.output_weights.transpose();
+        Matrix d_value = matmul(grad_output, output_weights_t);
+        
+        // Compute gradient norms
+        float grad_norm = 0.0f;
+        #pragma omp parallel for reduction(+:grad_norm)
+        for (size_t i = 0; i < grad_output.size(); i++) {
+            grad_norm += grad_output.data()[i] * grad_output.data()[i];
         }
-
-        // Get cached values from forward pass
-        Matrix query = GradientCheckpoint::get_activation("query");
-        Matrix key = GradientCheckpoint::get_activation("key");
-        Matrix value = GradientCheckpoint::get_activation("value");
-        Matrix attention_scores = GradientCheckpoint::get_activation("attention_scores");
-
-        std::cout << "Retrieved cached activations:" << std::endl;
-        std::cout << "query dims: " << query.rows() << "x" << query.cols() << std::endl;
-        std::cout << "key dims: " << key.rows() << "x" << key.cols() << std::endl;
-        std::cout << "value dims: " << value.rows() << "x" << value.cols() << std::endl;
-        std::cout << "attention_scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
-
-        // Validate cached activations
-        if (query.rows() != input.rows() || key.rows() != input.rows() || value.rows() != input.rows()) {
-            throw std::runtime_error("Cached activation batch dimension mismatch");
+        grad_norm = std::sqrt(grad_norm);
+        
+        // Compute scaling factor
+        float scale = std::min(clip_threshold / (grad_norm + eps), 1.0f);
+        scale = std::sqrt(scale);  // Softer scaling
+        
+        std::cout << "Attention gradient norm: " << grad_norm << std::endl;
+        std::cout << "Attention scaling factor: " << scale << std::endl;
+        
+        // Scale gradients
+        Matrix scaled_grad = grad_output;
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < scaled_grad.rows(); i++) {
+            for (size_t j = 0; j < scaled_grad.cols(); j++) {
+                scaled_grad(i, j) *= scale;
+            }
         }
-
-        // Initialize weight gradients with correct dimensions
+        
+        // Accumulate weight gradients
         Matrix output_weight_grad = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
         Vector output_bias_grad = Vector(params_.output_weights.cols(), 0.0f);
-        std::cout << "output_weight_grad dims: " << output_weight_grad.rows() << "x" << output_weight_grad.cols() << std::endl;
-        std::cout << "output_bias_grad size: " << output_bias_grad.size() << std::endl;
-
-        // Compute gradients for backward flow
-        Matrix d_output = grad_output;  // 864x128
         
-        // Fix: Transpose the output weights correctly
-        output_weights_t = params_.output_weights.transpose();  // 128x128 -> 128x128
-        std::cout << "output_weights_t dims: " << output_weights_t.rows() << "x" << output_weights_t.cols() << std::endl;
-        
-        // Now the multiplication should be valid: (864x128) * (128x128)
-        Matrix d_value = matmul(d_output, output_weights_t);
-        std::cout << "d_value dims: " << d_value.rows() << "x" << d_value.cols() << std::endl;
-
-        // Accumulate weight gradients over batch
-        size_t batch_size = grad_output.rows();
+        size_t batch_size = input.rows();
         for (size_t i = 0; i < batch_size; ++i) {
-            Vector example_grad = d_output.row(i);  // 1x128
-            Vector example_value = value.row(i);    // 1x128
+            Vector example_grad = scaled_grad.row(i);
+            Vector example_value = input.row(i);
             
-            // Validate dimensions for this example
-            if (example_grad.size() != params_.output_weights.cols() || 
-                example_value.size() != params_.output_weights.rows()) {
-                throw std::runtime_error("Example dimension mismatch at index " + std::to_string(i) +
-                    ". example_grad size: " + std::to_string(example_grad.size()) +
-                    ", example_value size: " + std::to_string(example_value.size()) +
-                    ", expected: " + std::to_string(params_.output_weights.cols()) +
-                    "x" + std::to_string(params_.output_weights.rows()));
-            }
-
-            // Fix: Ensure correct vector orientations for outer product
-            // example_value should be a column vector (128x1)
-            // example_grad should be a row vector (1x128)
-            Vector example_value_col = example_value;  // 128x1
-            Vector example_grad_row = example_grad;    // 1x128
-            
-            Matrix example_grad_outer = outer_product(example_value_col, example_grad_row);  // Should be 128x128
-            
-            if (example_grad_outer.rows() != output_weight_grad.rows() || 
-                example_grad_outer.cols() != output_weight_grad.cols()) {
-                throw std::runtime_error("Outer product dimension mismatch: got " +
-                    std::to_string(example_grad_outer.rows()) + "x" + std::to_string(example_grad_outer.cols()) +
-                    ", expected " + std::to_string(output_weight_grad.rows()) + "x" + std::to_string(output_weight_grad.cols()));
-            }
-
+            Matrix example_grad_outer = outer_product(example_value, example_grad);
             output_weight_grad += example_grad_outer;
             output_bias_grad += example_grad;
         }
-        std::cout << "output_weight_grad dims: " << output_weight_grad.rows() << "x" << output_weight_grad.cols() << std::endl; 
-        std::cout << "output_bias_grad dims: " << output_bias_grad.size() << std::endl;
-        std::cout << "d_value dims: " << d_value.rows() << "x" << d_value.cols() << std::endl;
-        std::cout << "params_.value_weights dims: " << params_.value_weights.rows() << "x" << params_.value_weights.cols() << std::endl;
         
-        // Fix: Remove transpose to make dimensions compatible (864x128) * (128x128) -> (864x128)
-        Matrix d_scores = matmul(d_value, params_.value_weights);
-        std::cout << "d_scores dims: " << d_scores.rows() << "x" << d_scores.cols() << std::endl;
-        std::cout << "attention_scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
-        
-        // Fix: Use matmul instead of element-wise multiplication to handle the dimension mismatch
-        d_scores = matmul(attention_scores, d_scores) / std::sqrt(static_cast<float>(head_dim));
-
-        // Initialize QKV gradients
-        Matrix query_weight_grad = Matrix(params_.query_weights.rows(), params_.query_weights.cols(), 0.0f);
-        Matrix key_weight_grad = Matrix(params_.key_weights.rows(), params_.key_weights.cols(), 0.0f);
-        Matrix value_weight_grad = Matrix(params_.value_weights.rows(), params_.value_weights.cols(), 0.0f);
-
-        // Accumulate QKV gradients over batch
-        for (size_t i = 0; i < batch_size; ++i) {
-            Vector input_row = input.row(i);
-            Vector d_value_row = d_value.row(i);
-            Vector d_key_row = d_scores.row(i);
-            Vector d_query_row = d_scores.row(i);
-
-            // Validate dimensions
-            if (input_row.size() != params_.query_weights.rows() || 
-                d_query_row.size() != params_.query_weights.cols()) {
-                throw std::runtime_error("QKV dimension mismatch at index " + std::to_string(i));
-            }
-
-            query_weight_grad += outer_product(input_row, d_query_row);
-            key_weight_grad += outer_product(input_row, d_key_row);
-            value_weight_grad += outer_product(input_row, d_value_row);
-        }
-
         // Update parameter gradients
         param_gradients().output_grad = output_weight_grad;
-        param_gradients().query_grad = query_weight_grad;
-        param_gradients().key_grad = key_weight_grad;
-        param_gradients().value_grad = value_weight_grad;
         param_gradients().output_bias_grad = output_bias_grad;
-
+        
         // Compute input gradients for backward flow
-        Matrix d_input = Matrix(input.rows(), hidden_size, 0.0f);
-        d_input += matmul(d_scores, params_.query_weights);
-        d_input += matmul(d_scores, params_.key_weights);
-        d_input += matmul(d_value, params_.value_weights);
-
-        // Final validation with detailed error message
-        if (d_input.rows() != input.rows() || d_input.cols() != input.cols()) {
-            throw std::runtime_error("Final d_input dimensions incorrect: got " + 
-                std::to_string(d_input.rows()) + "x" + std::to_string(d_input.cols()) + 
-                ", expected " + std::to_string(input.rows()) + "x" + std::to_string(input.cols()));
-        }
-
-        std::cout << "Final dimensions:" << std::endl;
-        std::cout << "d_input: " << d_input.rows() << "x" << d_input.cols() << std::endl;
-        std::cout << "output_weight_grad: " << output_weight_grad.rows() << "x" << output_weight_grad.cols() << std::endl;
-        std::cout << "query_weight_grad: " << query_weight_grad.rows() << "x" << query_weight_grad.cols() << std::endl;
-        std::cout << "key_weight_grad: " << key_weight_grad.rows() << "x" << key_weight_grad.cols() << std::endl;
-        std::cout << "value_weight_grad: " << value_weight_grad.rows() << "x" << value_weight_grad.cols() << std::endl;
+        Matrix d_input = matmul(scaled_grad, params_.output_weights);
+        
         std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
-
         return d_input;
-
+        
     } catch (const std::exception& e) {
         std::cerr << "\nError in MultiHeadAttention::backward: " << e.what() << std::endl;
-        std::cerr << "Current dimensions:" << std::endl;
-        std::cerr << "grad_output: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cerr << "input: " << input.rows() << "x" << input.cols() << std::endl;
-        std::cerr << "params_.output_weights: " << params_.output_weights.rows() << "x" << params_.output_weights.cols() << std::endl;
-        std::cerr << "output_weights_t: " << output_weights_t.rows() << "x" << output_weights_t.cols() << std::endl;
         throw;
     }
 }

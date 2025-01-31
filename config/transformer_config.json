@@ -14,6 +14,16 @@
         "dropout_rate": 0.1,
         "weight_decay": 0.01
     },
+    "learning_rate": {
+        "initial_lr": 1e-4,
+        "peak_lr": 1e-3,
+        "warmup_steps": 100,
+        "decay_factor": 0.98
+    },
+    "early_stopping": {
+        "patience": 3,
+        "threshold": 1.5
+    },
     "attention": {
         "use_flash_attention": false,
         "use_rope": true,
@@ -25,12 +35,28 @@
     "optimization": {
         "use_fp16": true,
         "use_gradient_checkpointing": true,
-        "memory_pool_size": 1024
+        "memory_pool_size": 1024,
+        "gradient_clip_threshold": 5.0,
+        "layer_norm_epsilon": 1e-5,
+        "gradient_accumulation_steps": 4
     },
     "paths": {
         "save_directory": "checkpoints",
         "model_name": "transformer_model",
         "checkpoint_frequency": 5
+    },
+    "token_prediction": {
+        "temperature": 1.0,
+        "top_k": 5,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.0,
+        "min_token_prob": 0.05,
+        "category_bonus": {
+            "verb": 0.2,
+            "adjective": 0.2,
+            "noun": 0.3
+        }
     },
     "beam_search": {
         "use_beam_search": true,
@@ -47,17 +73,19 @@
         "initial_noise_scale": 0.8,
         "token_noise_scale": 0.1
     },
-    "load_from_checkpoint": false,
-    "checkpoint_to_load": "",
     "tokenizer": {
         "use_subword": false,
         "vocab_size": 1665,
         "model_path": "model/tokenizer.model",
         "special_tokens": ["<unk>", "<s>", "</s>", "<pad>", "<mask>"]
     },
-    "pad_token_id": 0,
-    "unk_token_id": 1,
-    "bos_token_id": 2,
-    "eos_token_id": 3,
-    "mask_token_id": 4
+    "special_tokens": {
+        "pad_token_id": 0,
+        "unk_token_id": 1,
+        "bos_token_id": 2,
+        "eos_token_id": 3,
+        "mask_token_id": 4
+    },
+    "load_from_checkpoint": false,
+    "checkpoint_to_load": ""
 } 

@@ -238,4 +238,61 @@ class LanguageModelHead {
     const std::vector<float>& get_token_frequencies() const {
         return token_frequencies;
     }
+
+    // Add copy constructor
+    LanguageModelHead(const LanguageModelHead& other) 
+        : projection(other.projection),
+          bias(other.bias),
+          dropout_prob(other.dropout_prob),
+          vocab_size_(other.vocab_size_),
+          hidden_size_(other.hidden_size_),
+          hidden_states(other.hidden_states),
+          hidden_states_(other.hidden_states_),
+          token_frequencies(other.token_frequencies),
+          pruning_threshold(other.pruning_threshold),
+          active_tokens(other.active_tokens),
+          active_token_indices(other.active_token_indices),
+          training_steps(other.training_steps),
+          is_training_(other.is_training_),
+          // Adam optimizer state
+          m_proj(other.m_proj),
+          v_proj(other.v_proj),
+          m_bias(other.m_bias),
+          v_bias(other.v_bias),
+          t(other.t),
+          beta1(other.beta1),
+          beta2(other.beta2),
+          eps(other.eps),
+          // Learning rate adaptation
+          current_lr(other.current_lr),
+          min_lr(other.min_lr),
+          max_lr(other.max_lr),
+          lr_decay(other.lr_decay),
+          lr_growth(other.lr_growth),
+          loss_history(other.loss_history),
+          prev_loss(other.prev_loss) {
+        
+        // Deep copy layer_norm if it exists
+        if (other.layer_norm) {
+            layer_norm = std::make_unique<LayerNorm>(*other.layer_norm);
+        }
+        
+        // Copy tokenizer reference
+        tokenizer = other.tokenizer;
+        
+        // Initialize device memory to nullptr since it will be allocated on demand
+        h_projection = nullptr;
+        h_bias = nullptr;
+        d_projection = nullptr;
+        d_bias = nullptr;
+        d_projection_fp16 = nullptr;
+        d_hidden_states_fp16 = nullptr;
+        d_output_fp16 = nullptr;
+        d_output = nullptr;
+        
+    #ifdef USE_CUDA
+        d_active_tokens = nullptr;
+        d_active_token_indices = nullptr;
+    #endif
+    }
 };

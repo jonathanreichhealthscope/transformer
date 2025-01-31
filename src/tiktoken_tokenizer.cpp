@@ -11,7 +11,145 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 
-TiktokenTokenizer::TiktokenTokenizer() = default;
+// Private implementation class
+struct TiktokenTokenizer::Impl {
+    bool initialized_ = false;
+    std::unordered_map<std::string, int> vocab;
+    size_t vocab_size_ = 32000; // Default GPT-2 vocab size
+
+    void initialize(const std::string& encoding_name) {
+        // TODO: Implement actual tiktoken initialization
+        initialized_ = true;
+    }
+
+    bool is_initialized() const { return initialized_; }
+
+    std::vector<int> encode(const std::string& text) const {
+        if (!initialized_) throw std::runtime_error("Tokenizer not initialized");
+        // TODO: Implement actual encoding
+        return {0}; // Placeholder
+    }
+
+    std::string decode(const std::vector<int>& tokens) const {
+        if (!initialized_) throw std::runtime_error("Tokenizer not initialized");
+        // TODO: Implement actual decoding
+        return ""; // Placeholder
+    }
+
+    size_t vocab_size() const {
+        if (!initialized_) throw std::runtime_error("Tokenizer not initialized");
+        return vocab_size_;
+    }
+};
+
+TiktokenTokenizer::TiktokenTokenizer(const std::string& encoding_name)
+    : pimpl_(std::make_unique<Impl>()) {
+    initialize(encoding_name);
+}
+
+TiktokenTokenizer::~TiktokenTokenizer() = default;
+
+void TiktokenTokenizer::initialize(const std::string& encoding_name) {
+    if (initialized_) return;
+    
+    pimpl_->initialize(encoding_name);
+    initialized_ = true;
+    initialize_token_categories();
+}
+
+bool TiktokenTokenizer::is_initialized() const {
+    return initialized_ && pimpl_->is_initialized();
+}
+
+std::vector<int> TiktokenTokenizer::encode(const std::string& text) const {
+    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
+    return pimpl_->encode(text);
+}
+
+std::string TiktokenTokenizer::decode(const std::vector<int>& tokens) const {
+    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
+    return pimpl_->decode(tokens);
+}
+
+size_t TiktokenTokenizer::vocab_size() const {
+    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
+    return pimpl_->vocab_size();
+}
+
+void TiktokenTokenizer::print_vocabulary_mappings() const {
+    if (!is_initialized()) {
+        std::cerr << "Warning: Attempting to print mappings before tokenizer initialization" << std::endl;
+        return;
+    }
+
+    std::cout << "Special Token IDs:\n"
+              << "PAD: " << get_pad_token_id() << "\n"
+              << "UNK: " << get_unk_token_id() << "\n"
+              << "BOS: " << get_bos_token_id() << "\n"
+              << "EOS: " << get_eos_token_id() << "\n"
+              << "MASK: " << get_mask_token_id() << std::endl;
+}
+
+void TiktokenTokenizer::save(std::ostream& os) const {
+    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
+    
+    // Write version
+    uint32_t version = 1;
+    os.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    
+    // Write vocab size
+    uint32_t vocab_size = static_cast<uint32_t>(pimpl_->vocab_size());
+    os.write(reinterpret_cast<const char*>(&vocab_size), sizeof(vocab_size));
+    
+    // Write vocabulary
+    for (const auto& [token, id] : token_to_id_) {
+        uint32_t token_length = static_cast<uint32_t>(token.length());
+        os.write(reinterpret_cast<const char*>(&token_length), sizeof(token_length));
+        os.write(token.c_str(), token_length);
+        os.write(reinterpret_cast<const char*>(&id), sizeof(id));
+    }
+}
+
+std::vector<std::string> TiktokenTokenizer::get_vocabulary_vector() const {
+    if (!is_initialized()) throw std::runtime_error("Tokenizer not initialized");
+    
+    std::vector<std::string> vocab;
+    vocab.reserve(pimpl_->vocab_size());
+    
+    // Get all tokens by decoding their IDs
+    for (size_t i = 0; i < pimpl_->vocab_size(); i++) {
+        vocab.push_back(decode({static_cast<int>(i)}));
+    }
+    
+    return vocab;
+}
+
+void TiktokenTokenizer::initialize_token_categories() {
+    // Initialize verb tokens
+    verb_tokens_ = {
+        "run", "walk", "jump", "eat", "sleep", "write", "read",
+        "speak", "listen", "think", "feel", "see", "hear", "touch",
+        "smell", "taste", "move", "stop", "start", "finish"
+    };
+
+    // Initialize adjective tokens
+    adjective_tokens_ = {
+        "big", "small", "fast", "slow", "hot", "cold", "good", "bad",
+        "happy", "sad", "angry", "calm", "loud", "quiet", "bright", "dark"
+    };
+
+    // Initialize noun tokens
+    noun_tokens_ = {
+        "man", "woman", "child", "dog", "cat", "house", "car", "tree",
+        "book", "phone", "computer", "food", "water", "time", "day", "night"
+    };
+
+    // Initialize determiner tokens
+    determiner_tokens_ = {
+        "the", "a", "an", "this", "that", "these", "those", "my",
+        "your", "his", "her", "its", "our", "their", "any", "some"
+    };
+}
 
 // Helper to identify if a phrase is a verb or adjective
 bool is_phrase_type(const std::string& phrase, bool check_verbs = false) {
@@ -141,299 +279,6 @@ std::vector<std::pair<std::string, std::string>> extract_phrase_pairs(const std:
     return pairs;
 }
 
-void TiktokenTokenizer::initialize(const std::string& encoding_name) {
-    try {
-        std::cout << "Initializing custom tokenizer for noun phrase completion..." << std::endl;
-        
-        // Find our data files
-        std::vector<std::filesystem::path> possible_paths = {
-            "data/training_pairs.txt",
-            "../data/training_pairs.txt",
-            "../../data/training_pairs.txt",
-            std::filesystem::current_path() / "data/training_pairs.txt",
-            std::filesystem::current_path() / "../data/training_pairs.txt"
-        };
-        
-        std::filesystem::path training_path;
-        for (const auto& path : possible_paths) {
-            if (std::filesystem::exists(path)) {
-                training_path = path;
-                break;
-            }
-        }
-        
-        if (training_path.empty()) {
-            throw std::runtime_error("Could not find training data file");
-        }
-        
-        // Get validation file path
-        auto validation_path = training_path.parent_path() / "validation_pairs.txt";
-        if (!std::filesystem::exists(validation_path)) {
-            throw std::runtime_error("Could not find validation data file");
-        }
-        
-        std::cout << "Found data files:\n"
-                  << "- Training: " << training_path << "\n"
-                  << "- Validation: " << validation_path << std::endl;
-        
-        // Extract all phrase pairs
-        auto training_pairs = extract_phrase_pairs(training_path.string());
-        auto validation_pairs = extract_phrase_pairs(validation_path.string());
-        
-        // Collect target phrases and their frequencies
-        std::unordered_map<std::string, int> adjective_freq;
-        std::unordered_map<std::string, int> verb_freq;
-        std::unordered_map<std::string, int> other_target_freq;
-        std::vector<std::string> all_targets;
-        
-        // First pass: separate adjectives, verbs and other targets
-        for (const auto& [context, target] : training_pairs) {
-            if (is_phrase_type(target, false)) {  // Check for adjectives
-                adjective_freq[target]++;
-            } else if (is_phrase_type(target, true)) {  // Check for verbs
-                verb_freq[target]++;
-            } else {
-                other_target_freq[target]++;
-            }
-            all_targets.push_back(target);
-        }
-        for (const auto& [context, target] : validation_pairs) {
-            if (is_phrase_type(target, false)) {  // Check for adjectives
-                adjective_freq[target]++;
-            } else if (is_phrase_type(target, true)) {  // Check for verbs
-                verb_freq[target]++;
-            } else {
-                other_target_freq[target]++;
-            }
-            all_targets.push_back(target);
-        }
-        
-        std::cout << "Extracted " << all_targets.size() << " total phrases" << std::endl;
-        std::cout << "Found " << adjective_freq.size() << " unique adjective phrases" << std::endl;
-        std::cout << "Found " << verb_freq.size() << " unique verb phrases" << std::endl;
-        std::cout << "Found " << other_target_freq.size() << " other unique phrases" << std::endl;
-        
-        // Initialize vocabulary with special tokens
-        std::vector<std::string> vocab = {
-            "<pad>", "<unk>", "<s>", "</s>", "<mask>", "|"
-        };
-        
-        // Sort adjectives by frequency
-        std::vector<std::pair<std::string, int>> sorted_adjectives(adjective_freq.begin(), adjective_freq.end());
-        std::sort(sorted_adjectives.begin(), sorted_adjectives.end(),
-                 [](const auto& a, const auto& b) { return a.second > b.second; });
-        
-        // Sort verbs by frequency
-        std::vector<std::pair<std::string, int>> sorted_verbs(verb_freq.begin(), verb_freq.end());
-        std::sort(sorted_verbs.begin(), sorted_verbs.end(),
-                 [](const auto& a, const auto& b) { return a.second > b.second; });
-        
-        // Sort other targets by frequency
-        std::vector<std::pair<std::string, int>> sorted_others(other_target_freq.begin(), other_target_freq.end());
-        std::sort(sorted_others.begin(), sorted_others.end(),
-                 [](const auto& a, const auto& b) { return a.second > b.second; });
-        
-        // Reserve space for adjectives and verbs (ensure they get good token IDs)
-        size_t adjective_quota = std::min(size_t(target_vocab_size * 0.3), sorted_adjectives.size());
-        size_t verb_quota = std::min(size_t(target_vocab_size * 0.3), sorted_verbs.size());
-        
-        // Add adjectives and verbs first to ensure they get good token IDs
-        for (const auto& [phrase, freq] : sorted_adjectives) {
-            if (vocab.size() >= tokens::MASK_ID + 1 + adjective_quota) break;
-            
-            // Ensure the phrase starts with a space
-            std::string token = phrase;
-            if (!token.empty() && token[0] != ' ') {
-                token = " " + token;
-            }
-            vocab.push_back(token);
-        }
-        
-        for (const auto& [phrase, freq] : sorted_verbs) {
-            if (vocab.size() >= tokens::MASK_ID + 1 + adjective_quota + verb_quota) break;
-            
-            // Ensure the phrase starts with a space
-            std::string token = phrase;
-            if (!token.empty() && token[0] != ' ') {
-                token = " " + token;
-            }
-            vocab.push_back(token);
-        }
-        
-        // Then add other frequent phrases
-        for (const auto& [phrase, freq] : sorted_others) {
-            if (vocab.size() >= target_vocab_size) break;
-            
-            std::string token = phrase;
-            if (!token.empty() && token[0] != ' ') {
-                token = " " + token;
-            }
-            vocab.push_back(token);
-        }
-        
-        // If we still have space, add individual words
-        if (vocab.size() < target_vocab_size) {
-            std::unordered_map<std::string, int> word_freq;
-            std::regex word_pattern(R"(\s*([a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*|[.,!?;]))");
-            
-            // Prioritize words from adjective phrases
-            for (const auto& [phrase, _] : sorted_adjectives) {
-                auto words_begin = std::sregex_iterator(phrase.begin(), phrase.end(), word_pattern);
-                auto words_end = std::sregex_iterator();
-                
-                for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-                    std::string word = " " + i->str();
-                    word_freq[word] += 2;  // Give higher weight to adjective words
-                }
-            }
-            
-            // Then add words from other phrases
-            for (const auto& [phrase, _] : sorted_others) {
-                auto words_begin = std::sregex_iterator(phrase.begin(), phrase.end(), word_pattern);
-                auto words_end = std::sregex_iterator();
-                
-                for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-                    std::string word = " " + i->str();
-                    word_freq[word]++;
-                }
-            }
-            
-            // Sort words by frequency
-            std::vector<std::pair<std::string, int>> sorted_words(word_freq.begin(), word_freq.end());
-            std::sort(sorted_words.begin(), sorted_words.end(),
-                     [](const auto& a, const auto& b) { return a.second > b.second; });
-            
-            // Add remaining words
-            for (const auto& [word, freq] : sorted_words) {
-                if (vocab.size() >= target_vocab_size) break;
-                vocab.push_back(word);
-            }
-        }
-        
-        // Create token mappings (rest of the initialization remains the same)
-        token_to_id_.clear();
-        id_to_token_.clear();
-        
-        // Add special tokens with fixed IDs
-        token_to_id_["<pad>"] = tokens::PAD_ID;
-        token_to_id_["<unk>"] = tokens::UNK_ID;
-        token_to_id_["<s>"] = tokens::BOS_ID;
-        token_to_id_["</s>"] = tokens::EOS_ID;
-        token_to_id_["<mask>"] = tokens::MASK_ID;
-        token_to_id_["|"] = tokens::SEP_ID;
-        
-        id_to_token_[tokens::PAD_ID] = "<pad>";
-        id_to_token_[tokens::UNK_ID] = "<unk>";
-        id_to_token_[tokens::BOS_ID] = "<s>";
-        id_to_token_[tokens::EOS_ID] = "</s>";
-        id_to_token_[tokens::MASK_ID] = "<mask>";
-        id_to_token_[tokens::SEP_ID] = "|";
-        
-        // Add vocabulary tokens with consecutive IDs
-        int next_id = tokens::MASK_ID + 1;
-        for (const auto& token : vocab) {
-            if (token_to_id_.find(token) == token_to_id_.end()) {
-                token_to_id_[token] = next_id;
-                id_to_token_[next_id] = token;
-                next_id++;
-            }
-        }
-        
-        vocab_size_ = id_to_token_.size();
-        
-        // Print statistics
-        std::cout << "\nVocabulary statistics:" << std::endl;
-        std::cout << "- Total vocabulary size: " << vocab_size_ << std::endl;
-        std::cout << "- Special tokens: 6" << std::endl;
-        
-        // Count marked patterns
-        size_t marked_adjective_count = 0;
-        size_t marked_verb_count = 0;
-        
-        for (const auto& [phrase, _] : sorted_adjectives) {
-            if (phrase.find('*') != std::string::npos) {
-                marked_adjective_count++;
-            }
-        }
-        
-        for (const auto& [phrase, _] : sorted_verbs) {
-            if (phrase.find('#') != std::string::npos) {
-                marked_verb_count++;
-            }
-        }
-        
-        std::cout << "- Marked adjective phrases: " << marked_adjective_count << std::endl;
-        std::cout << "- Regular adjective phrases: " << (sorted_adjectives.size() - marked_adjective_count) << std::endl;
-        std::cout << "- Total adjective phrases: " << sorted_adjectives.size() << std::endl;
-        std::cout << "- Marked verb phrases: " << marked_verb_count << std::endl;
-        std::cout << "- Regular verb phrases: " << (sorted_verbs.size() - marked_verb_count) << std::endl;
-        std::cout << "- Total verb phrases: " << sorted_verbs.size() << std::endl;
-        std::cout << "- Other phrases: " << std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota - verb_quota) << std::endl;
-        std::cout << "- Individual words: " << (vocab_size_ - 6 - std::min(adjective_quota, sorted_adjectives.size()) 
-                                              - std::min(verb_quota, sorted_verbs.size()) 
-                                              - std::min(sorted_others.size(), target_vocab_size - 6 - adjective_quota - verb_quota)) << std::endl;
-        
-        // Print most common adjectives
-        std::cout << "\nTop 10 most common adjective phrases:" << std::endl;
-        size_t adjective_count = 0;
-        for (const auto& [phrase, freq] : sorted_adjectives) {
-            if (adjective_count >= 10) break;
-            std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
-            adjective_count++;
-        }
-        
-        // Print most common verbs if any exist
-        if (!sorted_verbs.empty()) {
-            std::cout << "\nTop 10 most common verb phrases:" << std::endl;
-            size_t verb_count = 0;
-            for (const auto& [phrase, freq] : sorted_verbs) {
-                if (verb_count >= 10) break;
-                std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
-                verb_count++;
-            }
-        }
-        
-        // Print most common marked adjectives if any exist
-        if (marked_adjective_count > 0) {
-            std::cout << "\nTop 5 most common marked adjective phrases:" << std::endl;
-            size_t marked_count = 0;
-            for (const auto& [phrase, freq] : sorted_adjectives) {
-                if (phrase.find('*') != std::string::npos) {
-                    std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
-                    marked_count++;
-                    if (marked_count >= 5) break;
-                }
-            }
-        }
-        
-        // Print most common marked verbs if any exist
-        if (marked_verb_count > 0) {
-            std::cout << "\nTop 5 most common marked verb phrases:" << std::endl;
-            size_t marked_count = 0;
-            for (const auto& [phrase, freq] : sorted_verbs) {
-                if (phrase.find('#') != std::string::npos) {
-                    std::cout << "- " << phrase << ": " << freq << " occurrences" << std::endl;
-                    marked_count++;
-                    if (marked_count >= 5) break;
-                }
-            }
-        }
-        
-        // Print most common other phrases
-        std::cout << "\nTop 10 most common other phrases:" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(10), sorted_others.size()); i++) {
-            const auto& [phrase, freq] = sorted_others[i];
-            std::cout << std::setw(3) << (i + 1) << ". '" << phrase << "': " 
-                      << freq << " occurrences" << std::endl;
-        }
-        
-        is_initialized_ = true;
-        
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to initialize tokenizer: " + std::string(e.what()));
-    }
-}
-
 std::vector<int> TiktokenTokenizer::encode(const std::string& text, bool add_special_tokens) const {
     std::vector<int> tokens;
     
@@ -499,7 +344,7 @@ std::string TiktokenTokenizer::decode(const std::vector<int>& token_ids, bool sk
 
 // Helper function to tokenize text segments
 std::vector<int> TiktokenTokenizer::tokenize_text(const std::string& text) const {
-    if (!is_initialized_) {
+    if (!initialized_) {
         throw std::runtime_error("Tokenizer not initialized");
     }
     
@@ -539,7 +384,7 @@ std::vector<int> TiktokenTokenizer::tokenize_text(const std::string& text) const
 
 // Helper function to decode individual tokens
 std::string TiktokenTokenizer::decode_token(int token_id) const {
-    if (!is_initialized_) {
+    if (!initialized_) {
         throw std::runtime_error("Tokenizer not initialized");
     }
     

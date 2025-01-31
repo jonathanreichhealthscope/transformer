@@ -1,34 +1,36 @@
-#pragma once
-#include "attention.hpp"
-#include "cache.hpp"
-#include "components.hpp"
-#include "config.hpp"
-#include "dropout.hpp"
-#include "embeddings.hpp"
-#include "feed_forward.hpp"
-#include "gradient_checkpoint.hpp"
-#include "half_precision.hpp"
-#include "layer_norm.hpp"
-#include "lm_head.hpp"
-#include "memory_pool.hpp"
-#include "phrase_types.hpp"
-#include "../include/tokenizer.hpp"
-#include <functional>
+#ifndef TRANSFORMER_HPP
+#define TRANSFORMER_HPP
+
 #include <memory>
 #include <vector>
+#include <string>
+#include <optional>
+#include <functional>
 #include <random>
+
+#include "matrix.hpp"
+#include "embeddings.hpp"  // Includes TokenEmbedding and PositionalEncoding
+#include "attention.hpp"
+#include "layer_norm.hpp"
+#include "feed_forward.hpp"
+#include "dropout.hpp"
+#include "lm_head.hpp"
+#include "config.hpp"
+#include "cache.hpp"
+#include "components.hpp"
+#include "gradient_checkpoint.hpp"
+#include "half_precision.hpp"
+#include "memory_pool.hpp"
+#include "phrase_types.hpp"
+#include "tokenizer.hpp"
 
 // Forward declarations
 class TransformerLayer;
-class TokenEmbedding;
-class PositionalEncoding;
 class LayerNorm;
 class LanguageModelHead;
 class Dropout;
 class KVCache;
 class Matrix;
-class Tokenizer;
-
 class MultiHeadAttention;
 class FeedForward;
 
@@ -219,8 +221,8 @@ class TransformerLayer {
  */
 class Transformer {
 private:
-    // Configuration
-    const TransformerConfig& config;
+    // Change from reference to value to avoid const issues
+    TransformerConfig config;  // Store by value instead of reference
 
     // Components
     std::unique_ptr<TokenEmbedding> token_embedding;
@@ -321,7 +323,7 @@ public:
      * @brief Constructs a transformer model with the given configuration.
      * @param config Configuration parameters for the transformer
      */
-    explicit Transformer(const TransformerConfig& config);
+    explicit Transformer(const TransformerConfig& config_);  // Just declaration, no implementation
 
     /**
      * @brief Performs the forward pass through the transformer.
@@ -480,3 +482,7 @@ private:
         const Tokenizer& tokenizer
     );
 };
+
+class PositionalEncoding;  // Forward declaration is enough since we include embeddings.hpp
+
+#endif // TRANSFORMER_HPP

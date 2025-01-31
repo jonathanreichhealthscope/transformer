@@ -54,8 +54,7 @@ public:
         const Matrix& logits,
         const Tokenizer& tokenizer,
         Transformer& transformer,
-        int k = 5,
-        std::mt19937* gen = nullptr
+        int k
     );
     static std::vector<std::pair<std::string, std::string>> create_training_data();
     static void
@@ -143,16 +142,32 @@ public:
         const size_t vocab_size = output.cols();
         Matrix gradient(batch_size, vocab_size);
 
-        #pragma omp parallel for collapse(2)
+        // For each example in the batch
+        #pragma omp parallel for
         for (size_t i = 0; i < batch_size; ++i) {
+            // First compute softmax probabilities
+            float max_logit = -std::numeric_limits<float>::infinity();
             for (size_t j = 0; j < vocab_size; ++j) {
-                if (target_distribution(i, j) > 0.0f) {
-                    const float epsilon = 1e-10f;
-                    float pred = std::clamp(output(i, j), epsilon, 1.0f - epsilon);
-                    gradient(i, j) = (pred - target_distribution(i, j)) / (pred * (1.0f - pred));
-                } else {
-                    gradient(i, j) = 0.0f;
-                }
+                max_logit = std::max(max_logit, output(i, j));
+            }
+
+            std::vector<float> probs(vocab_size);
+            float sum_exp = 0.0f;
+            for (size_t j = 0; j < vocab_size; ++j) {
+                probs[j] = std::exp(output(i, j) - max_logit);
+                sum_exp += probs[j];
+            }
+
+            // Normalize to get probabilities
+            const float eps = 1e-10f;
+            sum_exp = std::max(sum_exp, eps);
+            for (size_t j = 0; j < vocab_size; ++j) {
+                probs[j] /= sum_exp;
+            }
+
+            // Compute gradients: softmax derivative * cross-entropy derivative
+            for (size_t j = 0; j < vocab_size; ++j) {
+                gradient(i, j) = probs[j] - target_distribution(i, j);
             }
         }
 

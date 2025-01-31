@@ -223,11 +223,10 @@ Matrix FeedForward::backward(const Matrix& grad_output, const Matrix& input) {
     }
 }
 
-void FeedForward::update_parameters(const Matrix& grad) {
-    const float max_grad_norm = 1.0f;
-    const float learning_rate = 0.001f;  // Reduced from 0.01f
+void FeedForward::update_parameters(const Matrix& grad, float learning_rate) {
+    const float max_grad_norm = 5.0f;  // Match global clipping threshold
     
-    // Compute gradient norm for ff1_weights
+    // Compute gradient norms
     float grad_norm_ff1 = 0.0f;
     #pragma omp parallel for reduction(+:grad_norm_ff1)
     for (size_t i = 0; i < grads_.ff1_grad.size(); ++i) {
@@ -235,7 +234,6 @@ void FeedForward::update_parameters(const Matrix& grad) {
     }
     grad_norm_ff1 = std::sqrt(grad_norm_ff1);
     
-    // Compute gradient norm for ff2_weights
     float grad_norm_ff2 = 0.0f;
     #pragma omp parallel for reduction(+:grad_norm_ff2)
     for (size_t i = 0; i < grads_.ff2_grad.size(); ++i) {
@@ -248,8 +246,9 @@ void FeedForward::update_parameters(const Matrix& grad) {
     float scale_ff2 = std::min(max_grad_norm / (grad_norm_ff2 + 1e-6f), 1.0f);
     
     // Debug output
-    std::cout << "Gradient norms - FF1: " << grad_norm_ff1 << ", FF2: " << grad_norm_ff2 << std::endl;
-    std::cout << "Scaling factors - FF1: " << scale_ff1 << ", FF2: " << scale_ff2 << std::endl;
+    std::cout << "FF Gradient norms - FF1: " << grad_norm_ff1 << ", FF2: " << grad_norm_ff2 << std::endl;
+    std::cout << "FF Scaling factors - FF1: " << scale_ff1 << ", FF2: " << scale_ff2 << std::endl;
+    std::cout << "Learning rate: " << learning_rate << std::endl;
     
     // Update first layer weights with clipping
     #pragma omp parallel for collapse(2)

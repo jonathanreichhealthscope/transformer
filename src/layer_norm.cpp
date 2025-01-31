@@ -21,6 +21,7 @@ Matrix LayerNorm::forward(const Matrix& input) {
         std::cout << "\n=== LayerNorm::forward START ===" << std::endl;
         std::cout << "Input dims: " << input.rows() << "x" << input.cols() << std::endl;
         std::cout << "Expected hidden_size: " << hidden_size_ << std::endl;
+        std::cout << "Using epsilon: " << eps_ << std::endl;
         
         if (input.cols() != hidden_size_) {
             std::cout << "Input shape: " << input.rows() << "x" << input.cols() << std::endl;
@@ -61,7 +62,7 @@ Matrix LayerNorm::forward(const Matrix& input) {
         std::cout << "Gamma dims: " << params_.gamma.rows() << "x" << params_.gamma.cols() << std::endl;
         std::cout << "Beta dims: " << params_.beta.rows() << "x" << params_.beta.cols() << std::endl;
 
-        // Normalize and apply scale/shift
+        // Normalize and apply scale/shift using configured epsilon
         #pragma omp parallel for collapse(2)
         for (size_t i = 0; i < input.rows(); i++) {
             for (size_t j = 0; j < input.cols(); j++) {
@@ -81,27 +82,24 @@ Matrix LayerNorm::forward(const Matrix& input) {
 Matrix LayerNorm::compute_gradients(const Matrix& grad_output) {
     try {
         std::cout << "\n=== LayerNorm::compute_gradients START ===" << std::endl;
-        std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols() << std::endl;
-        std::cout << "input_cache_ dims: " << input_cache_.rows() << "x" << input_cache_.cols() << std::endl;
-
-        Matrix grad_input(input_cache_.rows(), input_cache_.cols());
-        std::cout << "grad_input dims: " << grad_input.rows() << "x" << grad_input.cols() << std::endl;
-
-        Matrix mean(input_cache_.rows(), 1);
-        Matrix var(input_cache_.rows(), 1);
-        std::cout << "mean dims: " << mean.rows() << "x" << mean.cols() << std::endl;
-        std::cout << "var dims: " << var.rows() << "x" << var.cols() << std::endl;
-
-        // Compute mean and variance
+        Matrix grad_input(grad_output.rows(), grad_output.cols());
+        
+        // Compute mean and variance for backward pass
+        Matrix mean(input_cache_.rows(), 1, 0.0f);
+        Matrix var(input_cache_.rows(), 1, 0.0f);
+        
         #pragma omp parallel for
         for (size_t i = 0; i < input_cache_.rows(); i++) {
             float sum = 0.0f;
-            float sum_sq = 0.0f;
             for (size_t j = 0; j < input_cache_.cols(); j++) {
                 sum += input_cache_(i, j);
             }
             mean(i, 0) = sum / input_cache_.cols();
-
+        }
+        
+        #pragma omp parallel for
+        for (size_t i = 0; i < input_cache_.rows(); i++) {
+            float sum_sq = 0.0f;
             for (size_t j = 0; j < input_cache_.cols(); j++) {
                 float diff = input_cache_(i, j) - mean(i, 0);
                 sum_sq += diff * diff;
@@ -109,7 +107,7 @@ Matrix LayerNorm::compute_gradients(const Matrix& grad_output) {
             var(i, 0) = sum_sq / input_cache_.cols();
         }
 
-        // Compute gradients
+        // Compute gradients using configured epsilon
         #pragma omp parallel for collapse(2)
         for (size_t i = 0; i < input_cache_.rows(); i++) {
             for (size_t j = 0; j < input_cache_.cols(); j++) {

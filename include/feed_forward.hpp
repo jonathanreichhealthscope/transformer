@@ -142,7 +142,7 @@ class FeedForward {
     bool is_training() const { return training_; }
 
     // Parameter updates
-    void update_parameters(const Matrix& grad);
+    void update_parameters(const Matrix& grad, float learning_rate);
 
     /**
      * @brief Initialize the feed forward layer weights and biases

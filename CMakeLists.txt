@@ -103,6 +103,7 @@ set(CORE_SOURCES
     src/matrix.cpp
     src/data_augmentation.cpp
     src/lm_head.cpp
+    src/hyperparameter_tuner.cpp
     # Add training components
     src/training/loss_tracker.cpp
     src/training/gradient_manager.cpp

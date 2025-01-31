@@ -6,6 +6,7 @@
 #include "../include/utils.hpp"
 #include "../include/phrase_analysis.hpp"
 #include "../include/training/training.hpp"  // Include unified training header
+#include "../include/hyperparameter_tuner.hpp"
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -566,7 +567,7 @@ int main(int argc, char* argv[]) {
         tokenizer = std::make_unique<Tokenizer>("gpt2");
         
         try {
-            tokenizer->initialize();  // Initialize with default encoding
+            tokenizer->initialize("cl100k_base");  // Or whatever default encoding you want to use
             std::cout << "Initialized tokenizer. Vocabulary size: " 
                       << tokenizer->vocab_size() << std::endl;
                       
@@ -666,6 +667,47 @@ int main(int argc, char* argv[]) {
         float best_cv_loss = initial_cv_loss;
         size_t epochs_without_improvement = 0;
         const size_t PATIENCE = 3;
+
+        // After loading data but before training loop
+        std::cout << "\nStarting hyperparameter tuning phase..." << std::endl;
+        
+        // Initialize hyperparameter tuner
+        HyperparameterRanges ranges;  // Now defined
+        HyperparameterTuner tuner(ranges, 20, 5);  // Now defined
+        
+        // Run hyperparameter tuning
+        std::cout << "Running hyperparameter tuning with " << training_pairs.size() 
+                  << " training examples..." << std::endl;
+        auto tuning_results = tuner.tune(training_pairs, *tokenizer);
+        
+        // Get best configuration
+        auto best_config = tuner.get_best_config();
+        
+        // Save tuning results
+        std::string tuning_results_path = save_directory + "/tuning_results.json";
+        tuner.save_results(tuning_results_path);
+        
+        std::cout << "\nHyperparameter tuning complete!" << std::endl;
+        std::cout << "Best configuration achieved validation loss: " 
+                  << tuning_results[0].mean_validation_loss << std::endl;
+        
+        // Update transformer config with best hyperparameters
+        config = best_config.to_transformer_config();
+        
+        // Reinitialize transformer with best config
+        transformer = Transformer(config);
+        std::cout << "Reinitialized transformer with best hyperparameters" << std::endl;
+        
+        // Update training parameters from best config
+        const float initial_lr = best_config.initial_lr;
+        const float peak_lr = best_config.peak_lr;
+        const size_t warmup_steps = best_config.warmup_steps;
+        const float decay_factor = best_config.decay_factor;
+        const float gradient_clip_threshold = best_config.gradient_clip_threshold;
+        const size_t early_stopping_patience = best_config.early_stopping_patience;
+        const float early_stopping_threshold = best_config.early_stopping_threshold;
+        
+        std::cout << "\nStarting main training with best hyperparameters..." << std::endl;
 
         for (size_t epoch = 0; epoch < config.num_epochs; ++epoch) {
             std::cout << "Epoch " << epoch + 1 << "/" << config.num_epochs << "\n";
@@ -797,25 +839,35 @@ int main(int argc, char* argv[]) {
                 }
                 grad_norm = std::sqrt(grad_norm);
 
-                // Calculate learning rate
-                const size_t warmup_steps = 1000;
-                const size_t decay_steps = 10000;
-                const float min_lr = 1e-6f;
-                const float max_lr = 1e-3f;
-
+                // Calculate learning rate using tuned parameters
                 float current_lr;
                 if (global_step < warmup_steps) {
-                    current_lr = min_lr + (max_lr - min_lr) * (float)global_step / warmup_steps;
+                    // Linear warmup
+                    current_lr = initial_lr + (peak_lr - initial_lr) * (float)global_step / warmup_steps;
                 } else {
-                    float progress = (float)(global_step - warmup_steps) / decay_steps;
-                    float cosine_decay = 0.5f * (1.0f + std::cos(progress * M_PI));
-                    current_lr = min_lr + (max_lr - min_lr) * cosine_decay;
+                    // Cosine decay with tuned decay factor
+                    float steps_after_warmup = global_step - warmup_steps;
+                    float decay = std::pow(decay_factor, steps_after_warmup / 1000.0f);  // Decay every 1000 steps
+                    current_lr = peak_lr * decay;
+                }
+                
+                // Ensure learning rate doesn't go below initial_lr
+                current_lr = std::max(current_lr, initial_lr);
+
+                // Apply gradient clipping
+                if (grad_norm > gradient_clip_threshold) {
+                    float scale = gradient_clip_threshold / (grad_norm + 1e-6f);
+                    for (size_t i = 0; i < loss_gradients.size(); i++) {
+                        loss_gradients.data()[i] *= scale;
+                    }
+                    grad_norm = gradient_clip_threshold;
                 }
 
                 // Print training statistics
                 std::cout << "\nTraining Statistics (Batch " << batch + 1 << "):" << std::endl;
                 std::cout << "Batch Loss: " << batch_loss << std::endl;
                 std::cout << "Gradient Norm: " << grad_norm << std::endl;
+                std::cout << "Learning Rate: " << current_lr << std::endl;
 
                 // Generate predictions every 2 batches
                 if ((batch + 1) % 2 == 0) {
@@ -893,10 +945,10 @@ int main(int argc, char* argv[]) {
             // Perform cross-validation every few epochs
             if ((epoch + 1) % 3 == 0) {  // Every 3 epochs
                 float cv_loss = Utils::perform_cross_validation(transformer, *tokenizer, all_data, 
-                                                              NUM_FOLDS, EARLY_STOPPING_THRESHOLD);
+                                                              NUM_FOLDS, early_stopping_threshold);
                 std::cout << "Cross-validation loss after epoch " << epoch + 1 << ": " << cv_loss << std::endl;
                 
-                // Early stopping based on cross-validation
+                // Early stopping based on cross-validation with tuned parameters
                 if (cv_loss < best_cv_loss) {
                     best_cv_loss = cv_loss;
                     epochs_without_improvement = 0;
@@ -909,17 +961,18 @@ int main(int argc, char* argv[]) {
                     }
                 } else {
                     epochs_without_improvement++;
-                    if (epochs_without_improvement >= PATIENCE) {
-                        std::cout << "Early stopping triggered after " << epoch + 1 << " epochs" << std::endl;
+                    if (epochs_without_improvement >= early_stopping_patience) {
+                        std::cout << "Early stopping triggered after " << epoch + 1 
+                                 << " epochs (patience: " << early_stopping_patience << ")" << std::endl;
                         break;
                     }
                 }
                 
-                // Check for significant overfitting
+                // Check for significant overfitting using tuned threshold
                 float train_val_ratio = cv_loss / (epoch_loss / total_batches);
-                if (train_val_ratio > EARLY_STOPPING_THRESHOLD) {
+                if (train_val_ratio > early_stopping_threshold) {
                     std::cout << "Significant overfitting detected (ratio: " << train_val_ratio 
-                              << "). Stopping training." << std::endl;
+                             << " > threshold: " << early_stopping_threshold << "). Stopping training." << std::endl;
                     break;
                 }
             }
