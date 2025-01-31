@@ -390,11 +390,14 @@ std::vector<std::pair<std::string, std::string>> Utils::create_training_data() {
     }
 
     std::string line;
-    std::unordered_map<std::string, int> token_frequency;
     std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> category_pairs;
     std::unordered_set<std::string> seen_pairs;
     
+    // First, read all pairs and categorize them
     while (std::getline(file, line)) {
+        // Skip empty lines
+        if (line.empty()) continue;
+
         // Normalize separators
         std::string normalized_line = line;
         std::replace(normalized_line.begin(), normalized_line.end(), '#', '|');
@@ -434,31 +437,42 @@ std::vector<std::pair<std::string, std::string>> Utils::create_training_data() {
         }
     }
     
-    // Balance categories
-    size_t min_category_size = std::numeric_limits<size_t>::max();
+    // Print initial statistics
+    std::cout << "\nInitial Training Data Statistics:" << std::endl;
+    size_t total_pairs = 0;
+    size_t max_category_size = 0;
     for (const auto& [category, pairs] : category_pairs) {
-        min_category_size = std::min(min_category_size, pairs.size());
+        std::cout << category << " pairs: " << pairs.size() << std::endl;
+        total_pairs += pairs.size();
+        max_category_size = std::max(max_category_size, pairs.size());
     }
-    
-    // Sample evenly from each category
+    std::cout << "Total pairs before balancing: " << total_pairs << std::endl;
+
+    // Instead of taking the minimum, we'll take up to 80% of the largest category size
+    size_t target_size = static_cast<size_t>(max_category_size * 0.8);
+    std::cout << "Target size per category: " << target_size << std::endl;
+
+    // Random number generator for shuffling
     std::mt19937 gen(42);  // Fixed seed for reproducibility
+    
+    // Sample from each category
     for (const auto& [category, pairs] : category_pairs) {
         std::vector<size_t> indices(pairs.size());
         std::iota(indices.begin(), indices.end(), 0);
         std::shuffle(indices.begin(), indices.end(), gen);
         
-        // Take min_category_size samples from each category
-        for (size_t i = 0; i < min_category_size; ++i) {
+        // Take up to target_size samples from each category
+        size_t samples_to_take = std::min(target_size, pairs.size());
+        for (size_t i = 0; i < samples_to_take; ++i) {
             training_pairs.push_back(pairs[indices[i]]);
         }
     }
     
-    std::cout << "\nTraining Data Statistics:" << std::endl;
+    // Shuffle the final training pairs
+    std::shuffle(training_pairs.begin(), training_pairs.end(), gen);
+    
+    std::cout << "\nFinal Training Data Statistics:" << std::endl;
     std::cout << "Total pairs after balancing: " << training_pairs.size() << std::endl;
-    for (const auto& [category, pairs] : category_pairs) {
-        std::cout << category << " pairs: " << pairs.size() 
-                  << " (used " << min_category_size << ")" << std::endl;
-    }
     
     return training_pairs;
 }
