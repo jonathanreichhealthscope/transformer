@@ -73,8 +73,16 @@ Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
     // hidden_states: [batch_size x hidden_size]
     // projection: [hidden_size x vocab_size]
     // result: [batch_size x vocab_size]
+    std::cout << "\nLM Head matrix dimensions:" << std::endl;
+    std::cout << "hidden_states: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+    std::cout << "projection: " << projection.rows() << "x" << projection.cols() << std::endl;
+    
     Matrix logits(hidden_states.rows(), vocab_size_);  // Initialize with correct dimensions
+    std::cout << "pre-allocated logits: " << logits.rows() << "x" << logits.cols() << std::endl;
+    
     cuda::matmul(hidden_states, projection, logits);  // Now cuda namespace should be recognized
+    
+    std::cout << "after matmul logits: " << logits.rows() << "x" << logits.cols() << std::endl;
     
     // Add bias
     for (size_t i = 0; i < logits.rows(); ++i) {

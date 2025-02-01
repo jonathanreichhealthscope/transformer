@@ -136,97 +136,7 @@ float compute_loss(const Matrix& logits, const std::vector<int>& target_tokens, 
     return loss / std::max(static_cast<float>(target_tokens.size()), epsilon);
 }
 
-// Update the training loop
-void train_epoch(Transformer& model, const std::vector<std::pair<std::string, std::string>>& training_pairs,
-                float learning_rate, const Tokenizer& tokenizer) {
-    if (!training_manager) {
-        training_manager = std::make_unique<TrainingStateManager>(learning_rate);
-    }
-    if (!training_monitor) {
-        training_monitor = std::make_unique<TrainingMonitor>();
-    }
 
-    for (const auto& [context, target] : training_pairs) {
-        // Determine the phrase type based on the target
-        PhraseType phrase_type = PhraseTypeHandler::detect_phrase_type(target);
-        std::string delimiter = PhraseTypeHandler::get_delimiter(phrase_type);
-        
-        // Combine context and target with appropriate delimiter
-        std::string full_text = context + delimiter + target;
-        std::string final_phrase = PhraseTypeHandler::extract_final_phrase(full_text);
-        
-        // Tokenize
-        std::vector<int> tokens = tokenizer.encode(full_text);
-        std::vector<int> final_phrase_tokens = tokenizer.encode(final_phrase);
-        
-        // Forward pass
-        Matrix logits = model.forward(tokens, full_text, tokenizer);
-        float loss = compute_loss(logits, tokens, tokenizer);
-        
-        // Add type-specific penalties
-        switch (phrase_type) {
-            case PhraseType::VERB:
-                loss += compute_verb_penalty(logits, final_phrase_tokens, tokenizer);
-                break;
-            case PhraseType::ADJECTIVE:
-                loss += compute_adjective_penalty(logits, final_phrase_tokens, tokenizer);
-                break;
-            default:
-                break;
-        }
-        
-        // Create gradients
-        Matrix loss_gradients(logits.rows(), logits.cols());
-        for (size_t i = 0; i < logits.rows(); i++) {
-            for (size_t j = 0; j < logits.cols(); j++) {
-                float base_gradient = logits(i, j) - (j < tokens.size() ? 1.0f : 0.0f);
-                switch (phrase_type) {
-                    case PhraseType::VERB:
-                        base_gradient *= verb_gradient_factor(j, tokens, tokenizer);
-                        break;
-                    case PhraseType::ADJECTIVE:
-                        base_gradient *= adjective_gradient_factor(j, tokens, tokenizer);
-                        break;
-                    default:
-                        break;
-                }
-                loss_gradients(i, j) = base_gradient;
-            }
-        }
-        
-        // Update training state
-        TrainingMetrics metrics(
-            loss,                                                   // loss
-            loss_gradients,                                        // gradients
-            global_step / training_pairs.size(),                   // epoch
-            global_step,                                           // step
-            0.0f,                                                  // loss_trend (Will be computed by state manager)
-            RunningStatistics()                                    // grad_stats (Will be updated by state manager)
-        );
-        
-        training_manager->update_state(metrics);
-        training_monitor->log_metrics(metrics);
-        
-        // Check if we should stop training
-        if (training_monitor->should_stop_training()) {
-            std::cout << "Training stopped due to monitor conditions" << std::endl;
-            return;
-        }
-        
-        // Get current learning rate from manager
-        float current_lr = training_manager->get_learning_rate();
-        
-        // Only proceed with update if training is stable
-        if (training_manager->is_stable()) {
-            model.backward(loss_gradients, tokens, current_lr);
-            model.update_parameters(current_lr);
-        } else {
-            std::cout << "Skipping update due to instability" << std::endl;
-        }
-        
-        global_step++;
-    }
-}
 
 // Helper functions for phrase type-specific loss components
 float compute_verb_penalty(const Matrix& logits, const std::vector<int>& final_tokens,
@@ -920,7 +830,10 @@ int main(int argc, char* argv[]) {
                 std::cout << "Flattened batch size: " << flattened_batch.size() << " tokens\n";
 
                 // Forward pass through the model
-                Matrix logits = transformer.forward(flattened_batch, "", *tokenizer);
+                Matrix hidden_states = transformer.forward(flattened_batch, "", *tokenizer);
+
+                // Project hidden states to vocabulary space using LM head
+                Matrix logits = transformer.get_lm_head()->forward(hidden_states);
 
                 // Compute batch loss
                 float batch_loss = Utils::compute_batch_loss(logits, target_distribution, *tokenizer);
@@ -956,6 +869,10 @@ int main(int argc, char* argv[]) {
                     }
                     grad_norm = gradient_clip_threshold;
                 }
+
+                // Backward pass and parameter update
+                transformer.backward(loss_gradients, flattened_batch, current_lr);
+                transformer.update_parameters(current_lr);
 
                 // Print training statistics
                 std::cout << "\nTraining Statistics (Batch " << batch + 1 << "):" << std::endl;

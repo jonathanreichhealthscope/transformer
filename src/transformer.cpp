@@ -437,8 +437,11 @@ Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::str
     // Cache final hidden states for backward pass
     GradientCheckpoint::cache_activation("final_hidden_states", hidden_states);
     
-    // Return hidden states directly (don't project to vocab space here)
-    return hidden_states;  // This will be in hidden_size dimension
+    // Project hidden states to vocabulary space using LM head
+    Matrix logits = lm_head->forward(hidden_states);
+    
+    // Return logits
+    return logits;
 }
 
 void Transformer::clear_kv_cache() {
