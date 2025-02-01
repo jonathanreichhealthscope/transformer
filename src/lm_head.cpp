@@ -1,5 +1,6 @@
 #include "../include/lm_head.hpp"
 #include "../include/token_constants.hpp"
+#include "../include/cuda/matrix_ops.cuh"  // Add CUDA matrix operations header
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -68,11 +69,12 @@ Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
     // Cache hidden states for backward pass
     hidden_states_ = hidden_states;
     
-    // Project hidden states to vocabulary space using transposed projection
+    // Project hidden states to vocabulary space using CUDA matrix multiplication
     // hidden_states: [batch_size x hidden_size]
     // projection: [hidden_size x vocab_size]
     // result: [batch_size x vocab_size]
-    Matrix logits = matmul(hidden_states, projection);
+    Matrix logits(hidden_states.rows(), vocab_size_);  // Initialize with correct dimensions
+    cuda::matmul(hidden_states, projection, logits);  // Now cuda namespace should be recognized
     
     // Add bias
     for (size_t i = 0; i < logits.rows(); ++i) {

@@ -86,16 +86,21 @@ namespace cuda {
         float beta = 0.0f;
 
         // For row-major matrices A[m,k] * B[k,n] = C[m,n], we compute:
-        // C = B^T * A^T in column-major order
-        // This is because (AB)^T = B^T * A^T
+        // C = A * B in column-major order
         cublasStatus_t status = cublasSgemm(cublas_handle,
-                                          CUBLAS_OP_T, CUBLAS_OP_T,  // Transpose both operands
-                                          B.cols(), A.rows(), A.cols(),
+                                          CUBLAS_OP_N, CUBLAS_OP_N,  // No transposition needed
+                                          B.cols(), A.rows(), A.cols(),  // Dimensions for the operation
                                           &alpha,
-                                          d_B, B.rows(),  // Leading dimension is rows for B
-                                          d_A, A.rows(),  // Leading dimension is rows for A
+                                          d_B, B.cols(),  // Leading dimension is cols for B
+                                          d_A, A.cols(),  // Leading dimension is cols for A
                                           &beta,
                                           d_C, B.cols()); // Leading dimension is cols for C
+
+        // Print dimensions for debugging
+        std::cout << "Matrix multiplication dimensions:" << std::endl;
+        std::cout << "A: " << A.rows() << "x" << A.cols() << std::endl;
+        std::cout << "B: " << B.rows() << "x" << B.cols() << std::endl;
+        std::cout << "C: " << C.rows() << "x" << C.cols() << std::endl;
 
         if (status != CUBLAS_STATUS_SUCCESS) {
             cudaFree(d_A);
