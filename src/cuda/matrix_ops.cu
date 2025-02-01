@@ -10,19 +10,53 @@ __global__ void matrix_multiply_kernel(const float* A, const float* B, float* C,
 __global__ void gelu_forward_kernel(float* x, int size);
 
 namespace cuda {
-    // Global cuBLAS handle
-    static cublasHandle_t cublas_handle;
+    // Global cuBLAS handle with proper initialization
+    static cublasHandle_t cublas_handle = nullptr;
+    static bool cuda_initialized = false;
 
     void initialize_cuda() {
-        CUDA_CHECK(cudaSetDevice(0));
-        CUBLAS_CHECK(cublasCreate(&cublas_handle));
+        if (cuda_initialized) {
+            return;
+        }
+
+        // Set CUDA device
+        cudaError_t err = cudaSetDevice(0);
+        if (err != cudaSuccess) {
+            throw std::runtime_error("Failed to set CUDA device: " + std::string(cudaGetErrorString(err)));
+        }
+        std::cout << "CUDA device set successfully" << std::endl;
+
+        // Print CUDA device properties
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, 0);
+        std::cout << "Using CUDA device: " << prop.name << std::endl;
+        std::cout << "Compute capability: " << prop.major << "." << prop.minor << std::endl;
+
+        // Initialize cuBLAS
+        cublasStatus_t status = cublasCreate(&cublas_handle);
+        if (status != CUBLAS_STATUS_SUCCESS) {
+            throw std::runtime_error("Failed to create cuBLAS handle: " + std::to_string(status));
+        }
+        std::cout << "cuBLAS handle created successfully" << std::endl;
+
+        cuda_initialized = true;
     }
 
     void cleanup_cuda() {
-        CUBLAS_CHECK(cublasDestroy(cublas_handle));
+        if (cublas_handle != nullptr) {
+            cublasDestroy(cublas_handle);
+            cublas_handle = nullptr;
+            cuda_initialized = false;
+            std::cout << "cuBLAS handle destroyed successfully" << std::endl;
+        }
     }
 
     void matmul(const Matrix& A, const Matrix& B, Matrix& C) {
+        // Ensure CUDA is initialized
+        if (!cuda_initialized || cublas_handle == nullptr) {
+            initialize_cuda();
+        }
+
         // Verify dimensions
         if (A.cols() != B.rows()) {
             throw std::runtime_error("Matrix multiplication dimension mismatch: " +
@@ -35,9 +69,7 @@ namespace cuda {
                 std::to_string(A.rows()) + "x" + std::to_string(B.cols()) + " got " +
                 std::to_string(C.rows()) + "x" + std::to_string(C.cols()));
         }
-        dim3 block(32, 32);
-        dim3 grid((B.cols() + 31) / 32, (A.rows() + 31) / 32);
-        
+
         float* d_A, *d_B, *d_C;
         size_t A_size = A.rows() * A.cols() * sizeof(float);
         size_t B_size = B.rows() * B.cols() * sizeof(float);
@@ -50,7 +82,27 @@ namespace cuda {
         CUDA_CHECK(cudaMemcpy(d_A, A.data(), A_size, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_B, B.data(), B_size, cudaMemcpyHostToDevice));
 
-        matrix_multiply_kernel<<<grid, block>>>(d_A, d_B, d_C, A.rows(), B.cols(), A.cols());
+        float alpha = 1.0f;
+        float beta = 0.0f;
+
+        // For row-major matrices A[m,k] * B[k,n] = C[m,n], we compute:
+        // C = B^T * A^T in column-major order
+        // This is because (AB)^T = B^T * A^T
+        cublasStatus_t status = cublasSgemm(cublas_handle,
+                                          CUBLAS_OP_T, CUBLAS_OP_T,  // Transpose both operands
+                                          B.cols(), A.rows(), A.cols(),
+                                          &alpha,
+                                          d_B, B.rows(),  // Leading dimension is rows for B
+                                          d_A, A.rows(),  // Leading dimension is rows for A
+                                          &beta,
+                                          d_C, B.cols()); // Leading dimension is cols for C
+
+        if (status != CUBLAS_STATUS_SUCCESS) {
+            cudaFree(d_A);
+            cudaFree(d_B);
+            cudaFree(d_C);
+            throw std::runtime_error("cuBLAS matrix multiplication failed with status: " + std::to_string(status));
+        }
 
         CUDA_CHECK(cudaMemcpy(C.data(), d_C, C_size, cudaMemcpyDeviceToHost));
 

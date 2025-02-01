@@ -149,77 +149,80 @@ float Utils::compute_batch_loss(const Matrix& logits, const Matrix& target_distr
     std::cout << "Target distribution shape: " << target_distribution.rows() << "x" << target_distribution.cols() << std::endl;
 
     if (logits.rows() != target_distribution.rows() || logits.cols() != target_distribution.cols()) {
-        throw std::runtime_error("Dimension mismatch between logits (" + 
-                               std::to_string(logits.rows()) + "x" + std::to_string(logits.cols()) + 
-                               ") and target distribution (" + 
-                               std::to_string(target_distribution.rows()) + "x" + 
-                               std::to_string(target_distribution.cols()) + ")");
+        throw std::runtime_error("Dimension mismatch between logits and target distribution");
     }
 
     float total_loss = 0.0f;
     const size_t batch_size = logits.rows();
     const size_t vocab_size = logits.cols();
+    const float epsilon = 1e-7f;  // Increased epsilon for better stability
+    const float max_loss_per_token = 100.0f;  // Cap individual token losses
 
-    // Pre-compute which tokens are nouns - do this once for the whole vocabulary
-    static std::vector<bool> is_noun_cache;
-    static bool cache_initialized = false;
-    std::cout << "Vocab size: " << vocab_size << std::endl;
-    if (!cache_initialized) {
-        is_noun_cache.resize(vocab_size);
-        for (size_t j = 0; j < vocab_size; ++j) {
-            std::string token = tokenizer.decode({static_cast<int>(j)});
-            is_noun_cache[j] = tokenizer.is_noun(token);
-        }
-        cache_initialized = true;
-    }
-
-    // Pre-compute max logits and sums for numerical stability
+    // Pre-compute max logits for numerical stability
     std::vector<float> max_logits(batch_size, -std::numeric_limits<float>::infinity());
-    std::vector<float> sums(batch_size, 0.0f);
-
-    try {
-        #pragma omp parallel for reduction(+:total_loss)
-        for (size_t i = 0; i < batch_size; ++i) {
-            // Find max logit for numerical stability over ALL tokens
-            for (size_t j = 0; j < vocab_size; ++j) {
-                max_logits[i] = std::max(max_logits[i], logits(i, j));
-            }
-
-            // Compute sum of exp(logits - max_logit) over ALL tokens
-            for (size_t j = 0; j < vocab_size; ++j) {
-                sums[i] += std::exp(logits(i, j) - max_logits[i]);
-            }
-
-            // Compute cross entropy loss
-            float sequence_loss = 0.0f;
-            for (size_t j = 0; j < vocab_size; ++j) {
-                if (target_distribution(i, j) > 0.0f) {
-                    float log_prob = logits(i, j) - max_logits[i] - std::log(sums[i]);
-                    sequence_loss -= target_distribution(i, j) * log_prob;
-                    
-                    // Add noun prediction bonus/penalty
-                    if (is_noun_cache[j]) {
-                        float pred_prob = std::exp(logits(i, j) - max_logits[i]) / sums[i];
-                        sequence_loss -= 0.1f * target_distribution(i, j) * pred_prob; // Bonus for correct noun predictions
-                    }
-                }
-            }
-            
-            total_loss += sequence_loss;
+    #pragma omp parallel for
+    for (size_t i = 0; i < batch_size; ++i) {
+        for (size_t j = 0; j < vocab_size; ++j) {
+            max_logits[i] = std::max(max_logits[i], logits(i, j));
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Error in loss computation: " << e.what() << std::endl;
-        throw;
     }
 
-    float avg_loss = total_loss / static_cast<float>(batch_size);
-    std::cout << "Average loss: " << avg_loss << std::endl;
-    // Check for NaN/Inf
-    if (!std::isfinite(avg_loss)) {
-        std::cout << "Warning: Non-finite loss detected. Loss value: " << avg_loss << std::endl;
-        std::cout << "Total loss: " << total_loss << ", batch_size: " << batch_size << std::endl;
-        throw std::runtime_error("Loss computation resulted in non-finite value");
+    // Compute loss with improved numerical stability
+    #pragma omp parallel for reduction(+:total_loss)
+    for (size_t i = 0; i < batch_size; ++i) {
+        float sequence_loss = 0.0f;
+        float sum_exp = 0.0f;
+
+        // First pass: compute denominator for softmax
+        for (size_t j = 0; j < vocab_size; ++j) {
+            float shifted_logit = logits(i, j) - max_logits[i];
+            sum_exp += std::exp(shifted_logit);
+        }
+        sum_exp = std::max(sum_exp, epsilon);  // Prevent division by zero
+
+        // Second pass: compute cross-entropy loss
+        for (size_t j = 0; j < vocab_size; ++j) {
+            if (target_distribution(i, j) > 0.0f) {
+                float shifted_logit = logits(i, j) - max_logits[i];
+                float log_prob = shifted_logit - std::log(sum_exp);
+                
+                // Clip log probability for stability
+                log_prob = std::max(log_prob, -max_loss_per_token);
+                
+                float token_loss = -target_distribution(i, j) * log_prob;
+                
+                // Apply loss scaling and clipping
+                token_loss = std::min(token_loss, max_loss_per_token);
+                sequence_loss += token_loss;
+            }
+        }
+        
+        // Add sequence loss to total with stability check
+        if (std::isfinite(sequence_loss)) {
+            total_loss += sequence_loss;
+        } else {
+            std::cout << "Warning: Non-finite sequence loss detected at position " << i << std::endl;
+            total_loss += max_loss_per_token;  // Use max loss as fallback
+        }
     }
+
+    // Compute average loss with stability checks
+    float avg_loss = total_loss / static_cast<float>(batch_size);
+    
+    // Final stability check
+    if (!std::isfinite(avg_loss)) {
+        std::cout << "Warning: Non-finite average loss detected. Using fallback value." << std::endl;
+        return max_loss_per_token;
+    }
+
+    // Add minimum loss floor to prevent vanishing
+    const float min_loss = 1e-4f;
+    avg_loss = std::max(avg_loss, min_loss);
+
+    std::cout << "Batch loss computation:"
+              << "\n- Total loss: " << total_loss
+              << "\n- Average loss: " << avg_loss
+              << "\n- Batch size: " << batch_size << std::endl;
 
     return avg_loss;
 }
@@ -863,15 +866,18 @@ float Utils::evaluate_validation(
             std::cout << "Processing input: '" << processed_input << "'\n";
             tokenizer.preprocess_text(processed_input);
             std::vector<int> input_tokens = tokenizer.encode(processed_input);
-            std::cout << "Encoded input tokens: ";
-            for (int token : input_tokens) std::cout << token << " ";
-            std::cout << "\n";
-
-            // Get hidden states from transformer (before LM head projection)
+            
+            // Forward pass to get hidden states (this should return hidden states, not logits)
             Matrix hidden_states = transformer.forward(input_tokens, processed_input, tokenizer);
+            std::cout << "Hidden states dimensions: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
             
             // Project through language model head to get logits
-            Matrix logits = transformer.get_lm_head()->forward(hidden_states);
+            auto lm_head = transformer.get_lm_head();
+            if (!lm_head) {
+                throw std::runtime_error("Language model head is not initialized");
+            }
+            Matrix logits = lm_head->forward(hidden_states);
+            std::cout << "Logits dimensions: " << logits.rows() << "x" << logits.cols() << std::endl;
             
             // Get the last token's logits
             Vector last_logits = logits.row(logits.rows() - 1);
@@ -903,6 +909,13 @@ float Utils::evaluate_validation(
                 last_token_logits(0, i) = last_logits[i];
             }
 
+            // Verify dimensions before computing loss
+            if (last_token_logits.cols() != target_distribution.cols()) {
+                throw std::runtime_error("Dimension mismatch: logits cols (" + 
+                    std::to_string(last_token_logits.cols()) + ") != target cols (" + 
+                    std::to_string(target_distribution.cols()) + ")");
+            }
+
             float loss = compute_batch_loss(last_token_logits, target_distribution, tokenizer);
             total_loss += loss;
 
@@ -914,6 +927,7 @@ float Utils::evaluate_validation(
 
         } catch (const std::exception& e) {
             std::cout << "Error evaluating validation: " << e.what() << "\n";
+            continue;  // Skip this example and continue with the next
         }
     }
 

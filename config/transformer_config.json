@@ -41,7 +41,7 @@
         "max_seq_length": 512,
         "num_heads": 8,
         "num_layers": 4,
-        "vocab_size": 7000
+        "vocab_size": 2857
     },
     "optimization": {
         "gradient_accumulation_steps": 4,
@@ -86,12 +86,12 @@
             "<mask>"
         ],
         "use_subword": false,
-        "vocab_size": 1665
+        "vocab_size": 2857
     },
     "training": {
         "batch_size": 32,
-        "dropout_rate": 0.1,
-        "num_epochs": 20,
+        "dropout_rate": 0.3,
+        "num_epochs": 10,
         "weight_decay": 0.01
     },
     "vocab_size": 2857

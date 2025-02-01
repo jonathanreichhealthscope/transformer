@@ -420,123 +420,25 @@ struct BatchSequence {
 };
 
 Matrix Transformer::forward(const std::vector<int>& input_tokens, const std::string& input_text, const Tokenizer& tokenizer) {
-    std::cout << "\n=== Transformer::forward START ===" << std::endl << std::flush;
-    if (!lm_head) {
-        throw std::runtime_error("Language model head is not initialized");
-    }
-    std::cout << "Language model head is initialized" << std::endl << std::flush;
-
-    // Clear ALL states before processing new input
-    clear_kv_cache();
-    hidden_states = Matrix();
-    last_hidden_states = Matrix();
-    m_layer_activations.clear();
-    last_seq_boundaries.clear();
-    last_input_tokens_.clear();
-    last_input_query_.clear();
+    // Get embeddings
+    Matrix embeddings = token_embedding->forward(input_tokens);
     
-    // Clear gradient checkpoints
-    GradientCheckpoint::clear_cache();
-    
-    // Reset all layer states
+    // Pass through transformer layers
+    Matrix hidden_states = embeddings;
     for (auto& layer : layers) {
-        if (layer) {
-            layer->clear_cache();
-            if (auto* attention = layer->getAttention()) {
-                attention->reset_state();
-            }
-            if (auto* ffn = layer->getFeedForward()) {
-                ffn->reset_state();
-            }
-        }
+        hidden_states = layer->forward(hidden_states, AttentionMask());
     }
     
-    // Reshape input into proper batch structure
-    const size_t batch_size = 1;  // For single sequence input
-    const size_t seq_len = input_tokens.size();
-    
-    // Create proper 3D tensors for batched sequence processing
-    BatchSequence batch;
-    batch.lengths.push_back(seq_len);
-    
-    // Get embeddings with proper shape [batch_size x seq_len x hidden_size]
-    Matrix token_embeds = token_embedding->forward(input_tokens);
-    
-    // Create position indices matrix for positional encoding
-    Matrix position_ids(seq_len, 1);
-    for (size_t i = 0; i < seq_len; i++) {
-        position_ids(i, 0) = static_cast<float>(i);
-    }
-    Matrix pos_embeds = pos_encoding->forward(position_ids);
-    
-    // Combine embeddings while maintaining batch dimension
-    batch.embeddings = Matrix(batch_size * seq_len, config.hidden_size);
-    for (size_t i = 0; i < seq_len; i++) {
-        for (size_t j = 0; j < config.hidden_size; j++) {
-            batch.embeddings(i, j) = token_embeds(i, j) + pos_embeds(i, j);
-        }
-    }
-    
-    // Create proper causal attention mask [batch_size x seq_len x seq_len]
-    batch.attention_mask = Matrix(seq_len, seq_len, 0.0f);
-    for (size_t i = 0; i < seq_len; i++) {
-        for (size_t j = 0; j <= i; j++) {  // Causal masking
-            batch.attention_mask(i, j) = 1.0f;
-        }
-    }
-    
-    // Create AttentionMask from Matrix
-    AttentionMask attn_mask(batch.attention_mask);
-    
-    // Apply dropout to embeddings if in training
-    if (training && dropout) {
-        batch.embeddings = dropout->forward(batch.embeddings, true);
-    }
-    
-    // Process through transformer layers while maintaining sequence structure
-    hidden_states = batch.embeddings;
-    m_layer_activations.clear();
-    m_layer_activations.reserve(layers.size());
-    
-    // Store sequence boundaries for each layer
-    std::vector<std::pair<size_t, size_t>> seq_boundaries;
-    seq_boundaries.push_back({0, seq_len});
-    
-    // Forward through layers with proper sequence handling
-    for (size_t i = 0; i < layers.size(); i++) {
-        if (!layers[i]) continue;
-        
-        // Cache input for gradient checkpointing
-        std::string layer_key = "layer_" + std::to_string(i) + "_input";
-        GradientCheckpoint::cache_activation(layer_key, hidden_states);
-        
-        // Process through layer with proper attention masking
-        hidden_states = layers[i]->forward(hidden_states, attn_mask);
-        
-        if (training) {
-            m_layer_activations.push_back(hidden_states);
-        }
-    }
-    
-    // Apply final layer norm
+    // Apply final layer norm if present
     if (final_ln) {
         hidden_states = final_ln->forward(hidden_states);
     }
     
-    // Store sequence info for backward pass
-    last_seq_boundaries = seq_boundaries;
-    last_input_tokens_ = input_tokens;
-    last_input_query_ = input_text;
-
     // Cache final hidden states for backward pass
     GradientCheckpoint::cache_activation("final_hidden_states", hidden_states);
     
-    // Project through language model head to get logits
-    std::cout << "Projecting through language model head..." << std::endl << std::flush;
-    Matrix logits = lm_head->forward(hidden_states, training);
-    std::cout << "Language model head projection complete" << std::endl << std::flush;
-    
-    return logits;  // Return logits instead of hidden states
+    // Return hidden states directly (don't project to vocab space here)
+    return hidden_states;  // This will be in hidden_size dimension
 }
 
 void Transformer::clear_kv_cache() {

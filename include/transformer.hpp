@@ -417,8 +417,7 @@ public:
 
     bool verify_state() const {
         return token_embedding && pos_encoding && final_ln && lm_head && !layers.empty() &&
-               std::all_of(layers.begin(), layers.end(),
-                           [](const auto& layer) { return layer != nullptr; });
+               std::all_of(layers.begin(), layers.end(), [](const auto& layer) { return layer != nullptr; });
     }
 
     bool is_training() const {

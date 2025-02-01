@@ -8,6 +8,8 @@
 #include "../include/training/training.hpp"  // Include unified training header
 #include "../include/hyperparameter_tuner.hpp"
 #include "../include/count_vocabulary.hpp"
+#include "../include/cuda/matrix_ops.cuh"
+#include <iostream>
 
 // Add necessary forward declarations and structures
 std::unique_ptr<Tokenizer> tokenizer;
@@ -546,11 +548,15 @@ void test_model_predictions(Transformer& transformer, std::unique_ptr<Tokenizer>
 }
 
 int main(int argc, char* argv[]) {
-    std::cout << "entering main" << std::endl;
-    Logger& logger = Logger::getInstance();
-    logger.startLogging();
-
     try {
+        // Initialize CUDA at program startup
+        cuda::initialize_cuda();
+        std::cout << "CUDA initialized successfully" << std::endl;
+
+        std::cout << "entering main" << std::endl;
+        Logger& logger = Logger::getInstance();
+        logger.startLogging();
+
         // Initialize random number generation
         Utils::initialize_random();
         std::filesystem::path exe_path = std::filesystem::current_path().parent_path();
@@ -1179,15 +1185,11 @@ int main(int argc, char* argv[]) {
         // Test model predictions
         test_model_predictions(transformer, tokenizer);
 
+        // Cleanup CUDA before exit
+        cuda::cleanup_cuda();
+        return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
-
-#ifdef CUDA_AVAILABLE
-    cleanup_cuda(); // Cleanup at program end
-#endif
-    logger.stopLogging();
-    std::cout << "exiting main" << std::endl;
-    return 0;
 }

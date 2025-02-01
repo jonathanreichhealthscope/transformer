@@ -38,8 +38,19 @@
 class Tokenizer;
 class Matrix;
 class Transformer;
+class TransformerConfig;
 class LanguageModelHead;
 
 // Declare global variables as extern
 extern std::unique_ptr<Tokenizer> tokenizer;
 extern PerformanceMetrics metrics;
+
+#ifndef MAIN_HPP
+#define MAIN_HPP
+
+#include <memory>
+#include <string>
+
+// Add any other necessary declarations here
+
+#endif // MAIN_HPP
