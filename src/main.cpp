@@ -513,6 +513,38 @@ void reinitialize_batch_weights(Transformer& transformer, const TransformerConfi
     }
 }
 
+void test_model_predictions(Transformer& transformer, std::unique_ptr<Tokenizer>& tokenizer) {
+    std::vector<std::string> test_queries = {
+        "The cat begins to",          // Simple action start
+        "The old house looks very",   // Descriptive context
+        "I want to quickly",          // Personal intention
+        "The bright sun makes me feel", // Sensory experience
+        "The computer starts to",     // Technical context
+        "The musician skillfully",    // Professional action
+        "The food tastes extremely",  // Sensory description
+        "The children love to",       // Group action
+        "The storm makes the trees",  // Nature action
+        "The painting appears"        // Art observation
+    };
+
+    for (const auto& test_input : test_queries) {
+        std::cout << "\n=== Testing Query: \"" << test_input << "\" ===\n";
+        
+        std::string processed_input = test_input;
+        tokenizer->preprocess_text(processed_input);
+        std::vector<int> test_tokens = tokenizer->encode(processed_input);
+        
+        // Get model prediction
+        transformer.set_training(false);  // Set to evaluation mode
+        Matrix test_hidden = transformer.forward(test_tokens, "", *tokenizer);
+        Matrix logits = transformer.get_lm_head()->forward(test_hidden);
+        
+        // Show the top predictions
+        std::cout << "\nTop Predictions:\n";
+        Utils::print_top_predictions(logits, *tokenizer, transformer, 5);
+    }
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "entering main" << std::endl;
     Logger& logger = Logger::getInstance();
@@ -924,15 +956,21 @@ int main(int argc, char* argv[]) {
                 std::cout << "Batch Loss: " << batch_loss << std::endl;
                 std::cout << "Gradient Norm: " << grad_norm << std::endl;
                 std::cout << "Learning Rate: " << current_lr << std::endl;
-
+                
                 // Generate predictions every 2 batches
                 if ((batch + 1) % 2 == 0) {
                     // Make predictions after each batch
-                    generate_predictions(transformer, "I go to", tokenizer.get());
+                    generate_predictions(transformer, "I go to the", tokenizer.get());
                     generate_predictions(transformer, "The weather is", tokenizer.get());
                     generate_predictions(transformer, "I want to", tokenizer.get());
                     generate_predictions(transformer, "The cat", tokenizer.get());
                     generate_predictions(transformer, "She likes to", tokenizer.get());
+                    // Add 5 more diverse queries
+                    generate_predictions(transformer, "The students eagerly", tokenizer.get());  // Academic/action context
+                    generate_predictions(transformer, "The ocean waves", tokenizer.get());       // Nature/movement context
+                    generate_predictions(transformer, "His voice sounds", tokenizer.get());      // Sensory/descriptive context
+                    generate_predictions(transformer, "The code begins to", tokenizer.get());    // Technical/action context
+                    generate_predictions(transformer, "The chef skillfully", tokenizer.get());   // Professional/adverb context
                 }
 
                 // Print progress and metrics every 10 batches
@@ -1137,6 +1175,9 @@ int main(int argc, char* argv[]) {
                       << std::endl;
             return 1;
         }
+
+        // Test model predictions
+        test_model_predictions(transformer, tokenizer);
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

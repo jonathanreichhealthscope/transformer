@@ -220,4 +220,6 @@ public:
         random_generator = std::mt19937(seq);
         prediction_counter = 0;
     }
+
+    static void generate_predictions(Transformer& transformer, const std::string& input_text, Tokenizer* tokenizer);
 };

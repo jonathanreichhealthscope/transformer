@@ -857,114 +857,27 @@ float Utils::evaluate_validation(
     transformer.set_training(false); // Set model to evaluation mode
 
     for (const auto& pair : validation_data) {
-        // Preprocess input
-        std::string processed_input = pair.first;
-        std::cout << "Processing input: '" << processed_input << "'\n";
-        tokenizer.preprocess_text(processed_input);
-        std::cout << "Preprocessed input: '" << processed_input << "'\n";
-
-        std::vector<int> input_tokens = tokenizer.encode(processed_input);
-        std::cout << "Encoded input tokens: ";
-        for (int token : input_tokens) {
-            std::cout << token << " ";
-        }
-        std::cout << "\n";
-
-        // Skip empty sequences
-        if (input_tokens.empty()) {
-            std::cout << "Warning: Empty input tokens, skipping\n";
-            continue;
-        }
-
-        // Validate input tokens
-        if (!Utils::validate_input_sequence(input_tokens, tokenizer.vocab_size())) {
-            std::cout << "Warning: Invalid input sequence, skipping\n";
-            continue;
-        }
-
         try {
-            // Get model prediction
-            std::cout << "Calling transformer.forward with " << input_tokens.size() << " tokens\n";
-            Matrix output = transformer.forward(input_tokens, "", tokenizer);
-            std::cout << "Forward pass output shape: " << output.rows() << "x" << output.cols()
-                      << "\n";
+            // Preprocess input
+            std::string processed_input = pair.first;
+            std::cout << "Processing input: '" << processed_input << "'\n";
+            tokenizer.preprocess_text(processed_input);
+            std::vector<int> input_tokens = tokenizer.encode(processed_input);
+            std::cout << "Encoded input tokens: ";
+            for (int token : input_tokens) std::cout << token << " ";
+            std::cout << "\n";
 
-            if (output.rows() == 0 || output.cols() == 0) {
-                std::cout << "Warning: Empty output from transformer, skipping\n";
-                continue;
-            }
-
-            auto lm_head = transformer.get_lm_head();
-            if (!lm_head) {
-                std::cerr << "Error: Language model head not initialized. Initializing now...\n";
-                std::cout << "Error: Null language model head\n";
-                continue;
-            }
-
-            Matrix logits = lm_head->forward(output);
-            std::cout << "Logits shape: " << logits.rows() << "x" << logits.cols() << "\n";
-
-            // Apply token prediction parameters
-            std::vector<float> last_logits;
-            for (size_t i = 0; i < logits.cols(); i++) {
-                last_logits.push_back(logits(logits.rows() - 1, i));
-            }
-
-            // Apply temperature scaling
-            for (auto& logit : last_logits) {
-                logit /= tp_config.temperature;
-            }
-
-            // Apply top-p sampling
-            if (tp_config.top_p < 1.0f) {
-                std::vector<std::pair<float, size_t>> prob_idx;
-                float max_logit = *std::max_element(last_logits.begin(), last_logits.end());
-                float sum_exp = 0.0f;
-
-                for (size_t i = 0; i < last_logits.size(); i++) {
-                    float prob = std::exp(last_logits[i] - max_logit);
-                    sum_exp += prob;
-                    prob_idx.push_back({prob, i});
-                }
-
-                // Normalize and sort
-                for (auto& pair : prob_idx) {
-                    pair.first /= sum_exp;
-                }
-                std::sort(prob_idx.begin(), prob_idx.end(),
-                          std::greater<std::pair<float, size_t>>());
-
-                // Apply nucleus sampling
-                float cumsum = 0.0f;
-                std::vector<bool> keep_token(last_logits.size(), false);
-                for (const auto& [prob, idx] : prob_idx) {
-                    if (cumsum >= tp_config.top_p) break;
-                    keep_token[idx] = true;
-                    cumsum += prob;
-                }
-
-                // Zero out logits outside the nucleus
-                for (size_t i = 0; i < last_logits.size(); i++) {
-                    if (!keep_token[i]) {
-                        last_logits[i] = -std::numeric_limits<float>::infinity();
-                    }
-                }
-            }
-
-            // Apply category bonuses
-            for (size_t i = 0; i < last_logits.size(); i++) {
-                std::string token = tokenizer.decode({static_cast<int>(i)});
-                if (tokenizer.is_verb(token)) {
-                    last_logits[i] *= (1.0f + tp_config.category_bonus.verb);
-                } else if (tokenizer.is_adjective(token)) {
-                    last_logits[i] *= (1.0f + tp_config.category_bonus.adjective);
-                } else if (tokenizer.is_noun(token)) {
-                    last_logits[i] *= (1.0f + tp_config.category_bonus.noun);
-                }
-            }
-
-            // Find predicted token
-            int predicted_token = -1;
+            // Get hidden states from transformer (before LM head projection)
+            Matrix hidden_states = transformer.forward(input_tokens, processed_input, tokenizer);
+            
+            // Project through language model head to get logits
+            Matrix logits = transformer.get_lm_head()->forward(hidden_states);
+            
+            // Get the last token's logits
+            Vector last_logits = logits.row(logits.rows() - 1);
+            
+            // Get predicted token
+            int predicted_token = 0;
             float max_logit = -std::numeric_limits<float>::infinity();
             for (size_t i = 0; i < last_logits.size(); i++) {
                 if (last_logits[i] > max_logit) {
@@ -1392,4 +1305,64 @@ float Utils::perform_cross_validation(Transformer& transformer, const Tokenizer&
     std::cout << "Early Stops: " << early_stops << "/" << num_folds << std::endl;
     
     return mean_val_loss;
+}
+
+void Utils::generate_predictions(Transformer& transformer, const std::string& input_text, Tokenizer* tokenizer) {
+    std::cout << "\n=== Generating predictions for: '" << input_text << "' ===" << std::endl;
+    
+    // Preprocess input
+    std::string processed_input = input_text;
+    tokenizer->preprocess_text(processed_input);
+    std::vector<int> input_tokens = tokenizer->encode(processed_input);
+    
+    // Get model prediction
+    transformer.set_training(false);  // Set to evaluation mode
+    Matrix hidden_states = transformer.forward(input_tokens, processed_input, *tokenizer);
+    Matrix logits = transformer.get_lm_head()->forward(hidden_states);
+    
+    // Get probabilities for last token
+    Vector last_logits = logits.row(logits.rows() - 1);
+    std::vector<std::pair<float, int>> token_probs;
+    
+    // Convert logits to probabilities using softmax
+    float max_logit = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < last_logits.size(); i++) {
+        max_logit = std::max(max_logit, last_logits[i]);
+    }
+    
+    float sum_exp = 0.0f;
+    for (size_t i = 0; i < last_logits.size(); i++) {
+        float prob = std::exp(last_logits[i] - max_logit);
+        sum_exp += prob;
+        token_probs.push_back({prob, static_cast<int>(i)});
+    }
+    
+    // Normalize probabilities
+    for (auto& pair : token_probs) {
+        pair.first /= sum_exp;
+    }
+    
+    // Sort by probability
+    std::sort(token_probs.begin(), token_probs.end(),
+              std::greater<std::pair<float, int>>());
+    
+    // Print top 5 predictions
+    std::cout << "Top 5 predictions:" << std::endl;
+    for (int i = 0; i < std::min(5, static_cast<int>(token_probs.size())); i++) {
+        float prob = token_probs[i].first;
+        int token_id = token_probs[i].second;
+        std::string token = tokenizer->decode({token_id});
+        
+        // Add token type annotation
+        std::string token_type = "";
+        if (tokenizer->is_verb(token)) token_type = " (VERB)";
+        else if (tokenizer->is_adjective(token)) token_type = " (ADJ)";
+        else if (tokenizer->is_noun(token)) token_type = " (NOUN)";
+        
+        std::cout << i + 1 << ". \"" << token << "\"" << token_type 
+                  << " (p=" << std::fixed << std::setprecision(4) << prob * 100 << "%)" << std::endl;
+    }
+    
+    std::cout << "===" << std::endl;
+    transformer.set_training(true);  // Reset to training mode
 }
