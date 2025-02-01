@@ -21,35 +21,48 @@ extern cublasHandle_t cublas_handle;
 // LearningRateScheduler implementation
 class LearningRateScheduler {
 public:
-    LearningRateScheduler(float initial_lr = 0.0001f,  // Increased initial learning rate
-                         float peak_lr = 0.001f,       // Increased peak learning rate
-                         int warmup_steps = 1000,      // More warmup steps
-                         float decay_factor = 0.98f)   // Slower decay
+    LearningRateScheduler(float initial_lr = 0.00001f,  // Reduced initial learning rate
+                         float peak_lr = 0.0001f,       // Reduced peak learning rate
+                         int warmup_steps = 2000,      // More warmup steps
+                         float decay_factor = 0.95f)   // Faster decay
         : initial_lr_(initial_lr), peak_lr_(peak_lr), 
-          warmup_steps_(warmup_steps), decay_factor_(decay_factor) {
+          warmup_steps_(warmup_steps), decay_factor_(decay_factor),
+          min_lr_(initial_lr * 0.1f)  // Add minimum learning rate
+    {
         std::cout << "LR Schedule: initial=" << initial_lr 
                   << ", peak=" << peak_lr 
-                  << ", warmup_steps=" << warmup_steps << std::endl;
+                  << ", warmup_steps=" << warmup_steps 
+                  << ", min_lr=" << min_lr_ << std::endl;
     }
 
     float get_lr(int step) {
         if (step < warmup_steps_) {
-            // Cosine warmup for smoother transition
+            // Smoother warmup using quadratic growth
             float progress = static_cast<float>(step) / warmup_steps_;
-            float warmup_factor = (1.0f - std::cos(progress * M_PI)) * 0.5f;
+            float warmup_factor = progress * progress;  // Quadratic growth
             return initial_lr_ + (peak_lr_ - initial_lr_) * warmup_factor;
         }
-        // Cosine decay after warmup
+        
+        // Cosine decay after warmup with minimum learning rate
         float progress = static_cast<float>(step - warmup_steps_) / 1000.0f;
         progress = std::min(1.0f, progress);
-        return peak_lr_ * (0.5f * (1.0f + std::cos(progress * M_PI))) * decay_factor_;
+        float decay = 0.5f * (1.0f + std::cos(progress * M_PI));
+        float lr = peak_lr_ * decay * std::pow(decay_factor_, (step - warmup_steps_) / 1000.0f);
+        
+        // Ensure learning rate doesn't go below minimum
+        return std::max(lr, min_lr_);
     }
 
     void set_lr(float new_lr) {
+        // Maintain ratio between initial and peak
+        float ratio = peak_lr_ / initial_lr_;
         initial_lr_ = new_lr;
-        peak_lr_ = new_lr;
+        peak_lr_ = new_lr * ratio;
+        min_lr_ = initial_lr_ * 0.1f;
+        
         std::cout << "LR Schedule: updated initial=" << initial_lr_ 
-                  << ", peak=" << peak_lr_ << std::endl;
+                  << ", peak=" << peak_lr_
+                  << ", min=" << min_lr_ << std::endl;
     }
 
 private:
@@ -57,6 +70,7 @@ private:
     float peak_lr_;
     int warmup_steps_;
     float decay_factor_;
+    float min_lr_;  // Add minimum learning rate
 };
 
 // TransformerLayer implementation
@@ -1274,8 +1288,9 @@ bool Transformer::is_likely_adjective(const std::string& token) const {
 }
 
 void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate, const TransformerConfig& config) {
-    const float clip_threshold = 10.0f;  // Increased from 5.0f to allow larger gradients
+    const float clip_threshold = 1.0f;  // Reduced from 10.0f to be more conservative
     const float weight_decay = config.weight_decay;
+    const float max_relative_change = 0.1f;  // Maximum 10% change per update
     
     // Calculate gradient norm
     float grad_norm = 0.0f;
@@ -1287,12 +1302,20 @@ void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learnin
     }
     grad_norm = std::sqrt(grad_norm);
     
-    // Apply adaptive clipping with a softer threshold
+    // Apply more aggressive clipping with smooth transition
     float scaling_factor = 1.0f;
     if (grad_norm > clip_threshold) {
         scaling_factor = clip_threshold / (grad_norm + 1e-8f);
-        scaling_factor = std::sqrt(scaling_factor);  // Softer scaling
+        // Apply smooth transition for large gradients
+        scaling_factor = std::pow(scaling_factor, 1.5f);  // More aggressive scaling for larger gradients
     }
+    
+    // Scale learning rate based on gradient norm
+    float adaptive_lr = learning_rate;
+    if (grad_norm > 0.1f) {  // If gradients are large
+        adaptive_lr *= std::exp(-grad_norm);  // Exponentially reduce learning rate
+    }
+    adaptive_lr = std::max(adaptive_lr, learning_rate * 0.01f);  // Don't let it get too small
     
     // Update parameters with clipped gradients and weight decay
     #pragma omp parallel for collapse(2)
@@ -1300,11 +1323,17 @@ void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learnin
         for (size_t j = 0; j < param.cols(); ++j) {
             float decay = weight_decay * param(i, j);
             float update = grad(i, j) * scaling_factor + decay;
-            // Use relative clipping based on parameter magnitude
+            
+            // Limit maximum parameter change
             float param_scale = std::abs(param(i, j)) + 1e-8f;
-            float max_update = 0.2f * param_scale;  // Allow up to 20% change
+            float max_update = max_relative_change * param_scale;
             update = std::clamp(update, -max_update, max_update);
-            param(i, j) -= learning_rate * update;
+            
+            // Apply update with adaptive learning rate
+            param(i, j) -= adaptive_lr * update;
+            
+            // Add value clipping to prevent extreme values
+            param(i, j) = std::clamp(param(i, j), -100.0f, 100.0f);
         }
     }
 }
