@@ -1,4 +1,6 @@
 #pragma once
+#include "matrix.hpp"
+#include "vector.hpp"
 #include "components.hpp"
 #ifdef USE_CUDA
 #include "cuda/cuda_utils.cuh"
@@ -20,38 +22,34 @@ using FloatVector = Vector;
  * - Gradient computation for training
  */
 class FeedForward {
+  public:
+    // Make Gradients public
+    struct Gradients {
+        Matrix ff1_grad;         // Gradient for first layer weights
+        Matrix ff2_grad;         // Gradient for second layer weights
+        FloatVector ff1_bias_grad;  // Gradient for first layer bias
+        FloatVector ff2_bias_grad;  // Gradient for second layer bias
+    };
+
   private:
-    Matrix w1;                    ///< Weight matrix for the first linear transformation
-    Matrix w2;                    ///< Weight matrix for the second linear transformation
-    Vector b1;                    ///< Bias vector for the first linear transformation
-    Vector b2;                    ///< Bias vector for the second linear transformation
-    float dropout_prob;           ///< Dropout probability during training
+    // Parameter structure to hold all weights and biases
+    struct Parameters {
+        Matrix ff1_weights;
+        Matrix ff2_weights;
+        FloatVector ff1_bias;
+        FloatVector ff2_bias;
+    };
+
+    Parameters params_;
+    Gradients grads_;
+
+    // Cache for intermediate values
     Matrix intermediate_cache;    ///< Cache for intermediate activations during forward pass
     Matrix input_cache_;         ///< Cache for input during backward pass
     Matrix dropout_mask_;        ///< Dropout mask for training
     
-    // Gradient members
-    Matrix dW1_;                 ///< Gradient of loss with respect to w1
-    Matrix dW2_;                 ///< Gradient of loss with respect to w2
-    Vector db1_;                 ///< Gradient of loss with respect to b1
-    Vector db2_;                 ///< Gradient of loss with respect to b2
-
-    /**
-     * @brief Container for trainable parameters.
-     * 
-     * Groups matrices and vectors for easier parameter management
-     * and optimization updates.
-     */
-    struct Parameters {
-        std::vector<std::reference_wrapper<Matrix>> matrices;  ///< References to weight matrices
-        std::vector<std::reference_wrapper<Vector>> vectors;   ///< References to bias vectors
-    };
-
-    Parameters params;                  ///< Container for trainable parameters
-    mutable Parameters param_gradients; ///< Container for parameter gradients
-
-    // Training mode control
-    bool training_ = true;
+    float dropout_prob;           ///< Dropout probability during training
+    bool training_ = true;        ///< Training mode control
 
   public:
     virtual ~FeedForward() = default;
@@ -93,76 +91,50 @@ class FeedForward {
      */
     static std::unique_ptr<FeedForward> load(std::istream& is);
 
-    /**
-     * @brief Gets references to all trainable weight matrices.
-     * @return Vector of references to weight matrices
-     */
+    // Update accessor methods to use Parameters structure
+    Matrix& get_ff1_weights() { return params_.ff1_weights; }
+    Matrix& get_ff2_weights() { return params_.ff2_weights; }
+    FloatVector& getBias1() { return params_.ff1_bias; }
+    FloatVector& getBias2() { return params_.ff2_bias; }
+
+    // Add const versions
+    const Matrix& get_ff1_weights() const { return params_.ff1_weights; }
+    const Matrix& get_ff2_weights() const { return params_.ff2_weights; }
+    const FloatVector& getBias1() const { return params_.ff1_bias; }
+    const FloatVector& getBias2() const { return params_.ff2_bias; }
+
+    // Add parameter accessors
+    Parameters& parameters() { return params_; }
+    Gradients& param_gradients() { return grads_; }
+    const Parameters& parameters() const { return params_; }
+    const Gradients& param_gradients() const { return grads_; }
+
+    // Update get_weights to use Parameters structure
     std::vector<std::reference_wrapper<Matrix>> get_weights() {
-        return {std::ref(w1), std::ref(w2)};
+        return {std::ref(params_.ff1_weights), std::ref(params_.ff2_weights)};
     }
 
-    friend class Transformer;
-    friend class TransformerLayer;
-
-    FloatVector& getBias1() {
-        return b1;
-    }
-    FloatVector& getBias2() {
-        return b2;
-    }
-
+    // Update copy constructor to use Parameters/Gradients
     FeedForward(const FeedForward& other)
-        : w1(other.w1), w2(other.w2), b1(other.b1), b2(other.b2), dropout_prob(other.dropout_prob),
-          intermediate_cache(other.intermediate_cache), input_cache_(other.input_cache_),
-          dropout_mask_(other.dropout_mask_), dW1_(other.dW1_), dW2_(other.dW2_),
-          db1_(other.db1_), db2_(other.db2_) {}
+        : params_(other.params_), grads_(other.grads_),
+          intermediate_cache(other.intermediate_cache),
+          input_cache_(other.input_cache_),
+          dropout_mask_(other.dropout_mask_),
+          dropout_prob(other.dropout_prob),
+          training_(other.training_) {}
 
+    // Update assignment operator to use Parameters/Gradients
     FeedForward& operator=(const FeedForward& other) {
         if (this != &other) {
-            w1 = other.w1;
-            w2 = other.w2;
-            b1 = other.b1;
-            b2 = other.b2;
-            dropout_prob = other.dropout_prob;
+            params_ = other.params_;
+            grads_ = other.grads_;
             intermediate_cache = other.intermediate_cache;
             input_cache_ = other.input_cache_;
             dropout_mask_ = other.dropout_mask_;
-            dW1_ = other.dW1_;
-            dW2_ = other.dW2_;
-            db1_ = other.db1_;
-            db2_ = other.db2_;
+            dropout_prob = other.dropout_prob;
+            training_ = other.training_;
         }
         return *this;
-    }
-
-    Parameters& parameters() {
-        params.matrices.clear();
-        params.vectors.clear();
-
-        // Matrix parameters
-        params.matrices.emplace_back(w1);
-        params.matrices.emplace_back(w2);
-
-        // Vector parameters
-        params.vectors.emplace_back(b1);
-        params.vectors.emplace_back(b2);
-
-        return params;
-    }
-
-    const Parameters& parameter_gradients() const {
-        param_gradients.matrices.clear();
-        param_gradients.vectors.clear();
-
-        // Matrix gradients
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(dW1_)));
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(dW2_)));
-
-        // Vector gradients
-        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(db1_)));
-        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(db2_)));
-
-        return param_gradients;
     }
 
     // Training mode control
@@ -170,7 +142,7 @@ class FeedForward {
     bool is_training() const { return training_; }
 
     // Parameter updates
-    void update_parameters(const Matrix& grad);
+    void update_parameters(const Matrix& grad, float learning_rate);
 
     /**
      * @brief Initialize the feed forward layer weights and biases
@@ -178,4 +150,15 @@ class FeedForward {
      * Uses Xavier/Glorot initialization for weights and small non-zero values for biases
      */
     void initialize_weights();
+
+    void reset_state() {
+        // Clear any cached intermediate computations
+        intermediate_cache = Matrix();
+        input_cache_ = Matrix();
+        dropout_mask_ = Matrix();
+    }
+
+    // Add Transformer as friend
+    friend class Transformer;
+    friend class TransformerLayer;
 };

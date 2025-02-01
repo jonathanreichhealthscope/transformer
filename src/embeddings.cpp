@@ -8,20 +8,50 @@
 TokenEmbedding::TokenEmbedding(size_t vocab_size, size_t embedding_dim)
     : weights_(vocab_size, embedding_dim), weights_grad_(vocab_size, embedding_dim),
       vocab_size_(vocab_size), embedding_dim_(embedding_dim) {
-    // Initialize weights with scaled random values
-    float scale = std::sqrt(0.2f / embedding_dim_);
-    weights_.randomize(-scale, scale);
-    weights_grad_.fill(0.0f);
-
-    // Add validation
-    bool all_zero = true;
-    for (size_t i = 0; i < std::min(size_t(10), weights_.size()); i++) {
-        if (weights_.data()[i] != 0.0f) {
-            all_zero = false;
-            break;
+    // Use a smaller scale for embeddings to prevent any token from dominating
+    float scale = std::sqrt(1.0f / embedding_dim_);  // Changed scaling factor
+    
+    // Use truncated normal distribution to prevent extreme values
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<float> dist(0.0f, scale);
+    
+    // Initialize weights with truncated normal distribution
+    for (size_t i = 0; i < weights_.rows(); i++) {
+        for (size_t j = 0; j < weights_.cols(); j++) {
+            float val;
+            do {
+                val = dist(gen);
+            } while (std::abs(val) > 2.0f * scale);  // Truncate at 2 standard deviations
+            weights_(i, j) = val;
         }
     }
-    if (all_zero) {
+    weights_grad_.fill(0.0f);
+
+    // Validate initialization
+    float min_val = std::numeric_limits<float>::infinity();
+    float max_val = -std::numeric_limits<float>::infinity();
+    float mean_val = 0.0f;
+    size_t nonzero = 0;
+    
+    for (size_t i = 0; i < weights_.rows(); i++) {
+        for (size_t j = 0; j < weights_.cols(); j++) {
+            float val = weights_(i, j);
+            min_val = std::min(min_val, val);
+            max_val = std::max(max_val, val);
+            mean_val += val;
+            if (std::abs(val) > 1e-6) nonzero++;
+        }
+    }
+    mean_val /= (weights_.rows() * weights_.cols());
+    
+    std::cout << "Embedding initialization statistics:\n"
+              << "- Scale factor: " << scale << "\n"
+              << "- Range: [" << min_val << ", " << max_val << "]\n"
+              << "- Mean: " << mean_val << "\n"
+              << "- Nonzero: " << nonzero << "/" << (weights_.rows() * weights_.cols()) << "\n";
+
+    if (nonzero == 0) {
         throw std::runtime_error("Embedding weights initialization failed - all values are zero");
     }
 }
@@ -53,8 +83,8 @@ Matrix TokenEmbedding::forward(const std::vector<int>& tokens) {
         }
     }
 
-    // Normalize output embeddings with better numerical stability
-    const float eps = 1e-6f; // Increased epsilon for stability
+    // More aggressive normalization
+    const float eps = 1e-6f;
     for (size_t i = 0; i < tokens.size(); i++) {
         float row_norm = 0.0f;
         // Compute norm for this embedding
@@ -64,11 +94,12 @@ Matrix TokenEmbedding::forward(const std::vector<int>& tokens) {
         }
         row_norm = std::sqrt(row_norm + eps);
 
-        // Clamp the norm to prevent division by very small values
-        row_norm = std::max(row_norm, 1e-3f);
-
-        // Scale this embedding
-        float scale = std::min(1.0f, 1.0f / row_norm);
+        // More aggressive normalization - don't clamp the minimum norm
+        float scale = 1.0f / (row_norm + eps);
+        
+        // Apply scaling with a maximum cap to prevent tiny values
+        scale = std::min(scale, 5.0f);
+        
         for (size_t j = 0; j < embedding_dim_; j++) {
             output(i, j) *= scale;
         }
@@ -87,17 +118,35 @@ Matrix TokenEmbedding::forward(const std::vector<int>& tokens) {
 
 Matrix TokenEmbedding::project_to_vocab(const Matrix& hidden_states) {
     Matrix logits(hidden_states.rows(), vocab_size_);
+    
+    // Track statistics for dynamic scaling
+    float max_logit = -std::numeric_limits<float>::infinity();
+    float min_logit = std::numeric_limits<float>::infinity();
+    
+    // First pass to compute logits and find range
     for (size_t i = 0; i < hidden_states.rows(); ++i) {
         for (size_t v = 0; v < vocab_size_; ++v) {
             float sum = 0.0f;
             for (size_t h = 0; h < embedding_dim_; ++h) {
                 sum += hidden_states(i, h) * weights_(v, h);
             }
-            // Prevent extreme values in logits
-            sum = std::clamp(sum, -100.0f, 100.0f);
             logits(i, v) = sum;
+            max_logit = std::max(max_logit, sum);
+            min_logit = std::min(min_logit, sum);
         }
     }
+    
+    // Compute scaling factor based on logit range
+    float logit_range = max_logit - min_logit;
+    float scale = (logit_range > 1e-6f) ? 8.0f / logit_range : 1.0f;  // Target range of [-4, 4]
+    
+    // Apply scaling and soft clipping
+    for (size_t i = 0; i < logits.size(); ++i) {
+        float x = logits.data()[i] * scale;
+        // Soft clipping using tanh
+        logits.data()[i] = 4.0f * std::tanh(x / 4.0f);  // Soft clamp to [-4, 4]
+    }
+    
     return logits;
 }
 

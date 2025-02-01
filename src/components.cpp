@@ -251,9 +251,6 @@ void Matrix::fill(float value) {
 }
 
 Matrix& Matrix::operator+=(const Matrix& other) {
-    std::cout << "Matrix addition dimensions:" << std::endl;
-    std::cout << "Left matrix: " << rows_ << "x" << cols_ << std::endl;
-    std::cout << "Right matrix: " << other.rows_ << "x" << other.cols_ << std::endl;
     
     if (rows_ != other.rows_ || cols_ != other.cols_) {
         throw std::invalid_argument("Matrix dimensions must match for addition");
@@ -394,10 +391,21 @@ Matrix matmul(const Matrix& A, const Matrix& B) {
     return C;
     #else
     // Original CPU implementation
+    if (A.cols() != B.rows()) {
+        throw std::runtime_error("Matrix multiplication dimension mismatch: " +
+            std::to_string(A.rows()) + "x" + std::to_string(A.cols()) + " * " +
+            std::to_string(B.rows()) + "x" + std::to_string(B.cols()));
+    }
+    
+    // Result matrix has dimensions [A.rows() x B.cols()]
     Matrix C(A.rows(), B.cols());
+    
+    // Perform matrix multiplication
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < A.rows(); i++) {
         for (size_t j = 0; j < B.cols(); j++) {
             float sum = 0.0f;
+            #pragma omp simd reduction(+:sum)
             for (size_t k = 0; k < A.cols(); k++) {
                 sum += A(i, k) * B(k, j);
             }
@@ -417,9 +425,9 @@ void gelu(Matrix& x) {
     // Original CPU implementation
     constexpr float sqrt_2_over_pi = 0.7978845608028654f;
     for (size_t i = 0; i < x.size(); i++) {
-        float val = x.data_[i];
+        float val = x.at(i / x.cols(), i % x.cols());
         float cdf = 0.5f * (1.0f + std::tanh(sqrt_2_over_pi * (val + 0.044715f * val * val * val)));
-        x.data_[i] = val * cdf;
+        x.at(i / x.cols(), i % x.cols()) = val * cdf;
     }
     #endif
 }

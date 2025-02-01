@@ -1,6 +1,7 @@
 #pragma once
 #include "matrix.hpp"
 
+
 /**
  * @brief Layer Normalization implementation for neural networks.
  * 
@@ -45,10 +46,10 @@ public:
      * @brief Gets references to all learnable parameters.
      * @return Vector of references to parameter vectors
      */
-    const std::vector<std::reference_wrapper<Matrix>> parameters() {
+    const std::vector<std::reference_wrapper<Matrix>> get_parameter_list() {
         std::vector<std::reference_wrapper<Matrix>> params;
-        params.push_back(std::ref(gamma_));
-        params.push_back(std::ref(beta_));
+        params.push_back(std::ref(params_.gamma));
+        params.push_back(std::ref(params_.beta));
         return params;
     }
 
@@ -58,8 +59,8 @@ public:
      */
     const std::vector<std::reference_wrapper<const Matrix>> parameter_gradients() const {
         std::vector<std::reference_wrapper<const Matrix>> grads;
-        grads.push_back(std::cref(grad_gamma_));
-        grads.push_back(std::cref(grad_beta_));
+        grads.push_back(std::cref(grads_.gamma_grad));
+        grads.push_back(std::cref(grads_.beta_grad));
         return grads;
     }
 
@@ -97,9 +98,9 @@ public:
      * @param other LayerNorm instance to copy from
      */
     LayerNorm(const LayerNorm& other)
-        : hidden_size_(other.hidden_size_), eps_(other.eps_), gamma_(other.gamma_), beta_(other.beta_),
+        : hidden_size_(other.hidden_size_), eps_(other.eps_), params_(other.params_),
           input_cache_(other.input_cache_), output_cache_(other.output_cache_),
-          grad_gamma_(other.grad_gamma_), grad_beta_(other.grad_beta_) {}
+          grads_(other.grads_) {}
 
     /**
      * @brief Assignment operator.
@@ -110,33 +111,55 @@ public:
         if (this != &other) {
             hidden_size_ = other.hidden_size_;
             eps_ = other.eps_;
-            gamma_ = other.gamma_;
-            beta_ = other.beta_;
+            params_ = other.params_;
             input_cache_ = other.input_cache_;
             output_cache_ = other.output_cache_;
-            grad_gamma_ = other.grad_gamma_;
-            grad_beta_ = other.grad_beta_;
+            grads_ = other.grads_;
         }
         return *this;
     }
 
-    Matrix get_gradients() const {
+    Matrix get_combined_gradients() const {
         // Create a matrix that combines both gradients
         Matrix combined(1, hidden_size_ * 2);
-        std::copy(grad_gamma_.data(), grad_gamma_.data() + hidden_size_, combined.data());
-        std::copy(grad_beta_.data(), grad_beta_.data() + hidden_size_, combined.data() + hidden_size_);
+        std::copy(grads_.gamma_grad.data(), grads_.gamma_grad.data() + hidden_size_, combined.data());
+        std::copy(grads_.beta_grad.data(), grads_.beta_grad.data() + hidden_size_, combined.data() + hidden_size_);
         return combined;
     }
+
+    // Mutable accessors
+    Matrix& get_gamma_mut() { return params_.gamma; }
+    Matrix& get_beta_mut() { return params_.beta; }
+
+    // Const accessors
+    const Matrix& get_gamma() const { return params_.gamma; }
+    const Matrix& get_beta() const { return params_.beta; }
+
+    // Parameter structure to hold gamma and beta
+    struct Parameters {
+        Matrix gamma;  // Scale parameter
+        Matrix beta;   // Shift parameter
+    };
+
+    // Gradient structure to hold gradients
+    struct Gradients {
+        Matrix gamma_grad;  // Gradient for gamma
+        Matrix beta_grad;   // Gradient for beta
+    };
+
+    // Parameter accessors
+    Parameters& parameters() { return params_; }
+    Gradients& param_gradients() { return grads_; }
+    const Parameters& parameters() const { return params_; }
+    const Gradients& param_gradients() const { return grads_; }
 
 private:
     size_t hidden_size_;
     float eps_;
-    Matrix gamma_;  // Scale parameter
-    Matrix beta_;   // Shift parameter
+    Parameters params_;
     Matrix input_cache_;  // Stored for backward pass
     Matrix output_cache_; // Stored for backward pass
-    Matrix grad_gamma_;   // Gradients for gamma
-    Matrix grad_beta_;    // Gradients for beta
+    Gradients grads_;
 
     // Helper method to compute gradients
     Matrix compute_gradients(const Matrix& grad_output);

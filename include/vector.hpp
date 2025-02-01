@@ -4,6 +4,7 @@
 #include <random>
 #include <algorithm>
 #include <iostream>
+#include <omp.h>
 
 // Forward declare Matrix if needed
 class Matrix;
@@ -18,6 +19,7 @@ public:
     Vector();
     Vector(size_t size, float default_value = 0.0f);
     Vector(const std::initializer_list<float>& list);
+    Vector(const Matrix& matrix);
     
     template <typename Iterator>
     Vector(Iterator first, Iterator last) : data_(first, last), size_(std::distance(first, last)) {}
@@ -33,6 +35,15 @@ public:
 
     // Operators
     Vector& operator+=(const Vector& other);
+    
+    // Implement operator*= directly in the header
+    Vector& operator*=(float scalar) {
+        #pragma omp parallel for
+        for (size_t i = 0; i < data_.size(); ++i) {
+            data_[i] *= scalar;
+        }
+        return *this;
+    }
 
     // Iterator access
     auto begin() { return data_.begin(); }

@@ -8,6 +8,7 @@ namespace tokens {
     constexpr int BOS_ID = 2;  // Beginning of sequence
     constexpr int EOS_ID = 3;  // End of sequence
     constexpr int MASK_ID = 4; // Mask token for MLM
+    constexpr int SEP_ID = 5;  // Separator token for completion format
 
     // Special token strings
     const std::string PAD_TOKEN = "<pad>";
@@ -15,6 +16,7 @@ namespace tokens {
     const std::string BOS_TOKEN = "<s>";
     const std::string EOS_TOKEN = "</s>";
     const std::string MASK_TOKEN = "<mask>";
+    const std::string SEP_TOKEN = "|";
 
-    constexpr int NUM_SPECIAL_TOKENS = 5;
+    constexpr int NUM_SPECIAL_TOKENS = 6;  // Updated to include separator
 } 

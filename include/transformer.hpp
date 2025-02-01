@@ -1,31 +1,50 @@
-#pragma once
-#include "attention.hpp"
-#include "cache.hpp"
-#include "components.hpp"
-#include "config.hpp"
-#include "dropout.hpp"
-#include "embeddings.hpp"
-#include "feed_forward.hpp"
-#include "gradient_checkpoint.hpp"
-#include "half_precision.hpp"
-#include "layer_norm.hpp"
-#include "lm_head.hpp"
-#include "memory_pool.hpp"
-#include "../include/tokenizer.hpp"
-#include <functional>
+#ifndef TRANSFORMER_HPP
+#define TRANSFORMER_HPP
+
 #include <memory>
 #include <vector>
+#include <string>
+#include <optional>
+#include <functional>
+#include <random>
+
+#include "matrix.hpp"
+#include "embeddings.hpp"  // Includes TokenEmbedding and PositionalEncoding
+#include "attention.hpp"
+#include "layer_norm.hpp"
+#include "feed_forward.hpp"
+#include "dropout.hpp"
+#include "lm_head.hpp"
+#include "config.hpp"
+#include "cache.hpp"
+#include "components.hpp"
+#include "gradient_checkpoint.hpp"
+#include "half_precision.hpp"
+#include "memory_pool.hpp"
+#include "phrase_types.hpp"
+#include "tokenizer.hpp"
 
 // Forward declarations
 class TransformerLayer;
-class TokenEmbedding;
-class PositionalEncoding;
 class LayerNorm;
 class LanguageModelHead;
 class Dropout;
 class KVCache;
 class Matrix;
-class Tokenizer;
+class MultiHeadAttention;
+class FeedForward;
+
+// Add helper function declarations
+void update_attention_parameters(MultiHeadAttention* attention, float learning_rate, const TransformerConfig& config);
+void update_ffn_parameters(FeedForward* ffn, float learning_rate, const TransformerConfig& config);
+
+// Add loss computation declarations
+float compute_loss(const Matrix& output, const Matrix& target_distribution);
+Matrix compute_loss_gradient(const Matrix& output, const Matrix& target_distribution);
+
+// Make update_parameter_with_clip global functions instead of member functions
+void update_parameter_with_clip(Matrix& param, const Matrix& grad, float learning_rate, const TransformerConfig& config);
+void update_parameter_with_clip(Vector& param, const Vector& grad, float learning_rate, const TransformerConfig& config);
 
 /**
  * @brief A single layer of the Transformer model implementing the standard Transformer architecture.
@@ -73,9 +92,27 @@ class TransformerLayer {
                    const std::optional<KVCache>& kv_cache = std::nullopt);
 
     /**
-     * @brief Clears the key-value cache of this layer.
+     * @brief Clears all cached states and resets layer components.
      */
-    void clear_cache();
+    void clear_cache() {
+        kv_cache.clear();
+        if (self_attention) {
+            self_attention->reset_state();
+        }
+        if (feed_forward) {
+            feed_forward->reset_state();
+        }
+        if (attention_dropout) {
+            attention_dropout->reset_mask();
+        }
+        if (ffn_dropout) {
+            ffn_dropout->reset_mask();
+        }
+    }
+
+    void set_training(bool mode) {
+        training = mode;
+    }
 
     /**
      * @brief Saves the layer's parameters to an output stream.
@@ -122,6 +159,9 @@ class TransformerLayer {
     FeedForward* getFeedForward() {
         return feed_forward.get();
     }
+    LayerNorm* getLayerNorm() {
+        return attention_ln.get();
+    }
     void convert_to_fp16();
 
     TransformerLayer(const TransformerLayer& other)
@@ -160,10 +200,6 @@ class TransformerLayer {
         }
         return *this;
     }
-
-    void set_training(bool mode) {
-        training = mode;
-    }
 };
 
 /**
@@ -184,63 +220,110 @@ class TransformerLayer {
  * - Various optimization algorithms
  */
 class Transformer {
-  private:
-    TransformerConfig config;                          ///< Model configuration parameters
-    std::unique_ptr<TokenEmbedding> token_embedding;   ///< Token embedding layer
-    std::unique_ptr<PositionalEncoding> pos_encoding;  ///< Positional encoding layer
-    std::vector<std::unique_ptr<TransformerLayer>> layers;  ///< Stack of transformer layers
-    std::unique_ptr<LayerNorm> final_ln;              ///< Final layer normalization
-    std::unique_ptr<LanguageModelHead> lm_head;       ///< Output layer for token prediction
-    std::unique_ptr<Dropout> dropout;                 ///< Dropout layer
-    bool cuda_initialized = false;                    ///< Whether CUDA has been initialized
-    std::vector<int> last_input_tokens_;             ///< Store the last input tokens
-    std::string last_input_query_;                   ///< Store the original input query
+private:
+    // Change from reference to value to avoid const issues
+    TransformerConfig config;  // Store by value instead of reference
 
-    // Cached states for backward pass
+    // Components
+    std::unique_ptr<TokenEmbedding> token_embedding;
+    std::unique_ptr<PositionalEncoding> pos_encoding;
+    std::vector<std::unique_ptr<TransformerLayer>> layers;
+    std::unique_ptr<LayerNorm> final_ln;
+    std::unique_ptr<LanguageModelHead> lm_head;
+    std::unique_ptr<Dropout> dropout;
+
+    // State
+    bool training = true;
     Matrix hidden_states;
     Matrix last_hidden_states;
     std::vector<Matrix> m_layer_activations;
-
-    // KV cache for inference
     std::vector<KVCache> m_kv_caches;
+    std::vector<std::pair<size_t, size_t>> last_seq_boundaries;
+    std::vector<int> last_input_tokens_;
+    std::string last_input_query_;
 
     // Optimizer state
     std::vector<Matrix> momentum_buffers;
     std::vector<Matrix> velocity_buffers;
     size_t update_step = 0;
-
-    // Parameter gradients
     std::optional<std::vector<Matrix>> parameter_grads;
 
-    // Private methods
-    Matrix compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets);
-    void backward_pass(const std::vector<Matrix>& activations, const Matrix& loss_grad);
-    void update_parameters(float learning_rate);
-
-    // Get parameter gradients
-    std::vector<Matrix>& parameter_gradients() {
-        if (!parameter_grads.has_value()) {
-            parameter_grads = std::vector<Matrix>();
-            // Initialize gradients for all parameters
-            auto& params = parameters();
-            parameter_grads->reserve(params.size());
-            for (const auto& param : params) {
-                parameter_grads->emplace_back(param.rows(), param.cols(), 0.0f);
-            }
-        }
-        return parameter_grads.value();
+    // Randomization helpers
+    float get_dynamic_temperature(std::mt19937& gen) const {
+        std::uniform_real_distribution<float> temp_dist(0.7f, 1.3f);
+        return temp_dist(gen);
     }
 
-    bool training = true;
+    void add_random_noise(Matrix& logits, std::mt19937& gen) const {
+        std::normal_distribution<float> noise_dist(0.0f, 0.1f);
+        for (size_t i = 0; i < logits.cols(); i++) {
+            logits(0, i) += noise_dist(gen);
+        }
+    }
 
-  public:
+    std::vector<float> apply_nucleus_sampling(
+        const std::vector<float>& probabilities,
+        float p,
+        std::mt19937& gen
+    ) const;
+
+    void apply_random_boost(
+        std::vector<float>& probabilities,
+        std::mt19937& gen,
+        float min_boost = 0.8f,
+        float max_boost = 1.2f
+    ) const;
+
+    // Private methods
+    void unscale_gradients(MultiHeadAttention::Gradients& grads, float scale);
+    void unscale_gradients(FeedForward::Gradients& grads, float scale);
+    Matrix compute_loss_gradients(const Matrix& logits, const std::vector<int>& targets);
+    void backward_pass(const Matrix& output, const Matrix& target_distribution, float learning_rate);
+    std::vector<Matrix>& parameter_gradients();
+    void clear_gradients();
+
+    // Helper methods for phrase prediction
+    void boost_verb_probabilities(
+        std::vector<float>& probabilities,
+        const Tokenizer& tokenizer,
+        std::mt19937* gen = nullptr
+    );
+
+    void boost_adjective_probabilities(
+        std::vector<float>& probabilities,
+        const Tokenizer& tokenizer,
+        std::mt19937* gen = nullptr
+    );
+
+    bool is_likely_verb(const std::string& token) const;
+    bool is_likely_adjective(const std::string& token) const;
+
+    std::string extract_prediction(
+        const Matrix& logits,
+        PhraseType phrase_type,
+        const Tokenizer& tokenizer,
+        std::mt19937* gen = nullptr
+    );
+
+public:
     Transformer() = default;
+
+    /**
+     * @brief Initialize the weights of the transformer model
+     */
+    void initialize_weights();
+
+    /**
+     * @brief Sets the training mode for the transformer and all its components.
+     * @param mode True for training mode, false for inference mode
+     */
+    void set_training(bool mode);
 
     /**
      * @brief Constructs a transformer model with the given configuration.
      * @param config Configuration parameters for the transformer
      */
-    explicit Transformer(const TransformerConfig& config);
+    explicit Transformer(const TransformerConfig& config_);  // Just declaration, no implementation
 
     /**
      * @brief Performs the forward pass through the transformer.
@@ -250,7 +333,7 @@ class Transformer {
      * @param use_cache Whether to use key-value caching for inference
      * @return Output logits for each position
      */
-    Matrix forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer, bool use_cache = false);
+    Matrix forward(const std::vector<int>& input_tokens, const std::string& original_query, const Tokenizer& tokenizer);
 
     /**
      * @brief Trains the transformer on the given dataset.
@@ -332,17 +415,9 @@ class Transformer {
         lm_head = std::move(head);
     }
 
-    void set_training(bool mode) {
-        training = mode;
-        for (auto& layer : layers) {
-            layer->set_training(mode);
-        }
-    }
-
     bool verify_state() const {
         return token_embedding && pos_encoding && final_ln && lm_head && !layers.empty() &&
-               std::all_of(layers.begin(), layers.end(),
-                           [](const auto& layer) { return layer != nullptr; });
+               std::all_of(layers.begin(), layers.end(), [](const auto& layer) { return layer != nullptr; });
     }
 
     bool is_training() const {
@@ -365,4 +440,48 @@ class Transformer {
     const std::string& get_last_query() const {
         return last_input_query_;
     }
+
+    /**
+     * @brief Updates model parameters using computed gradients.
+     * @param learning_rate Learning rate for the update
+     */
+    void update_parameters(float learning_rate);
+
+    /**
+     * @brief Predicts the final phrase for a given input text without delimiters
+     * @param input_text The input text without delimiters
+     * @param tokenizer The tokenizer instance
+     * @return A pair containing the predicted phrase and its type
+     */
+    std::pair<std::string, PhraseType> predict_final_phrase(
+        const std::string& input_text,
+        const Tokenizer& tokenizer
+    );
+
+    /**
+     * @brief Predicts the most likely phrase type for the given input
+     * @param input_text The input text
+     * @param tokenizer The tokenizer instance
+     * @return The predicted phrase type
+     */
+    PhraseType predict_phrase_type(
+        const std::string& input_text,
+        const Tokenizer& tokenizer
+    );
+
+private:
+    /**
+     * @brief Analyzes logits to determine the most likely phrase type
+     * @param logits The output logits from the model
+     * @param tokenizer The tokenizer instance
+     * @return The predicted phrase type
+     */
+    PhraseType analyze_phrase_type(
+        const Matrix& logits,
+        const Tokenizer& tokenizer
+    );
 };
+
+class PositionalEncoding;  // Forward declaration is enough since we include embeddings.hpp
+
+#endif // TRANSFORMER_HPP

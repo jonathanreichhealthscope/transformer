@@ -70,6 +70,18 @@ class TokenEmbedding {
     virtual Matrix project_to_vocab_cuda(const Matrix& input);
 
     /**
+     * @brief Gets the embedding weights matrix.
+     * @return Reference to the weights matrix
+     */
+    Matrix& get_weights() { return weights_; }
+
+    /**
+     * @brief Gets the embedding weights matrix (const version).
+     * @return Const reference to the weights matrix
+     */
+    const Matrix& get_weights() const { return weights_; }
+
+    /**
      * @brief Gets the embedding weight matrix (const).
      * @return Const reference to embedding weights
      */
@@ -220,6 +232,18 @@ class PositionalEncoding {
      * @return Unique pointer to loaded encoding layer
      */
     static std::unique_ptr<PositionalEncoding> load(std::istream& is);
+
+    /**
+     * @brief Gets the positional encoding matrix.
+     * @return Reference to the encoding matrix
+     */
+    Matrix& get_weights() { return encoding_matrix_; }
+
+    /**
+     * @brief Gets the positional encoding matrix (const version).
+     * @return Const reference to the encoding matrix
+     */
+    const Matrix& get_weights() const { return encoding_matrix_; }
 
     /**
      * @brief Gets the encoding matrix (const).

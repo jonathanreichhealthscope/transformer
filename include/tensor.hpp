@@ -179,6 +179,11 @@ class Tensor {
      */
     void validate_matrix_dimensions(const Tensor& other, const std::string& operation) const;
 
+    /**
+     * @brief Applies softmax operation along the last dimension.
+     */
+    void softmax();
+
   private:
     std::vector<unsigned long> dims_;  ///< Sizes of each dimension
     std::vector<float> data_;         ///< Flattened tensor data

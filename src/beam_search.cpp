@@ -13,8 +13,8 @@ BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperatur
                        float diversity_strength, size_t top_k, float top_p)
     : beam_width_(beam_width)
     , length_penalty_(length_penalty)
-    , temperature(temperature)
-    , diversity_strength(diversity_strength)
+    , temperature(std::min(temperature, 0.7f))  // Cap temperature to prevent too much randomness
+    , diversity_strength(std::max(diversity_strength, 1.0f))  // Ensure minimum diversity
     , top_k(top_k)
     , top_p(top_p) {
     std::cout << "Initializing BeamSearch with width=" << beam_width
@@ -32,7 +32,8 @@ BeamSearch::BeamSearch(size_t beam_width, float length_penalty, float temperatur
 }
 
 float BeamSearch::apply_length_penalty(float score, size_t length) const {
-    float penalized_score = score / std::pow(length, length_penalty_);
+    // Reduce length penalty impact
+    float penalized_score = score / std::pow(length, length_penalty_ * 0.5f);
     return penalized_score;
 }
 
@@ -40,13 +41,13 @@ void BeamSearch::update_beams(std::vector<std::vector<int>>& sequences,
                               Matrix& beam_scores,
                               const Matrix& next_scores,
                               const std::vector<int>& next_tokens) {
-    const float MIN_SCORE = -1e4f;  // Prevent -inf
+    const float MIN_SCORE = -1e2f;  // Less extreme minimum
     
     // Create temporary vectors to store candidates
     std::vector<std::pair<float, std::pair<size_t, int>>> candidates;
     candidates.reserve(beam_width_ * beam_width_);
     
-    // Track token frequencies across all beams
+    // Track token frequencies across all beams with reduced impact
     std::unordered_map<int, int> token_counts;
     for (const auto& seq : sequences) {
         for (int token : seq) {
@@ -61,91 +62,56 @@ void BeamSearch::update_beams(std::vector<std::vector<int>>& sequences,
             float next_score = std::max(next_scores(i, j), MIN_SCORE);
             float score = current_score + next_score;
             
-            // Apply diversity penalty based on token frequency
+            // Apply softer diversity penalty
             int next_token = next_tokens[j];
             float diversity_penalty = 0.0f;
             
-            // Penalize tokens that appear frequently
-            if (token_counts[next_token] > 0) {
-                diversity_penalty = diversity_strength * std::log1p(token_counts[next_token]);
+            // Reduce penalty for frequent tokens
+            if (token_counts[next_token] > 1) {
+                diversity_penalty = diversity_strength * 0.5f * std::log1p(token_counts[next_token]);
             }
             
-            // Extra penalty for repeating the first token of any beam
+            // Softer penalty for repeating first token
             for (const auto& seq : sequences) {
                 if (!seq.empty() && seq[0] == next_token) {
-                    diversity_penalty += diversity_strength * 2.0f;
+                    diversity_penalty += diversity_strength * 0.5f;
                 }
             }
             
             score -= diversity_penalty;
             
-            if (score > MIN_SCORE) {  // Only add valid candidates
+            // Add more candidates by being less strict
+            if (score > MIN_SCORE * 0.8f) {
                 candidates.push_back({score, {i, next_token}});
             }
         }
     }
     
-    // If we have no valid candidates, create a fallback candidate
+    // If we have no valid candidates, create a fallback with less strict criteria
     if (candidates.empty()) {
-        candidates.push_back({MIN_SCORE, {0, eos_token_id_}});
+        for (size_t i = 0; i < beam_width_; i++) {
+            candidates.push_back({MIN_SCORE * 0.5f, {0, next_tokens[i]}});
+        }
     }
     
     // Sort candidates by score
     std::sort(candidates.begin(), candidates.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
     
-    // Create new sequences and scores with diversity enforcement
+    // Update sequences and scores with reduced penalties
     std::vector<std::vector<int>> new_sequences;
     Matrix new_scores(beam_width_, 1);
-    std::unordered_set<int> used_first_tokens;  // Track first tokens to ensure diversity
     
-    size_t added = 0;
-    size_t candidate_idx = 0;
-    
-    // Take top beam_width_ candidates while enforcing diversity
-    while (added < beam_width_ && candidate_idx < candidates.size()) {
-        const auto& [score, beam_token] = candidates[candidate_idx];
+    for (size_t i = 0; i < std::min(beam_width_, candidates.size()); i++) {
+        const auto& [score, beam_token] = candidates[i];
         const auto& [beam_idx, token] = beam_token;
         
-        // Check if this would create a sequence with a repeated first token
-        std::vector<int> new_sequence = sequences[beam_idx];
-        new_sequence.push_back(token);
-        
-        int first_token = new_sequence[0];
-        if (used_first_tokens.find(first_token) == used_first_tokens.end()) {
-            used_first_tokens.insert(first_token);
-            new_sequences.push_back(std::move(new_sequence));
-            new_scores(added, 0) = score;
-            added++;
-        }
-        candidate_idx++;
+        std::vector<int> new_seq = sequences[beam_idx];
+        new_seq.push_back(token);
+        new_sequences.push_back(std::move(new_seq));
+        new_scores(i, 0) = score;
     }
     
-    // Fill remaining beams if needed
-    while (new_sequences.size() < beam_width_) {
-        // Find the next valid candidate
-        while (candidate_idx < candidates.size()) {
-            const auto& [score, beam_token] = candidates[candidate_idx];
-            const auto& [beam_idx, token] = beam_token;
-            
-            std::vector<int> new_sequence = sequences[beam_idx];
-            new_sequence.push_back(token);
-            
-            new_sequences.push_back(std::move(new_sequence));
-            new_scores(new_sequences.size() - 1, 0) = score;
-            
-            if (new_sequences.size() >= beam_width_) break;
-            candidate_idx++;
-        }
-        
-        // If we still need more sequences, duplicate the first one
-        if (new_sequences.size() < beam_width_) {
-            new_sequences.push_back(new_sequences[0]);
-            new_scores(new_sequences.size() - 1, 0) = MIN_SCORE;
-        }
-    }
-    
-    // Update sequences and scores
     sequences = std::move(new_sequences);
     beam_scores = std::move(new_scores);
 }
@@ -328,14 +294,19 @@ BeamSearch::search(const std::vector<float>& initial_logits,
 void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float strength) {
     // Apply much stronger diversity penalty
     const float base_penalty = strength * 4.0f;  // Increased from 2.0f to 4.0f
+    const float unk_penalty = base_penalty * 2.0f;  // Extra penalty for UNK tokens
     
     // Track unique tokens to penalize repetition across beams
     std::unordered_map<size_t, int> global_token_counts;
     
     // First pass: count all tokens across all candidates
-    for (const auto& candidate : candidates) {
-        for (const auto& token : candidate.sequence) {
+    for (size_t i = 0; i < candidates.size(); i++) {
+        for (const auto& token : candidates[i].sequence) {
             global_token_counts[token]++;
+            // Apply extra penalty for UNK tokens
+            if (token == unk_token_id_) {
+                candidates[i].score -= unk_penalty * global_token_counts[token];
+            }
         }
     }
     
@@ -376,106 +347,31 @@ void BeamSearch::diversityPenalty(std::vector<BeamCandidate>& candidates, float 
 }
 
 std::vector<float> BeamSearch::calculateScores(const std::vector<float>& logits) {
-    const float eps = 1e-10f;
-    std::vector<float> probs(logits.size());
+    // Apply temperature scaling with a more moderate temperature
+    const float temperature = 0.8f;  // Less aggressive temperature
+    std::vector<float> scores = logits;
     
-    // Get raw logits
-    for (size_t i = 0; i < logits.size(); i++) {
-        probs[i] = logits[i];
-    }
-    
-    // Apply temperature scaling
-    float max_logit = *std::max_element(probs.begin(), probs.end());
+    float max_score = *std::max_element(scores.begin(), scores.end());
     float sum = 0.0f;
-    for (size_t i = 0; i < probs.size(); i++) {
-        probs[i] = std::exp((probs[i] - max_logit) / temperature);
-        sum += probs[i];
-    }
     
-    // Normalize probabilities
-    for (size_t i = 0; i < probs.size(); i++) {
-        probs[i] /= sum;
-    }
-    
-    // Add noise before top-k/p filtering
-    for (size_t i = 0; i < probs.size(); i++) {
-        float noise = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 0.1f;  // Increased noise
-        probs[i] = std::max(probs[i] + noise * probs[i], eps);  // Scale noise by prob
-    }
-    
-    // Re-normalize after noise
-    sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
-    for (size_t i = 0; i < probs.size(); i++) {
-        probs[i] /= sum;
-    }
-    
-    // Apply top-k filtering
-    if (top_k > 0 && top_k < probs.size()) {
-        std::vector<std::pair<float, size_t>> prob_idx;
-        prob_idx.reserve(probs.size());
-        for (size_t i = 0; i < probs.size(); i++) {
-            prob_idx.push_back({probs[i], i});
+    for (float& score : scores) {
+        // Completely filter out UNK token by setting its probability to 0
+        if (score == logits[unk_token_id_]) {
+            score = -std::numeric_limits<float>::infinity();  // Effectively zero probability after softmax
+            continue;
         }
-        
-        // Sort by probability
-        std::partial_sort(prob_idx.begin(), 
-                         prob_idx.begin() + top_k,
-                         prob_idx.end(),
-                         std::greater<>());
-        
-        // Zero out probabilities below top-k
-        std::vector<float> filtered_probs(probs.size(), 0.0f);
-        for (size_t i = 0; i < top_k; i++) {
-            filtered_probs[prob_idx[i].second] = prob_idx[i].first;
-        }
-        probs = std::move(filtered_probs);
+        score = std::exp((score - max_score) / temperature);
+        sum += score;
     }
     
-    // Apply nucleus (top-p) sampling
-    if (top_p < 1.0f) {
-        std::vector<std::pair<float, size_t>> sorted_probs;
-        sorted_probs.reserve(probs.size());
-        for (size_t i = 0; i < probs.size(); i++) {
-            if (probs[i] > 0.0f) {
-                sorted_probs.push_back({probs[i], i});
-            }
+    // Normalize but prevent division by zero
+    if (sum > 1e-6f) {
+        for (float& score : scores) {
+            score /= sum;
         }
-        
-        // Sort by probability
-        std::sort(sorted_probs.begin(), sorted_probs.end(), std::greater<>());
-        
-        // Find cutoff index
-        float cumsum = 0.0f;
-        size_t cutoff_idx = sorted_probs.size();
-        for (size_t i = 0; i < sorted_probs.size(); i++) {
-            cumsum += sorted_probs[i].first;
-            if (cumsum > top_p) {
-                cutoff_idx = i + 1;
-                break;
-            }
-        }
-        
-        // Zero out probabilities below cutoff
-        std::vector<float> filtered_probs(probs.size(), 0.0f);
-        for (size_t i = 0; i < cutoff_idx; i++) {
-            filtered_probs[sorted_probs[i].second] = sorted_probs[i].first;
-        }
-        probs = std::move(filtered_probs);
     }
     
-    // Final normalization
-    sum = std::accumulate(probs.begin(), probs.end(), 0.0f);
-    if (sum > 0.0f) {
-        for (size_t i = 0; i < probs.size(); i++) {
-            probs[i] /= sum;
-        }
-    } else {
-        // Fallback to uniform distribution if all probs are zero
-        float uniform_prob = 1.0f / probs.size();
-        std::fill(probs.begin(), probs.end(), uniform_prob);
-    }
-    
-    return probs;
+    return scores;
 }
 
 std::vector<std::pair<float, size_t>> BeamSearch::topKSampling(
