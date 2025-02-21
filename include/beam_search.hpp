@@ -29,11 +29,11 @@ class BeamSearch {
      * @param top_k Top-K sampling parameter
      * @param top_p Top-P sampling parameter
      */
-    BeamSearch(size_t beam_width = 5, 
+    BeamSearch(size_t beam_width = 10, 
                float length_penalty = 0.6f,
-               float temperature = 1.0f,
-               float diversity_strength = 0.5f,
-               size_t top_k = 40,
+               float temperature = 0.3f,
+               float diversity_strength = 0.0f,
+               size_t top_k = 0,
                float top_p = 0.9f);
 
     /**

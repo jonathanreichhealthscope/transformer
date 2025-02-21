@@ -4,67 +4,73 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include "tiktoken_tokenizer.hpp"
+#include <unordered_set>
+#include "token_constants.hpp"
+#include "base_tokenizer.hpp"
+
+// Forward declaration
+class TiktokenTokenizer;
 
 class Tokenizer {
+private:
+    std::unique_ptr<BaseTokenizer> tokenizer_;
+
 public:
-    // Default constructor
-    Tokenizer() : encoding_name_("gpt2") {}
-    
-    // Constructor with encoding type
-    explicit Tokenizer(const std::string& encoding) : encoding_name_(encoding) {}
-    
+    explicit Tokenizer(const std::string& encoding_name = "gpt2");
     ~Tokenizer() = default;
 
     // Core tokenization methods
     std::vector<int> encode(const std::string& text) const;
     std::string decode(const std::vector<int>& tokens) const;
-    void preprocess_text(std::string& text) const;
-    bool is_special_token(int token_id) const;
+    size_t vocab_size() const;
+
+    // Virtual methods with default implementations
+    virtual void preprocess_text(std::string& text) const;
+    virtual bool is_special_token(int token_id) const;
 
     // Special token accessors
-    int get_pad_token_id() const { return tokenizer_->get_pad_token_id(); }
-    int get_unk_token_id() const { return tokenizer_->get_unk_token_id(); }
-    int get_bos_token_id() const { return tokenizer_->get_bos_token_id(); }
-    int get_eos_token_id() const { return tokenizer_->get_eos_token_id(); }
-    int get_mask_token_id() const { return tokenizer_->get_mask_token_id(); }
-    
-    size_t vocab_size() const { return tokenizer_->vocab_size(); }
+    virtual int get_pad_token_id() const { return 0; }
+    virtual int get_unk_token_id() const { return 1; }
+    virtual int get_bos_token_id() const { return 2; }
+    virtual int get_eos_token_id() const { return 3; }
+    virtual int get_mask_token_id() const { return 4; }
+    virtual int get_sep_token_id() const { return 5; }
 
-    // Initialize tokenizer
-    void initialize();
-
-    bool is_initialized() const { return tokenizer_ && tokenizer_->is_initialized(); }
+    // Token type checking methods
+    virtual bool is_verb(const std::string& token) const;
+    virtual bool is_adjective(const std::string& token) const;
+    virtual bool is_noun(const std::string& token) const;
+    virtual bool is_determiner(const std::string& token) const;
 
     // Debug helpers
-    void print_vocabulary_mappings() const;
+    virtual void print_vocabulary_mappings() const;
 
-    /**
-     * @brief Checks if a token represents a noun
-     * @param token Token string to check
-     * @return True if the token is a noun
-     */
-    bool is_noun(const std::string& token) const {
-        // Simple heuristic: consider capitalized words or special tokens as nouns
-        return !token.empty() && (
-            std::isupper(token[0]) ||
-            token.find("<") == 0  // Special tokens
-        );
+    // Serialization
+    virtual void save(std::ostream& os) const;
+    static std::unique_ptr<Tokenizer> load(std::istream& is);
+    virtual std::vector<std::string> get_vocabulary_vector() const;
+
+    void initialize(const std::string& encoding_name = "cl100k_base");
+
+    // Add method to set vocabulary size
+    void set_vocab_size(size_t size) {
+        if (tokenizer_) {
+            tokenizer_->set_vocab_size(size);
+        }
     }
+
+protected:
+    // Token category sets
+    std::unordered_set<std::string> verb_tokens_;
+    std::unordered_set<std::string> adjective_tokens_;
+    std::unordered_set<std::string> noun_tokens_;
+    std::unordered_set<std::string> determiner_tokens_;
 
     // Special character mapping for preprocessing
     static const std::unordered_map<char, std::string> SPECIAL_CHAR_MAP;
 
-    // Add these declarations
-    void save(std::ostream& os) const;
-    static std::unique_ptr<Tokenizer> load(std::istream& is);
-    std::vector<std::string> get_vocabulary_vector() const;
-
 private:
-    std::unique_ptr<TiktokenTokenizer> tokenizer_;
-    std::string encoding_name_;
-    
-    // Vocabulary loading/saving helpers
-    static std::unique_ptr<TiktokenTokenizer> load_vocabulary(std::istream& is);
+    // Add private helper methods
     void save_vocabulary(std::ostream& os) const;
+    std::unique_ptr<TiktokenTokenizer> load_vocabulary(std::istream& is);
 };

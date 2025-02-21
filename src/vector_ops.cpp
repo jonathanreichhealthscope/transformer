@@ -1,4 +1,6 @@
 #include "../include/vector.hpp"
+#include "../include/matrix.hpp"
+#include <random>
 
 // Constructor implementations
 Vector::Vector() : size_(0) {}
@@ -7,6 +9,13 @@ Vector::Vector(size_t size, float default_value) : data_(size, default_value), s
 
 Vector::Vector(const std::initializer_list<float>& list) : data_(list), size_(list.size()) {}
 
+Vector::Vector(const Matrix& matrix) : data_(matrix.data(), matrix.data() + matrix.size()), size_(matrix.size()) {
+    #pragma omp parallel for
+    for (size_t i = 0; i < matrix.size(); ++i) {
+        data_[i] = matrix.at(i / matrix.cols(), i % matrix.cols());
+    }
+}
+
 // Member function implementations
 void Vector::resize(size_t new_size) {
     data_.resize(new_size);
@@ -14,36 +23,46 @@ void Vector::resize(size_t new_size) {
 }
 
 void Vector::fill(float value) {
-    std::fill(data_.begin(), data_.end(), value);
+    #pragma omp parallel for
+    for (size_t i = 0; i < size_; ++i) {
+        data_[i] = value;
+    }
 }
 
 void Vector::randomize(float min_val, float max_val) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<float> dis(min_val, max_val);
-    for (float& val : data_) {
-        val = dis(gen);
+    #pragma omp parallel for
+    for (size_t i = 0; i < size_; ++i) {
+        float val = dis(gen);  // Note: Each thread gets its own random value
+        data_[i] = val;
     }
 }
 
 void Vector::initialize_random(float scale) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dis(-scale, scale);
-    
+    std::normal_distribution<float> dis(0.0f, scale);
+    #pragma omp parallel for
     for (size_t i = 0; i < size_; ++i) {
-        data_[i] = dis(gen);
+        float val = dis(gen);  // Note: Each thread gets its own random value
+        data_[i] = val;
     }
 }
 
 void Vector::initialize_constant(float value) {
-    std::fill(data_.begin(), data_.end(), value);
+    #pragma omp parallel for
+    for (size_t i = 0; i < size_; ++i) {
+        data_[i] = value;
+    }
 }
 
 Vector& Vector::operator+=(const Vector& other) {
     if (size_ != other.size()) {
         throw std::invalid_argument("Vector dimensions must match for addition");
     }
+    #pragma omp parallel for
     for (size_t i = 0; i < size_; ++i) {
         data_[i] += other.data_[i];
     }
@@ -71,7 +90,11 @@ Vector operator+(const Vector& a, const Vector& b) {
 }
 
 Vector operator-(const Vector& a, const Vector& b) {
+    if (a.size() != b.size()) {
+        throw std::invalid_argument("Vector dimensions must match for subtraction");
+    }
     Vector result(a.size());
+    #pragma omp parallel for
     for (size_t i = 0; i < a.size(); ++i) {
         result[i] = a[i] - b[i];
     }
@@ -80,6 +103,7 @@ Vector operator-(const Vector& a, const Vector& b) {
 
 Vector operator*(const Vector& v, float scalar) {
     Vector result(v.size());
+    #pragma omp parallel for
     for (size_t i = 0; i < v.size(); ++i) {
         result[i] = v[i] * scalar;
     }
@@ -89,3 +113,4 @@ Vector operator*(const Vector& v, float scalar) {
 Vector operator*(float scalar, const Vector& v) {
     return v * scalar;
 }
+

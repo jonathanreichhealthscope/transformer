@@ -1,13 +1,16 @@
 #pragma once
 #include "components.hpp"
-#include "cuda_utils.hpp"
+#include "layer_norm.hpp"
+#include "tiktoken_tokenizer.hpp"
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+#include <deque>
 
-#ifdef USE_CUDA
+// Only include CUDA headers if CUDA is available
+#if defined(USE_CUDA) && defined(CUDA_AVAILABLE)
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
@@ -34,14 +37,34 @@ class LanguageModelHead {
     Matrix hidden_states;                ///< Cached hidden states for backward pass
     Matrix hidden_states_;               ///< Cached hidden states for forward pass
     std::vector<float> token_frequencies; ///< Tracked frequencies of token usage
-
-    // Vocabulary pruning
-    static constexpr size_t PRUNE_INTERVAL = 100;  // Update active tokens every N steps
-    static constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Minimum number of active tokens
     float pruning_threshold;
     std::vector<unsigned char> active_tokens;  // Changed from vector<bool> to vector<unsigned char>
     std::vector<int> active_token_indices;     // List of indices of active tokens
     size_t training_steps;
+    bool is_training_;  // Add training state member variable
+    
+    // Adam optimizer state
+    Matrix m_proj;  // Momentum for projection
+    Matrix v_proj;  // RMSprop for projection
+    Vector m_bias;  // Momentum for bias
+    Vector v_bias;  // RMSprop for bias
+    size_t t;      // Time step
+    float beta1;   // Momentum parameter
+    float beta2;   // RMSprop parameter
+    float eps;     // Small constant for numerical stability
+    
+    // Learning rate adaptation
+    float current_lr;  // Current learning rate
+    float min_lr;      // Minimum learning rate
+    float max_lr;      // Maximum learning rate
+    float lr_decay;    // Learning rate decay factor
+    float lr_growth;   // Learning rate growth factor
+    std::deque<float> loss_history;
+    static constexpr size_t LOSS_HISTORY_SIZE = 100;
+    float prev_loss = std::numeric_limits<float>::infinity();
+    
+    // Add the update_learning_rate function declaration
+    void update_learning_rate(float current_loss);
     
     // Pinned memory for efficient GPU transfers
     float* h_projection = nullptr;
@@ -54,6 +77,10 @@ class LanguageModelHead {
     half* d_hidden_states_fp16 = nullptr;  // FP16 version of input
     half* d_output_fp16 = nullptr;  // FP16 intermediate output
     float* d_output = nullptr;      // Final FP32 output
+
+    // Add new member variables
+    std::unique_ptr<LayerNorm> layer_norm;  ///< Layer normalization
+    std::shared_ptr<TiktokenTokenizer> tokenizer;  ///< Tokenizer instance
 
     /**
      * @brief Computes gradients for the linear projection.
@@ -89,6 +116,9 @@ class LanguageModelHead {
     cublasHandle_t cublas_handle;
 #endif
 
+    // Helper methods
+    void bias_completion_format(Matrix& logits);
+
   public:
     /**
      * @brief Constructs a language model head.
@@ -104,10 +134,7 @@ class LanguageModelHead {
      * @param hidden_states Input hidden states
      * @return Matrix of logits over vocabulary
      */
-    Matrix forward(const Matrix& hidden_states) {
-        hidden_states_ = hidden_states;  // Cache for backward pass
-        return project_to_vocab(hidden_states);
-    }
+    Matrix forward(const Matrix& hidden_states, bool training = false);
 
     /**
      * @brief Performs the backward pass with Adam optimization.
@@ -115,81 +142,7 @@ class LanguageModelHead {
      * @param hidden_states Original input hidden states
      * @return Gradient with respect to the input
      */
-    Matrix backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
-        // Compute gradients for projection and bias
-        std::cout << "Computing gradients for projection and bias" << std::endl;
-        Matrix grad_proj = matmul(grad_output.transpose(), hidden_states);
-        std::cout << "grad projection shape: " << grad_proj.shape() << std::endl;
-        Vector grad_bias = grad_output.row_sum();
-        std::cout << "grad bias size: " << grad_bias.size() << std::endl;
-
-        // Apply weight updates with adaptive learning rate
-        float lr = 0.001f;    // Base learning rate
-        float beta1 = 0.9f;   // Momentum parameter
-        float beta2 = 0.999f; // RMSprop parameter
-        float eps = 1e-8f;    // Small constant for numerical stability
-
-        static Matrix m_proj(projection.rows(), projection.cols(),
-                             0.0f); // Momentum for projection
-        static Matrix v_proj(projection.rows(), projection.cols(),
-                             0.0f);              // RMSprop for projection
-        static Vector m_bias(bias.size(), 0.0f); // Momentum for bias
-        static Vector v_bias(bias.size(), 0.0f); // RMSprop for bias
-        static size_t t = 0;                     // Time step
-        t++;
-
-        // Update projection matrix using Adam optimizer
-        std::cout << "updating projection matrix using Adam optimizer" << std::endl;
-        for (size_t i = 0; i < projection.rows(); ++i) {
-            for (size_t j = 0; j < projection.cols(); ++j) {
-                std::cout << "updating momentum" << std::endl;
-                // Update momentum
-                m_proj(i, j) = beta1 * m_proj(i, j) + (1 - beta1) * grad_proj(i, j);
-                std::cout << "updating RMSprop" << std::endl;
-                // Update RMSprop
-                v_proj(i, j) =
-                    beta2 * v_proj(i, j) + (1 - beta2) * grad_proj(i, j) * grad_proj(i, j);
-                std::cout << "calculating bias correction" << std::endl;
-                // Bias correction
-                float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
-                float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
-                std::cout << "updating weights" << std::endl;
-                // Update weights
-                projection(i, j) -= lr * m_hat / (std::sqrt(v_hat) + eps);
-            }
-        }
-
-        // Update bias vector using Adam optimizer
-        for (size_t i = 0; i < bias.size(); ++i) {
-            std::cout << "updating momentum" << std::endl;
-            // Update momentum
-            m_bias[i] = beta1 * m_bias[i] + (1 - beta1) * grad_bias[i];
-            std::cout << "updating RMSprop" << std::endl;
-            // Update RMSprop
-            v_bias[i] = beta2 * v_bias[i] + (1 - beta2) * grad_bias[i] * grad_bias[i];
-            std::cout << "calculating bias correction" << std::endl;
-            // Bias correction
-            float m_hat = m_bias[i] / (1 - std::pow(beta1, t));
-            float v_hat = v_bias[i] / (1 - std::pow(beta2, t));
-            std::cout << "updating bias" << std::endl;
-            // Update bias
-            bias[i] -= lr * m_hat / (std::sqrt(v_hat) + eps);
-        }
-        std::cout << "Gradient with respect to input" << std::endl;
-        std::cout << "grad_output dims: " << grad_output.rows() << "x" << grad_output.cols()
-                  << std::endl;
-        std::cout << "projection dims: " << projection.rows() << "x" << projection.cols()
-                  << std::endl;
-        // Compute gradient with respect to input
-        Matrix grad_input = matmul(grad_output, projection);
-        if (grad_input.cols() != hidden_states.cols()) {
-            throw std::runtime_error("Language model head gradient output dimension (" +
-                                     std::to_string(grad_input.cols()) +
-                                     ") must match hidden size (" +
-                                     std::to_string(hidden_states.cols()) + ")");
-        }
-        return grad_input;
-    }
+    Matrix backward_pass(const Matrix& grad_output, const Matrix& hidden_states);
 
     /**
      * @brief Saves the model head to a stream.
@@ -226,12 +179,28 @@ class LanguageModelHead {
     }
 
     /**
-     * @brief Gets the bias vector.
-     * @return Reference to bias vector
+     * @brief Gets the projection weights matrix.
+     * @return Reference to the projection weights matrix
      */
-    Vector& get_bias() {
-        return bias;
-    }
+    Matrix& get_weights() { return projection; }
+
+    /**
+     * @brief Gets the projection weights matrix (const version).
+     * @return Const reference to the projection weights matrix
+     */
+    const Matrix& get_weights() const { return projection; }
+
+    /**
+     * @brief Gets the bias vector.
+     * @return Reference to the bias vector
+     */
+    Vector& get_bias() { return bias; }
+
+    /**
+     * @brief Gets the bias vector (const version).
+     * @return Const reference to the bias vector
+     */
+    const Vector& get_bias() const { return bias; }
 
     /**
      * @brief Projects hidden states to vocabulary space.
@@ -259,4 +228,71 @@ class LanguageModelHead {
      * @param min_frequency_threshold Minimum frequency threshold for keeping tokens
      */
     void prune_vocabulary(float min_frequency_threshold = 1e-5);
+
+    void set_training(bool training_mode);  // Add setter for training mode
+
+    // Add tokenizer setter
+    void set_tokenizer(std::shared_ptr<TiktokenTokenizer> tok) { tokenizer = tok; }
+
+    // Add getter for token frequencies
+    const std::vector<float>& get_token_frequencies() const {
+        return token_frequencies;
+    }
+
+    // Add copy constructor
+    LanguageModelHead(const LanguageModelHead& other) 
+        : projection(other.projection),
+          bias(other.bias),
+          dropout_prob(other.dropout_prob),
+          vocab_size_(other.vocab_size_),
+          hidden_size_(other.hidden_size_),
+          hidden_states(other.hidden_states),
+          hidden_states_(other.hidden_states_),
+          token_frequencies(other.token_frequencies),
+          pruning_threshold(other.pruning_threshold),
+          active_tokens(other.active_tokens),
+          active_token_indices(other.active_token_indices),
+          training_steps(other.training_steps),
+          is_training_(other.is_training_),
+          // Adam optimizer state
+          m_proj(other.m_proj),
+          v_proj(other.v_proj),
+          m_bias(other.m_bias),
+          v_bias(other.v_bias),
+          t(other.t),
+          beta1(other.beta1),
+          beta2(other.beta2),
+          eps(other.eps),
+          // Learning rate adaptation
+          current_lr(other.current_lr),
+          min_lr(other.min_lr),
+          max_lr(other.max_lr),
+          lr_decay(other.lr_decay),
+          lr_growth(other.lr_growth),
+          loss_history(other.loss_history),
+          prev_loss(other.prev_loss) {
+        
+        // Deep copy layer_norm if it exists
+        if (other.layer_norm) {
+            layer_norm = std::make_unique<LayerNorm>(*other.layer_norm);
+        }
+        
+        // Copy tokenizer reference
+        tokenizer = other.tokenizer;
+        
+        // Initialize device memory to nullptr since it will be allocated on demand
+        h_projection = nullptr;
+        h_bias = nullptr;
+        d_projection = nullptr;
+        d_bias = nullptr;
+        d_projection_fp16 = nullptr;
+        d_hidden_states_fp16 = nullptr;
+        d_output_fp16 = nullptr;
+        d_output = nullptr;
+        
+    #ifdef USE_CUDA
+        d_active_tokens = nullptr;
+        d_active_token_indices = nullptr;
+    #endif
+    }
 };

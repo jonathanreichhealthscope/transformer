@@ -6,7 +6,13 @@
 #include "tensor.hpp"
 #include "config.hpp"
 #include <optional>
+#include <memory>
+#include <vector>
 using FloatVector = Vector;
+
+// Utility functions for gradient computation
+float compute_grad_norm(const Matrix& grad);
+size_t count_params(const Matrix& param);
 
 /**
  * @brief Class representing attention masks used in transformer attention mechanisms.
@@ -41,10 +47,17 @@ class AttentionMask {
     // Constructor taking a mask matrix
     explicit AttentionMask(const Matrix& mask) : mask_(mask), has_mask_(true) {}
 
+    // Add is_masked method
+    bool is_masked(size_t i, size_t j) const {
+        return mask.empty() ? false : mask(i, j) == 0.0f;
+    }
+
   private:
     Matrix mask_;
     bool has_mask_ = false;
 };
+
+class KVCache;
 
 /**
  * @brief Implementation of Multi-Head Attention mechanism with various optimizations.
@@ -129,57 +142,35 @@ class MultiHeadAttention {
      * @return Vector of references to weight matrices
      */
     std::vector<std::reference_wrapper<Matrix>> get_weights() {
-        return {std::ref(query_proj), std::ref(key_proj), std::ref(value_proj),
-                std::ref(output_proj)};
+        return {
+            std::ref(params_.query_weights),
+            std::ref(params_.key_weights),
+            std::ref(params_.value_weights),
+            std::ref(params_.output_weights)
+        };
     }
 
     friend class Transformer;
 
-    FloatVector& getQueryBias() {
-        return query_bias;
-    }
-    FloatVector& getKeyBias() {
-        return key_bias;
-    }
-    FloatVector& getValueBias() {
-        return value_bias;
-    }
-    FloatVector& getOutputBias() {
-        return output_bias;
-    }
+    FloatVector& getQueryBias() { return params_.query_bias; }
+    FloatVector& getKeyBias() { return params_.key_bias; }
+    FloatVector& getValueBias() { return params_.value_bias; }
+    FloatVector& getOutputBias() { return params_.output_bias; }
 
     MultiHeadAttention(const MultiHeadAttention& other)
-        : query_proj(other.query_proj), key_proj(other.key_proj), value_proj(other.value_proj),
-          output_proj(other.output_proj), query_bias(other.query_bias), key_bias(other.key_bias),
-          value_bias(other.value_bias), output_bias(other.output_bias),
-          query_proj_grad(other.query_proj_grad), key_proj_grad(other.key_proj_grad),
-          value_proj_grad(other.value_proj_grad), output_proj_grad(other.output_proj_grad),
-          query_bias_grad(other.query_bias_grad), key_bias_grad(other.key_bias_grad),
-          value_bias_grad(other.value_bias_grad), output_bias_grad(other.output_bias_grad),
-          num_heads(other.num_heads), head_dim(other.head_dim), hidden_size(other.hidden_size),
-          dropout_prob(other.dropout_prob), use_rope(other.use_rope), use_flash(other.use_flash),
-          use_sliding_window(other.use_sliding_window), window_size(other.window_size),
-          use_gqa(other.use_gqa), num_kv_heads(other.num_kv_heads),
-          max_seq_length(other.max_seq_length), use_fp16_(other.use_fp16_) {}
+        : params_(other.params_), grads_(other.grads_),
+          num_heads(other.num_heads), head_dim(other.head_dim),
+          hidden_size(other.hidden_size), dropout_prob(other.dropout_prob),
+          use_rope(other.use_rope), use_flash(other.use_flash),
+          use_sliding_window(other.use_sliding_window),
+          window_size(other.window_size), use_gqa(other.use_gqa),
+          num_kv_heads(other.num_kv_heads), max_seq_length(other.max_seq_length),
+          use_fp16_(other.use_fp16_) {}
 
     MultiHeadAttention& operator=(const MultiHeadAttention& other) {
         if (this != &other) {
-            query_proj = other.query_proj;
-            key_proj = other.key_proj;
-            value_proj = other.value_proj;
-            output_proj = other.output_proj;
-            query_bias = other.query_bias;
-            key_bias = other.key_bias;
-            value_bias = other.value_bias;
-            output_bias = other.output_bias;
-            query_proj_grad = other.query_proj_grad;
-            key_proj_grad = other.key_proj_grad;
-            value_proj_grad = other.value_proj_grad;
-            output_proj_grad = other.output_proj_grad;
-            query_bias_grad = other.query_bias_grad;
-            key_bias_grad = other.key_bias_grad;
-            value_bias_grad = other.value_bias_grad;
-            output_bias_grad = other.output_bias_grad;
+            params_ = other.params_;
+            grads_ = other.grads_;
             num_heads = other.num_heads;
             head_dim = other.head_dim;
             hidden_size = other.hidden_size;
@@ -196,62 +187,34 @@ class MultiHeadAttention {
         return *this;
     }
 
+    // Parameter structure to hold all weights and biases
     struct Parameters {
-        std::vector<std::reference_wrapper<Matrix>> matrices;
-        std::vector<std::reference_wrapper<Vector>> vectors;
-
-        // Add iterator support
-        auto begin() {
-            return matrices.begin();
-        }
-        auto end() {
-            return matrices.end();
-        }
-        auto begin() const {
-            return matrices.begin();
-        }
-        auto end() const {
-            return matrices.end();
-        }
+        Matrix query_weights;
+        Matrix key_weights;
+        Matrix value_weights;
+        Matrix output_weights;
+        FloatVector query_bias;
+        FloatVector key_bias;
+        FloatVector value_bias;
+        FloatVector output_bias;
     };
 
-    Parameters& parameters() {
-        params.matrices.clear();
-        params.vectors.clear();
+    // Gradient structure to hold all gradients
+    struct Gradients {
+        Matrix query_grad;      // Gradient for query weights
+        Matrix key_grad;        // Gradient for key weights
+        Matrix value_grad;      // Gradient for value weights
+        Matrix output_grad;     // Gradient for output weights
+        FloatVector query_bias_grad;    // Gradient for query bias
+        FloatVector key_bias_grad;      // Gradient for key bias
+        FloatVector value_bias_grad;    // Gradient for value bias
+        FloatVector output_bias_grad;   // Gradient for output bias
+    };
 
-        // Matrix parameters
-        params.matrices.emplace_back(query_proj);
-        params.matrices.emplace_back(key_proj);
-        params.matrices.emplace_back(value_proj);
-        params.matrices.emplace_back(output_proj);
-
-        // Vector parameters
-        params.vectors.emplace_back(query_bias);
-        params.vectors.emplace_back(key_bias);
-        params.vectors.emplace_back(value_bias);
-        params.vectors.emplace_back(output_bias);
-
-        return params;
-    }
-
-    const Parameters& parameter_gradients() const {
-        param_gradients.matrices.clear();
-        param_gradients.vectors.clear();
-
-        // Matrix gradients
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(query_proj_grad)));
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(key_proj_grad)));
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(value_proj_grad)));
-        param_gradients.matrices.emplace_back(std::ref(const_cast<Matrix&>(output_proj_grad)));
-
-        // Vector gradients
-        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(query_bias_grad)));
-        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(key_bias_grad)));
-        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(value_bias_grad)));
-        param_gradients.vectors.emplace_back(std::ref(const_cast<Vector&>(output_bias_grad)));
-
-        return param_gradients;
-    }
+    Parameters& parameters() { return params_; }
+    Gradients& param_gradients() { return grads_; }
+    const Parameters& parameters() const { return params_; }
+    const Gradients& param_gradients() const { return grads_; }
 
     /**
      * @brief Computes attention scores between query and key matrices.
@@ -261,9 +224,10 @@ class MultiHeadAttention {
      * 
      * @param Q Query matrix [batch_size * num_heads, seq_len, head_dim]
      * @param K Key matrix [batch_size * num_kv_heads, seq_len, head_dim]
+     * @param mask Attention mask to prevent attending to certain positions
      * @return Attention scores [batch_size * num_heads, seq_len, seq_len]
      */
-    Matrix compute_attention_scores(const Matrix& Q, const Matrix& K);
+    Matrix compute_attention_scores(const Matrix& Q, const Matrix& K, const AttentionMask& mask);
 
     /**
      * @brief Initialize the attention weights and biases
@@ -273,38 +237,38 @@ class MultiHeadAttention {
      */
     void initialize_weights();
 
-  private:
-    Parameters params;                  // Trainable parameters
-    mutable Parameters param_gradients; // Parameter gradients
-
-    // Add max_seq_length to member variables
-    size_t max_seq_length;     ///< Maximum sequence length supported
-
-    // Gradients
-    mutable Matrix query_proj_grad;
-    mutable Matrix key_proj_grad;
-    mutable Matrix value_proj_grad;
-    mutable Matrix output_proj_grad;
-    mutable FloatVector query_bias_grad;
-    mutable FloatVector key_bias_grad;
-    mutable FloatVector value_bias_grad;
-    mutable FloatVector output_bias_grad;
-
-    // Projection matrices and their gradients
-    Matrix query_proj;        ///< Query projection matrix [hidden_size, num_heads * head_dim]
-    Matrix key_proj;          ///< Key projection matrix [hidden_size, num_kv_heads * head_dim]
-    Matrix value_proj;        ///< Value projection matrix [hidden_size, num_kv_heads * head_dim]
-    Matrix output_proj;       ///< Output projection matrix [num_heads * head_dim, hidden_size]
+    // Update accessor methods to use Parameters structure
+    Matrix& get_query_weights() { return params_.query_weights; }
+    Matrix& get_key_weights() { return params_.key_weights; }
+    Matrix& get_value_weights() { return params_.value_weights; }
+    Matrix& get_output_weights() { return params_.output_weights; }
     
-    // Bias vectors and their gradients
-    FloatVector query_bias;   ///< Query projection bias
-    FloatVector key_bias;     ///< Key projection bias
-    FloatVector value_bias;   ///< Value projection bias
-    FloatVector output_bias;  ///< Output projection bias
+    // Add const versions
+    const Matrix& get_query_weights() const { return params_.query_weights; }
+    const Matrix& get_key_weights() const { return params_.key_weights; }
+    const Matrix& get_value_weights() const { return params_.value_weights; }
+    const Matrix& get_output_weights() const { return params_.output_weights; }
+
+    // Add the direct matrix version of forward
+    Matrix forward(const Matrix& input, const Matrix& attention_mask);
+
+    void reset_state() {
+        // Clear all cached computations
+        cached_keys = Matrix();
+        cached_values = Matrix();
+        cached_attention_weights = Matrix();
+        cached_query_layer = Matrix();
+        cached_key_layer = Matrix();
+        cached_value_layer = Matrix();
+    }
+
+  private:
+    Parameters params_;
+    Gradients grads_;
     
     // Configuration parameters
     size_t num_heads;         ///< Number of attention heads
-    size_t head_dim;          ///< Dimension of each attention head
+    size_t head_dim;         ///< Dimension of each attention head
     size_t hidden_size;       ///< Size of input and output tensors
     float dropout_prob;       ///< Dropout probability
     bool use_rope;           ///< Whether to use rotary position embeddings
@@ -313,10 +277,21 @@ class MultiHeadAttention {
     size_t window_size;      ///< Size of attention window
     bool use_gqa;           ///< Whether to use grouped query attention
     size_t num_kv_heads;     ///< Number of key/value heads for GQA
+    size_t max_seq_length;   ///< Maximum sequence length supported
+    bool use_fp16_;         ///< Whether to use FP16 computation
 
-    // RoPE caches
-    Matrix cos_cached;       ///< Cached cosine values for RoPE
-    Matrix sin_cached;       ///< Cached sine values for RoPE
+    // Cache variables
+    Matrix cached_keys;              ///< Cached key projections
+    Matrix cached_values;            ///< Cached value projections
+    Matrix cached_attention_weights; ///< Cached attention scores
+    Matrix cached_query_layer;       ///< Cached query layer output
+    Matrix cached_key_layer;         ///< Cached key layer output
+    Matrix cached_value_layer;       ///< Cached value layer output
+
+    // Static RoPE cache shared across all instances
+    static Matrix cos_cached;
+    static Matrix sin_cached;
+    static bool rope_cache_initialized;
 
     // Private helper methods
     Vector apply_rope(const Vector& x, size_t position) const;
@@ -346,36 +321,13 @@ class MultiHeadAttention {
         }
     }
 
-    // Add private gradient computation methods
-    Matrix compute_query_gradients(const Matrix& grad_output, const Matrix& input) const {
-        // Q = input * Wq
-        // dQ = grad_output * Wq^T
-        return matmul(grad_output, query_proj.transpose());
-    }
-
-    Matrix compute_key_gradients(const Matrix& grad_output, const Matrix& input) const {
-        // K = input * Wk
-        // dK = grad_output * Wk^T
-        return matmul(grad_output, key_proj.transpose());
-    }
-
-    Matrix compute_value_gradients(const Matrix& grad_output, const Matrix& input) const {
-        // V = input * Wv
-        // dV = grad_output * Wv^T
-        return matmul(grad_output, value_proj.transpose());
-    }
-
-    Matrix combine_gradients(const Matrix& dQ, const Matrix& dK, const Matrix& dV) const {
-        // Combine all gradients
-        Matrix combined = dQ;
-        combined += dK;
-        combined += dV;
-        return combined;
-    }
-
-    // Add compute_attention declaration
+    // Update method declarations to match implementations
+    Matrix compute_query_gradients(const Matrix& grad, const Matrix& input);
+    Matrix compute_key_gradients(const Matrix& grad, const Matrix& input);
+    Matrix compute_value_gradients(const Matrix& grad, const Matrix& input);
+    Matrix combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value);
     Matrix compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
-                             const AttentionMask& mask);
+                           const AttentionMask& mask) const;
 
     // Helper method for safe matrix multiplication
     Matrix safe_matmul(const Matrix& A, const Matrix& B) {
@@ -406,6 +358,7 @@ class MultiHeadAttention {
         }
     }
 
+    // Move implementation to source file
     void apply_stable_softmax(Matrix& x) const;
 
     // Add these new methods to handle Tensors directly
@@ -444,19 +397,19 @@ class MultiHeadAttention {
     float get_cos_cached(size_t pos, size_t dim_idx) const;
     float get_sin_cached(size_t pos, size_t dim_idx) const;
 
-    // Add use_fp16 as a member variable
-    bool use_fp16_;
+    // Helper method for computing outer product
+    Matrix outer_product(const Vector& a, const Vector& b) const {
+        Matrix result(a.size(), b.size());
+        for (size_t i = 0; i < a.size(); ++i) {
+            for (size_t j = 0; j < b.size(); ++j) {
+                result(i, j) = a[i] * b[j];
+            }
+        }
+        return result;
+    }
 
-    /**
-     * @brief Compute gradients for query projection
-     * @param grad Gradient from upstream
-     * @param input Original input matrix
-     * @return Gradient for query computation
-     */
-    Matrix compute_query_gradients(const Matrix& grad, const Matrix& input);
-    Matrix compute_key_gradients(const Matrix& grad, const Matrix& input);
-    Matrix compute_value_gradients(const Matrix& grad, const Matrix& input);
-    Matrix combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value);
+    // Add static initialization method
+    static void initialize_static_rope_cache(size_t max_seq_len, size_t dim, size_t num_heads);
 };
 
 // Add sliding window attention
@@ -464,13 +417,39 @@ class SlidingWindowAttention : public MultiHeadAttention {
   private:
     size_t window_size;
     bool use_local_attention;
+    size_t head_dim;  // Add head dimension member
 
-    void process_attention_window(const Matrix& Q, const Matrix& K, const Matrix& V, Matrix& output,
-                                  size_t start, size_t end);
+    /**
+     * @brief Process attention for a single window
+     * @param Q Query matrix for current position
+     * @param K Key matrix for local window
+     * @param V Value matrix for local window
+     * @param output Output matrix to update
+     * @param pos Current position in sequence
+     * @param window_start Start position of current window
+     */
+    void process_attention_window(const Matrix& Q, const Matrix& K, const Matrix& V,
+                                Matrix& output, size_t pos, size_t window_start);
 
   public:
-    explicit SlidingWindowAttention(size_t window_size_ = 512)
-        : MultiHeadAttention(), window_size(window_size_) {}
+    /**
+     * @brief Construct a sliding window attention layer
+     * @param window_size_ Size of the attention window
+     * @param head_dim_ Dimension of each attention head
+     * @param use_local_attention_ Whether to use local attention only
+     */
+    explicit SlidingWindowAttention(size_t window_size_ = 512, size_t head_dim_ = 64,
+                                  bool use_local_attention_ = true)
+        : MultiHeadAttention(), window_size(window_size_), head_dim(head_dim_),
+          use_local_attention(use_local_attention_) {}
+
+    /**
+     * @brief Compute attention with local sliding windows
+     * @param Q Query matrix
+     * @param K Key matrix
+     * @param V Value matrix
+     * @return Output matrix after local attention
+     */
     Matrix compute_local_attention(const Matrix& Q, const Matrix& K, const Matrix& V);
 };
 

@@ -1,19 +1,131 @@
 #include "../include/attention.hpp"
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include "../include/cuda/cuda_utils.cuh"
+#include "../include/cuda/cuda_launch.cuh"
+#include "../include/cuda/attention_ops.cuh"
+#include "../include/cuda/matrix_ops.cuh"
+#endif
 #include "../include/gqa.hpp"
 #include "../include/performance_metrics.hpp"
 #include "../include/transformer.hpp"
 #include "../include/config.hpp"
-#include "attention.hpp"
+#include "../include/half_precision.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <string>
-#include "../include/half_precision.hpp"
-#include "../include/cuda/attention_ops.cuh"
-#include "../include/cuda/matrix_ops.cuh"
 
 extern PerformanceMetrics metrics;
+
+// Initialize static members
+Matrix MultiHeadAttention::cos_cached;
+Matrix MultiHeadAttention::sin_cached;
+bool MultiHeadAttention::rope_cache_initialized = false;
+
+void MultiHeadAttention::initialize_static_rope_cache(size_t max_seq_len, size_t dim, size_t num_heads) {
+    if (rope_cache_initialized) {
+        return;  // Cache already initialized
+    }
+
+    std::cout << "Initializing static RoPE cache:" << std::endl;
+    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
+    std::cout << "- dim: " << dim << std::endl;
+    std::cout << "- num_heads: " << num_heads << std::endl;
+
+    cos_cached = Matrix(max_seq_len, dim * num_heads);
+    sin_cached = Matrix(max_seq_len, dim * num_heads);
+
+    std::cout << "Created cache matrices:" << std::endl;
+    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
+    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
+
+    for (size_t pos = 0; pos < max_seq_len; pos++) {
+        for (size_t h = 0; h < num_heads; h++) {
+            for (size_t i = 0; i < dim; i++) {
+                size_t idx = h * dim + i;
+                float theta = std::pow(10000.0f, -2.0f * i / dim);
+                cos_cached(pos, idx) = std::cos(pos * theta);
+                sin_cached(pos, idx) = std::sin(pos * theta);
+            }
+        }
+    }
+
+    rope_cache_initialized = true;
+}
+
+MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, size_t head_dim_,
+                                     float dropout_prob_, bool use_flash_, bool use_rope_,
+                                     bool use_sliding_window_, size_t window_size_, bool use_gqa_,
+                                     size_t num_kv_heads_, size_t max_seq_length_, bool use_fp16)
+    : num_heads(num_heads_), head_dim(head_dim_), hidden_size(hidden_size_),
+      dropout_prob(dropout_prob_), use_flash(use_flash_), use_rope(use_rope_),
+      use_sliding_window(use_sliding_window_), window_size(window_size_),
+      use_gqa(use_gqa_), num_kv_heads(num_kv_heads_), max_seq_length(max_seq_length_),
+      use_fp16_(use_fp16) {
+
+    std::cout << "\n=== MultiHeadAttention::constructor START ===" << std::endl;
+
+    // Initialize matrices with correct dimensions
+    params_.query_weights = Matrix(hidden_size_, hidden_size_);
+    params_.key_weights = Matrix(hidden_size_, hidden_size_);
+    params_.value_weights = Matrix(hidden_size_, hidden_size_);
+    params_.output_weights = Matrix(hidden_size_, hidden_size_);
+
+    // Initialize bias vectors
+    params_.query_bias = FloatVector(hidden_size_ * num_heads_);
+    params_.key_bias = FloatVector(hidden_size_ * num_heads_);
+    params_.value_bias = FloatVector(hidden_size_ * num_heads_);
+    params_.output_bias = FloatVector(hidden_size_);
+
+    // Initialize gradients
+    grads_.query_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.key_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.value_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.output_grad = Matrix(hidden_size_, hidden_size_);
+    grads_.query_bias_grad = FloatVector(hidden_size_ * num_heads_);
+    grads_.key_bias_grad = FloatVector(hidden_size_ * num_heads_);
+    grads_.value_bias_grad = FloatVector(hidden_size_ * num_heads_);
+    grads_.output_bias_grad = FloatVector(hidden_size_);
+
+    // Print configuration
+    std::cout << "Configuration:" << std::endl;
+    std::cout << "- Hidden size: " << hidden_size << std::endl;
+    std::cout << "- Number of heads: " << num_heads << std::endl;
+    std::cout << "- Head dimension: " << head_dim << std::endl;
+    std::cout << "- Dropout probability: " << dropout_prob << std::endl;
+    std::cout << "- Use flash attention: " << std::boolalpha << use_flash << std::endl;
+    std::cout << "- Use RoPE: " << use_rope << std::endl;
+    std::cout << "- Use sliding window: " << use_sliding_window << std::endl;
+    std::cout << "- Window size: " << window_size << std::endl;
+    std::cout << "- Use GQA: " << use_gqa << std::endl;
+    std::cout << "- Number of KV heads: " << num_kv_heads << std::endl;
+
+    // Validate input dimensions
+    std::cout << "\nValidating dimensions..." << std::endl;
+    if (hidden_size == 0 || num_heads == 0 || head_dim == 0) {
+        throw std::runtime_error("Invalid dimensions: hidden_size=" + std::to_string(hidden_size) +
+                               ", num_heads=" + std::to_string(num_heads) +
+                               ", head_dim=" + std::to_string(head_dim));
+    }
+
+    if (hidden_size % num_heads != 0) {
+        throw std::runtime_error("hidden_size must be divisible by num_heads");
+    }
+    std::cout << "Dimension validation passed" << std::endl;
+
+    // Initialize weights with Xavier/Glorot initialization
+    std::cout << "\nInitializing weights..." << std::endl;
+    initialize_weights();
+
+    // Initialize RoPE cache if needed and not already initialized
+    if (use_rope) {
+        initialize_static_rope_cache(max_seq_length, head_dim, num_heads);
+    }
+
+    std::cout << "=== MultiHeadAttention::constructor END ===\n" << std::endl;
+}
 
 Vector MultiHeadAttention::apply_rope(const Vector& x, size_t position) const {
     Vector result = x;
@@ -53,587 +165,405 @@ Vector MultiHeadAttention::apply_rope(const Vector& x, size_t position) const {
 }
 
 Matrix MultiHeadAttention::flash_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
-                                           const AttentionMask& mask) const {
-    std::cout << "\n=== MultiHeadAttention::flash_attention START ===" << std::endl;
+                                         const AttentionMask& mask) const {
+    std::cout << "=== MultiHeadAttention::flash_attention START ===\n";
+    
     const size_t seq_len = Q.rows();
     const size_t head_dim = Q.cols();
-
-    // Block sizes based on hardware cache sizes
-    const size_t Br = std::min(size_t(256), seq_len); // Q block size
-    const size_t Bc = std::min(size_t(256), seq_len); // K/V block size
-
     Matrix O(seq_len, head_dim, 0.0f);
-    std::vector<float> L(seq_len, 0.0f);                                    // Scale factors
-    std::vector<float> m(seq_len, -std::numeric_limits<float>::infinity()); // Max values
-
-    // Iterate over blocks
-    for (size_t kr = 0; kr < seq_len; kr += Br) {
-        size_t kr_end = std::min(kr + Br, seq_len);
-
-        for (size_t kc = 0; kc < seq_len; kc += Bc) {
-            size_t kc_end = std::min(kc + Bc, seq_len);
-
-            // Load Q, K, V blocks
-            Matrix Qb = Q.block(kr, 0, kr_end - kr, head_dim);
-            Matrix Kb = K.block(kc, 0, kc_end - kc, head_dim);
-            Matrix Vb = V.block(kc, 0, kc_end - kc, head_dim);
-
-            // Compute attention scores for this block
-            Matrix S = matmul(Qb, Kb.transpose());
-            S *= 1.0f / std::sqrt(static_cast<float>(head_dim));
-
-            // Apply mask if needed
-            if (!mask.mask.empty()) {
-                for (size_t i = kr; i < kr_end; i++) {
-                    for (size_t j = kc; j < kc_end; j++) {
-                        if (mask.mask(i, j) == 0.0f) {
-                            S(i - kr, j - kc) = -std::numeric_limits<float>::infinity();
-                        }
-                    }
+    std::vector<float> m(seq_len, -std::numeric_limits<float>::infinity());
+    std::vector<float> L(seq_len, 0.0f);
+    
+    const float scale = 1.0f / std::sqrt(head_dim);  // Scaling factor for better numerical stability
+    const float attn_clip = 5.0f;  // Clip attention scores
+    
+    // Process in blocks for better cache efficiency
+    const size_t block_size = 64;  // Adjust based on cache size
+    for (size_t kr = 0; kr < seq_len; kr += block_size) {
+        const size_t k_end = std::min(kr + block_size, seq_len);
+        
+        // Compute attention scores for this block
+        Matrix S(seq_len, k_end - kr);
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < seq_len; i++) {
+            for (size_t j = kr; j < k_end; j++) {
+                float score = 0.0f;
+                for (size_t d = 0; d < head_dim; d++) {
+                    score += Q(i, d) * K(j, d);
                 }
-            }
-
-            // Update running max and scale factors
-            for (size_t i = 0; i < S.rows(); i++) {
-                float mi = m[i + kr];
-                float li = L[i + kr];
-
-                for (size_t j = 0; j < S.cols(); j++) {
-                    float sij = S(i, j);
-                    if (sij > mi) {
-                        float mi_new = sij;
-                        float scale = std::exp(mi - mi_new);
-                        li *= scale;
-                        mi = mi_new;
-
-                        // Scale existing output
-                        for (size_t d = 0; d < head_dim; d++) {
-                            O(i + kr, d) *= scale;
-                        }
-                    }
-
-                    float pij = std::exp(sij - mi);
-                    li += pij;
-
-                    // Update output
-                    for (size_t d = 0; d < head_dim; d++) {
-                        O(i + kr, d) += pij * Vb(j, d);
-                    }
+                score *= scale;
+                
+                // Apply mask if needed
+                if (mask.is_masked(i, j)) {
+                    score = -std::numeric_limits<float>::infinity();
                 }
-
-                m[i + kr] = mi;
-                L[i + kr] = li;
+                
+                // Clip attention scores for stability
+                score = std::max(-attn_clip, std::min(attn_clip, score));
+                S(i, j - kr) = score;
             }
         }
+        
+        // Update output with numerically stable softmax
+        #pragma omp parallel for
+        for (size_t i = 0; i < seq_len; i++) {
+            float mi = m[i];
+            float li = L[i];
+            
+            // Find max for numerical stability
+            for (size_t j = 0; j < S.cols(); j++) {
+                mi = std::max(mi, S(i, j));
+            }
+            
+            // Compute softmax with improved stability
+            std::vector<float> exp_scores(S.cols());
+            float sum_exp = 0.0f;
+            
+            for (size_t j = 0; j < S.cols(); j++) {
+                float e = std::exp(S(i, j) - mi);
+                exp_scores[j] = e;
+                sum_exp += e;
+            }
+            
+            // Update output with normalized attention scores
+            for (size_t j = 0; j < S.cols(); j++) {
+                float attn_prob = exp_scores[j] / (sum_exp + 1e-6f);  // Add small epsilon
+                for (size_t d = 0; d < head_dim; d++) {
+                    O(i, d) += attn_prob * V(j + kr, d);
+                }
+            }
+            
+            m[i] = mi;
+            L[i] = sum_exp;
+        }
     }
-
-    // Normalize output
+    
+    // Final normalization of output
+    const float output_clip = 3.0f;  // Clip output values
+    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < seq_len; i++) {
         for (size_t d = 0; d < head_dim; d++) {
-            O(i, d) /= L[i];
+            O(i, d) = std::max(-output_clip, std::min(output_clip, O(i, d)));
         }
     }
-
-    std::cout << "=== MultiHeadAttention::flash_attention END ===\n" << std::endl;
+    
+    std::cout << "=== MultiHeadAttention::flash_attention END ===\n";
     return O;
 }
 
-Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask, 
-                                 const std::optional<KVCache>& kv_cache) {
+Matrix MultiHeadAttention::forward(const Matrix& input, const AttentionMask& mask, const std::optional<KVCache>& kv_cache) {
     try {
+        std::cout << "\n=== MultiHeadAttention::forward START ===" << std::endl;
+        std::cout << "Input dims: " << input.rows() << "x" << input.cols() << std::endl;
+        
         // Project input to Q, K, V
-        Matrix Q = query_proj.forward(input);
-        Matrix K = key_proj.forward(input);
-        Matrix V = value_proj.forward(input);
+        Matrix Q = matmul(input, params_.query_weights);
+        Matrix K = matmul(input, params_.key_weights);
+        Matrix V = matmul(input, params_.value_weights);
         
-        // Debug Q, K, V projections
-        auto debug_matrix = [](const std::string& name, const Matrix& mat) {
-            float min_val = std::numeric_limits<float>::infinity();
-            float max_val = -std::numeric_limits<float>::infinity();
-            float sum_val = 0.0f;
-            size_t nonzero_val = 0;
-            
-            for (size_t i = 0; i < mat.rows(); i++) {
-                for (size_t j = 0; j < mat.cols(); j++) {
-                    float val = mat(i, j);
-                    min_val = std::min(min_val, val);
-                    max_val = std::max(max_val, val);
-                    sum_val += val;
-                    if (std::abs(val) > 1e-6) nonzero_val++;
-                }
-            }
-            
-            std::cout << name << " Statistics:\n"
-                      << "Min: " << min_val << "\n"
-                      << "Max: " << max_val << "\n"
-                      << "Mean: " << sum_val / (mat.rows() * mat.cols()) << "\n"
-                      << "Nonzero: " << nonzero_val << "/" 
-                      << (mat.rows() * mat.cols()) << "\n\n";
-        };
+        std::cout << "Q dims: " << Q.rows() << "x" << Q.cols() << std::endl;
+        std::cout << "K dims: " << K.rows() << "x" << K.cols() << std::endl;
+        std::cout << "V dims: " << V.rows() << "x" << V.cols() << std::endl;
+        std::cout << "Query weights dims: " << params_.query_weights.rows() << "x" << params_.query_weights.cols() << std::endl;
+        std::cout << "Key weights dims: " << params_.key_weights.rows() << "x" << params_.key_weights.cols() << std::endl;
+        std::cout << "Value weights dims: " << params_.value_weights.rows() << "x" << params_.value_weights.cols() << std::endl;
         
-        debug_matrix("Query Projection", Q);
-        debug_matrix("Key Projection", K);
-        debug_matrix("Value Projection", V);
+        // Cache for backward pass
+        GradientCheckpoint::cache_activation("query", Q);
+        GradientCheckpoint::cache_activation("key", K);
+        GradientCheckpoint::cache_activation("value", V);
         
         // Get dimensions
         size_t batch_size = input.rows();
-        size_t hidden_size = input.cols();  // This should be the model's hidden_size
-        size_t seq_len = batch_size;  // For self-attention, sequence length equals batch size
+        size_t hidden_size = input.cols();
+        size_t seq_len = batch_size;
         
-#ifdef USE_CUDA
-        try {
-            // Use CUDA for attention computation
-            Matrix scores(batch_size, batch_size);  // Full sequence length for attention
-            
-            // Batch compute attention scores and softmax
-            cuda::compute_attention_scores(Q, K, scores, 1.0f / std::sqrt(head_dim), num_heads);
-            debug_matrix("Raw Attention Scores", scores);
-            
-            if (mask) {
-                scores += mask.value();
-                debug_matrix("Masked Attention Scores", scores);
-            }
-            cuda::apply_softmax(scores);
-            debug_matrix("Softmax Attention Scores", scores);
-            
-            // Single synchronization point after main computation
-            Matrix output(batch_size, hidden_size);
-            cuda::attention_forward(Q, K, V, output, batch_size, num_heads, seq_len);
-            debug_matrix("Attention Output", output);
-            
-            CUDA_CHECK(cudaGetLastError());
-            cudaDeviceSynchronize();  // Single sync point
-            
-            // Final projection
-            Matrix final_output = output_proj.forward(output);
-            debug_matrix("Final Output", final_output);
-            
-            return final_output;
-            
-        } catch (const std::runtime_error& e) {
-            std::cerr << "CUDA attention failed, falling back to CPU: " << e.what() << std::endl;
-#endif
-            // CPU fallback implementation
-            Matrix scores = matmul(Q, K.transpose());
-            scores *= (1.0f / std::sqrt(head_dim));
-            debug_matrix("Raw Attention Scores", scores);
-
-            if (mask) {
-                scores += mask.value();
-                debug_matrix("Masked Attention Scores", scores);
-            }
-
-            scores.apply_softmax();
-            debug_matrix("Softmax Attention Scores", scores);
-            
-            Matrix output = matmul(scores, V);
-            debug_matrix("Attention Output", output);
-            
-            // Ensure output has correct dimensions before projection
-            if (output.cols() != hidden_size) {
-                throw std::runtime_error("Attention output has wrong dimensions: " + 
-                    std::to_string(output.cols()) + " vs expected " + std::to_string(hidden_size));
-            }
-            
-            Matrix final_output = output_proj.forward(output);
-            debug_matrix("Final Output", final_output);
-            
-            return final_output;
-#ifdef USE_CUDA
+        std::cout << "batch_size: " << batch_size << std::endl;
+        std::cout << "hidden_size: " << hidden_size << std::endl;
+        std::cout << "seq_len: " << seq_len << std::endl;
+        
+        Matrix attention_output;
+        if (use_flash) {
+            attention_output = flash_attention(Q, K, V, mask);
+        } else {
+            Matrix attention_scores = compute_attention_scores(Q, K, mask);
+            std::cout << "Attention scores dims: " << attention_scores.rows() << "x" << attention_scores.cols() << std::endl;
+            GradientCheckpoint::cache_activation("attention_scores", attention_scores);
+            attention_output = matmul(attention_scores, V);
         }
-#endif
+        std::cout << "Attention output dims: " << attention_output.rows() << "x" << attention_output.cols() << std::endl;
+        
+        // Final projection
+        Matrix final_output = matmul(attention_output, params_.output_weights);
+        std::cout << "Final output dims: " << final_output.rows() << "x" << final_output.cols() << std::endl;
+        std::cout << "Output weights dims: " << params_.output_weights.rows() << "x" << params_.output_weights.cols() << std::endl;
+        
+        std::cout << "=== MultiHeadAttention::forward END ===\n" << std::endl;
+        return final_output;
     } catch (const std::exception& e) {
         throw std::runtime_error("MultiHeadAttention forward failed: " + std::string(e.what()));
     }
 }
 
-void MultiHeadAttention::save(std::ostream& os) const {
-    std::cout << "\n=== MultiHeadAttention::save START ===" << std::endl;
+Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matrix& K, const AttentionMask& mask) {
+    Matrix scores = matmul(Q, K.transpose());
 
-    // Save dimensions and configuration
-    std::cout << "Saving configuration..." << std::endl;
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-    std::cout << "- Head dimension: " << head_dim << std::endl;
-    os.write(reinterpret_cast<const char*>(&num_heads), sizeof(num_heads));
-    os.write(reinterpret_cast<const char*>(&head_dim), sizeof(head_dim));
+    // Scale scores with careful handling of numerical stability
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
 
-    // Save projection matrices
-    std::cout << "\nSaving projection matrices..." << std::endl;
-    std::cout << "Query projection shape: " << query_proj.rows() << "x" << query_proj.cols()
-              << std::endl;
-    query_proj.save(os);
-    std::cout << "Key projection shape: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
-    key_proj.save(os);
-    std::cout << "Value projection shape: " << value_proj.rows() << "x" << value_proj.cols()
-              << std::endl;
-    value_proj.save(os);
-    std::cout << "Output projection shape: " << output_proj.rows() << "x" << output_proj.cols()
-              << std::endl;
-    output_proj.save(os);
-
-    std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
-}
-
-std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, const TransformerConfig& config) {
-    std::cout << "\n=== MultiHeadAttention::load START ===" << std::endl;
-
-    // Read configuration
-    std::cout << "Reading configuration..." << std::endl;
-    size_t num_heads, head_dim;
-    is.read(reinterpret_cast<char*>(&num_heads), sizeof(num_heads));
-    is.read(reinterpret_cast<char*>(&head_dim), sizeof(head_dim));
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-    std::cout << "- Head dimension: " << head_dim << std::endl;
-
-    size_t hidden_size = num_heads * head_dim;
-
-    // Create attention instance with config parameters
-    auto attention = std::make_unique<MultiHeadAttention>(
-        hidden_size, num_heads, head_dim, config.dropout_rate, 
-        config.use_flash_attention, config.use_rope, 
-        config.use_sliding_window, config.window_size, 
-        config.use_gqa, num_heads, config.max_seq_length, config.use_fp16);
-
-    // Load projection matrices
-    std::cout << "\nLoading projection matrices..." << std::endl;
-    attention->query_proj = Matrix::load(is);
-    attention->key_proj = Matrix::load(is);
-    attention->value_proj = Matrix::load(is);
-    attention->output_proj = Matrix::load(is);
-
-    // Validate loaded matrices
-    std::cout << "\nValidating loaded matrices..." << std::endl;
-    auto validate_matrix = [](const Matrix& m, const std::string& name) {
-        if (m.empty()) {
-            throw std::runtime_error(name + " is empty after loading");
-        }
-        std::cout << name << " statistics:" << std::endl;
-        std::cout << "- Shape: " << m.rows() << "x" << m.cols() << std::endl;
-        std::cout << "- Range: [" << m.min() << ", " << m.max() << "]" << std::endl;
-        if (std::isnan(m.min()) || std::isnan(m.max()) || std::isinf(m.min()) ||
-            std::isinf(m.max())) {
-            throw std::runtime_error("Invalid values in " + name + " after loading");
-        }
-    };
-
-    validate_matrix(attention->query_proj, "Query projection");
-    validate_matrix(attention->key_proj, "Key projection");
-    validate_matrix(attention->value_proj, "Value projection");
-    validate_matrix(attention->output_proj, "Output projection");
-
-    std::cout << "=== MultiHeadAttention::load END ===\n" << std::endl;
-    return attention;
-}
-
-MultiHeadAttention::MultiHeadAttention(size_t hidden_size_, size_t num_heads_, size_t head_dim_,
-                                       float dropout_prob_, bool use_flash_, bool use_rope_,
-                                       bool use_sliding_window_, size_t window_size_, bool use_gqa_,
-                                       size_t num_kv_heads_, size_t max_seq_length_, bool use_fp16)
-    : num_heads(num_heads_), head_dim(head_dim_), hidden_size(hidden_size_),
-      dropout_prob(dropout_prob_), use_flash(use_flash_), use_rope(use_rope_),
-      use_sliding_window(use_sliding_window_), window_size(window_size_), use_gqa(use_gqa_),
-      num_kv_heads(num_kv_heads_), max_seq_length(max_seq_length_),
-      use_fp16_(use_fp16),
-      // Initialize matrices with correct dimensions
-      query_proj(Matrix(hidden_size_, hidden_size_)),
-      key_proj(Matrix(hidden_size_, hidden_size_)),
-      value_proj(Matrix(hidden_size_, hidden_size_)),
-      output_proj(Matrix(hidden_size_, hidden_size_)),
-      // Initialize bias vectors
-      query_bias(FloatVector(hidden_size_ * num_heads_)),
-      key_bias(FloatVector(hidden_size_ * num_heads_)),
-      value_bias(FloatVector(hidden_size_ * num_heads_)), output_bias(FloatVector(hidden_size_)),
-      // Initialize gradients with same dimensions as their parameters
-      query_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      key_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      value_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      output_proj_grad(Matrix(hidden_size_, hidden_size_)),
-      query_bias_grad(FloatVector(hidden_size_ * num_heads_)),
-      key_bias_grad(FloatVector(hidden_size_ * num_heads_)),
-      value_bias_grad(FloatVector(hidden_size_ * num_heads_)),
-      output_bias_grad(FloatVector(hidden_size_)) {
-
-    std::cout << "\n=== MultiHeadAttention::constructor START ===" << std::endl;
-
-    // Print configuration
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "- Hidden size: " << hidden_size << std::endl;
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-    std::cout << "- Head dimension: " << head_dim << std::endl;
-    std::cout << "- Dropout probability: " << dropout_prob << std::endl;
-    std::cout << "- Use flash attention: " << std::boolalpha << use_flash << std::endl;
-    std::cout << "- Use RoPE: " << use_rope << std::endl;
-    std::cout << "- Use sliding window: " << use_sliding_window << std::endl;
-    std::cout << "- Window size: " << window_size << std::endl;
-    std::cout << "- Use GQA: " << use_gqa << std::endl;
-    std::cout << "- Number of KV heads: " << num_kv_heads << std::endl;
-
-    // Validate input dimensions
-    std::cout << "\nValidating dimensions..." << std::endl;
-    if (hidden_size == 0 || num_heads == 0 || head_dim == 0) {
-        throw std::runtime_error("Invalid dimensions: hidden_size=" + std::to_string(hidden_size) +
-                                 ", num_heads=" + std::to_string(num_heads) +
-                                 ", head_dim=" + std::to_string(head_dim));
-    }
-
-    if (hidden_size % num_heads != 0) {
-        throw std::runtime_error("hidden_size must be divisible by num_heads");
-    }
-    std::cout << "Dimension validation passed" << std::endl;
-
-    // Initialize weights with Xavier/Glorot initialization
-    std::cout << "\nInitializing weights..." << std::endl;
-    float scale = std::sqrt(2.0f / (hidden_size + hidden_size));
-
-    query_proj.initialize_random(scale);
-    key_proj.initialize_random(scale);
-    value_proj.initialize_random(scale);
-    output_proj.initialize_random(scale);
-
-    // Initialize biases to small non-zero values
-    std::cout << "\nInitializing biases..." << std::endl;
-    for (size_t i = 0; i < query_bias.size(); i++)
-        query_bias[i] = 0.01f;
-    for (size_t i = 0; i < key_bias.size(); i++)
-        key_bias[i] = 0.01f;
-    for (size_t i = 0; i < value_bias.size(); i++)
-        value_bias[i] = 0.01f;
-    for (size_t i = 0; i < output_bias.size(); i++)
-        output_bias[i] = 0.01f;
-
-    // Initialize gradients to zero
-    for (size_t i = 0; i < query_proj_grad.rows(); i++) {
-        for (size_t j = 0; j < query_proj_grad.cols(); j++) {
-            query_proj_grad(i, j) = 0.0f;
-            key_proj_grad(i, j) = 0.0f;
-            value_proj_grad(i, j) = 0.0f;
-            output_proj_grad(i, j) = 0.0f;
-        }
-    }
-
-    for (size_t i = 0; i < query_bias_grad.size(); i++)
-        query_bias_grad[i] = 0.0f;
-    for (size_t i = 0; i < key_bias_grad.size(); i++)
-        key_bias_grad[i] = 0.0f;
-    for (size_t i = 0; i < value_bias_grad.size(); i++)
-        value_bias_grad[i] = 0.0f;
-    for (size_t i = 0; i < output_bias_grad.size(); i++)
-        output_bias_grad[i] = 0.0f;
-
-    // Validate initialization
-    std::cout << "\nValidating initialization..." << std::endl;
-    auto validate_matrix = [](const Matrix& m, const std::string& name) {
-        if (m.empty()) {
-            throw std::runtime_error(name + " is empty after initialization");
-        }
-        std::cout << name << " statistics:" << std::endl;
-        std::cout << "- Shape: " << m.rows() << "x" << m.cols() << std::endl;
-        std::cout << "- Range: [" << m.min() << ", " << m.max() << "]" << std::endl;
-        if (std::isnan(m.min()) || std::isnan(m.max()) || std::isinf(m.min()) ||
-            std::isinf(m.max())) {
-            throw std::runtime_error("Invalid values in " + name + " after initialization");
-        }
-    };
-
-    validate_matrix(query_proj, "Query projection");
-    validate_matrix(key_proj, "Key projection");
-    validate_matrix(value_proj, "Value projection");
-    validate_matrix(output_proj, "Output projection");
-    validate_matrix(query_proj_grad, "Query projection gradient");
-    validate_matrix(key_proj_grad, "Key projection gradient");
-    validate_matrix(value_proj_grad, "Value projection gradient");
-    validate_matrix(output_proj_grad, "Output projection gradient");
-
-    std::cout << "=== MultiHeadAttention::constructor END ===\n" << std::endl;
-
-    initialize_rope_cache(max_seq_length_, head_dim);
-}
-
-Matrix MultiHeadAttention::standard_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
-                                              const AttentionMask& mask) {
-    std::cout << "\n=== MultiHeadAttention::standard_attention START ===" << std::endl;
-
-    // Calculate dimensions
-    size_t seq_len = Q.rows();
-    size_t head_size = Q.cols() / num_heads;
-
-    std::cout << "Dimensions:" << std::endl;
-    std::cout << "- Sequence length: " << seq_len << std::endl;
-    std::cout << "- Head size: " << head_size << std::endl;
-    std::cout << "- Number of heads: " << num_heads << std::endl;
-
-    // Always create a proper mask
-    Matrix effective_mask(seq_len, seq_len, 1.0f);
-
-    if (!mask.mask.empty()) {
-        effective_mask = mask.mask;
-    }
-
-    // First reshape inputs to separate heads
-    Tensor Q_4d = reshape_for_attention(Q, 1, num_heads, seq_len, head_size);
-    Tensor K_4d = reshape_for_attention(K, 1, num_heads, seq_len, head_size);
-    Tensor V_4d = reshape_for_attention(V, 1, num_heads, seq_len, head_size);
-
-    // Process each head separately with improved numerical stability
-    Matrix final_output(seq_len, num_heads * head_size);
-    const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
+    // Clip extremely large values to prevent overflow
     const float max_score = 100.0f; // Prevent exp overflow
 
-    for (size_t h = 0; h < num_heads; ++h) {
-        // Extract matrices for current head
-        Matrix Q_head(seq_len, head_size);
-        Matrix K_head(seq_len, head_size);
-        Matrix V_head(seq_len, head_size);
-
-        // Copy data for current head
-        for (size_t s = 0; s < seq_len; ++s) {
-            for (size_t d = 0; d < head_size; ++d) {
-                Q_head(s, d) = Q_4d.at(0, h, s, d);
-                K_head(s, d) = K_4d.at(0, h, s, d);
-                V_head(s, d) = V_4d.at(0, h, s, d);
+    for (size_t i = 0; i < scores.rows(); ++i) {
+        // Find max for numerical stability in softmax
+        float row_max = -std::numeric_limits<float>::infinity();
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) *= scale;
+            
+            // Apply mask if needed
+            if (mask.is_masked(i, j)) {
+                scores(i, j) = -std::numeric_limits<float>::infinity();
+            } else {
+                scores(i, j) = std::min(scores(i, j), max_score);
             }
+            row_max = std::max(row_max, scores(i, j));
         }
 
-        // Compute attention scores with numerical stability
-        Matrix scores = matmul(Q_head, K_head.transpose());
-        scores *= scale;
-
-        // Apply mask and numerical stability improvements
-        for (size_t i = 0; i < seq_len; ++i) {
-            // Find max for numerical stability in softmax
-            float row_max = -std::numeric_limits<float>::infinity();
-            for (size_t j = 0; j < seq_len; ++j) {
-                if (effective_mask(i, j) == 0.0f) {
-                    scores(i, j) = -std::numeric_limits<float>::infinity();
-                } else {
-                    scores(i, j) = std::min(scores(i, j), max_score);
-                    row_max = std::max(row_max, scores(i, j));
-                }
-            }
-
-            // Compute softmax with improved numerical stability
-            float sum_exp = 0.0f;
-            for (size_t j = 0; j < seq_len; ++j) {
-                if (scores(i, j) != -std::numeric_limits<float>::infinity()) {
-                    scores(i, j) = std::exp(scores(i, j) - row_max);
-                    sum_exp += scores(i, j);
-                } else {
-                    scores(i, j) = 0.0f;
-                }
-            }
-
-            // Normalize with careful handling of small values
-            const float eps = 1e-6f;
-            if (sum_exp < eps)
-                sum_exp = eps;
-
-            for (size_t j = 0; j < seq_len; ++j) {
-                scores(i, j) /= sum_exp;
-            }
+        // Compute softmax with improved numerical stability
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) = std::exp(scores(i, j) - row_max);
+            sum_exp += scores(i, j);
         }
 
-        // Compute attention output for this head
-        Matrix head_output = matmul(scores, V_head);
+        // Normalize with careful handling of small values
+        const float eps = 1e-6f;
+        if (sum_exp < eps)
+            sum_exp = eps;
 
-        // Store this head's output in the final result
-        for (size_t s = 0; s < seq_len; ++s) {
-            for (size_t d = 0; d < head_size; ++d) {
-                final_output(s, h * head_size + d) = head_output(s, d);
-            }
+        for (size_t j = 0; j < scores.cols(); ++j) {
+            scores(i, j) /= sum_exp;
         }
     }
 
-    return final_output;
+    return scores;
 }
 
-Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input,
-                                    const Matrix& target_distribution) {
-    // Get use_fp16 from member variable instead of global config
-    static const bool use_fp16 = use_fp16_;
+Matrix MultiHeadAttention::backward(const Matrix& grad_output, const Matrix& input, const Matrix& target) {
+    try {
+        std::cout << "\n=== MultiHeadAttention::backward START ===" << std::endl;
+        
+        // Constants for gradient clipping and stability
+        const float clip_threshold = 5.0f;  // Match global threshold
+        const float eps = 1e-6f;
+        
+        Matrix output_weights_t = params_.output_weights.transpose();
+        Matrix d_value = matmul(grad_output, output_weights_t);
+        
+        // Compute gradient norms
+        float grad_norm = 0.0f;
+        #pragma omp parallel for reduction(+:grad_norm)
+        for (size_t i = 0; i < grad_output.size(); i++) {
+            grad_norm += grad_output.data()[i] * grad_output.data()[i];
+        }
+        grad_norm = std::sqrt(grad_norm);
+        
+        // Compute scaling factor
+        float scale = std::min(clip_threshold / (grad_norm + eps), 1.0f);
+        scale = std::sqrt(scale);  // Softer scaling
+        
+        std::cout << "Attention gradient norm: " << grad_norm << std::endl;
+        std::cout << "Attention scaling factor: " << scale << std::endl;
+        
+        // Scale gradients
+        Matrix scaled_grad = grad_output;
+        #pragma omp parallel for collapse(2)
+        for (size_t i = 0; i < scaled_grad.rows(); i++) {
+            for (size_t j = 0; j < scaled_grad.cols(); j++) {
+                scaled_grad(i, j) *= scale;
+            }
+        }
+        
+        // Accumulate weight gradients
+        Matrix output_weight_grad = Matrix(params_.output_weights.rows(), params_.output_weights.cols(), 0.0f);
+        Vector output_bias_grad = Vector(params_.output_weights.cols(), 0.0f);
+        
+        size_t batch_size = input.rows();
+        for (size_t i = 0; i < batch_size; ++i) {
+            Vector example_grad = scaled_grad.row(i);
+            Vector example_value = input.row(i);
+            
+            Matrix example_grad_outer = outer_product(example_value, example_grad);
+            output_weight_grad += example_grad_outer;
+            output_bias_grad += example_grad;
+        }
+        
+        // Update parameter gradients
+        param_gradients().output_grad = output_weight_grad;
+        param_gradients().output_bias_grad = output_bias_grad;
+        
+        // Compute input gradients for backward flow
+        Matrix d_input = matmul(scaled_grad, params_.output_weights);
+        
+        std::cout << "=== MultiHeadAttention::backward END ===\n" << std::endl;
+        return d_input;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "\nError in MultiHeadAttention::backward: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
+    // Original implementation
+    int seq_len = input.rows();
+    Matrix d_query(seq_len, seq_len);  // Attention scores dimensions
     
-    Matrix grad = grad_output;
-    Matrix input_matrix = input;
+    // First compute attention score gradients
+    cuda::compute_attention_scores(grad, input, d_query, 1.0f / std::sqrt(float(input.cols())), num_heads);
     
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp16(grad);
-        HalfPrecisionTraining::convert_to_fp16(input_matrix);
-    }
+    std::cout << "compute_query_gradients dimensions:" << std::endl;
+    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
+    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
 
-    validate_dimensions(grad, input_matrix, target_distribution);
+    return d_query;
+}
 
-    // Initialize gradients if not already done
-    if (query_proj_grad.empty()) {
-        query_proj_grad = Matrix(query_proj.rows(), query_proj.cols(), 0.0f);
-        key_proj_grad = Matrix(key_proj.rows(), key_proj.cols(), 0.0f);
-        value_proj_grad = Matrix(value_proj.rows(), value_proj.cols(), 0.0f);
-        output_proj_grad = Matrix(output_proj.rows(), output_proj.cols(), 0.0f);
-    }
+Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
+    Matrix d_key(grad.rows(), grad.cols());
+#ifdef USE_CUDA
+    cuda::matmul(grad, params_.key_weights.transpose(), d_key);
+#else
+    d_key = matmul(grad, params_.key_weights.transpose());
+#endif
+    return d_key;
+}
 
-    // Compute gradients for attention mechanism
-    Matrix d_query = compute_query_gradients(grad, input_matrix);
-    std::cout << "d_query dimensions: " << d_query.rows() << "x" << d_query.cols() << std::endl;
-    Matrix d_key = compute_key_gradients(grad, input_matrix);
-    std::cout << "d_key dimensions: " << d_key.rows() << "x" << d_key.cols() << std::endl;
-    Matrix d_value = compute_value_gradients(grad, input_matrix);
-    std::cout << "d_value dimensions: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
+    Matrix d_value(grad.rows(), grad.cols());
+#ifdef USE_CUDA
+    cuda::matmul(grad, params_.value_weights.transpose(), d_value);
+#else
+    d_value = matmul(grad, params_.value_weights.transpose());
+#endif
+    return d_value;
+}
 
-    // Combine gradients
-    Matrix d_input = combine_gradients(d_query, d_key, d_value);
-    std::cout << "d_input dimensions: " << d_input.rows() << "x" << d_input.cols() << std::endl;
+Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value) {
+    // Original implementation
+    Matrix combined = d_query;
+    combined += d_key;
+    combined += d_value;
     
-    // Update projection gradients
-    std::cout << "Updating projection gradients..." << std::endl;
+    std::cout << "combine_gradients dimensions:" << std::endl;
+    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
+    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
+    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
+    std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
     
-    // Project attention scores back to hidden dimensions for query
-    Matrix d_query_hidden(d_query.rows(), input_matrix.cols());  // [seq_len x hidden_dim]
-    cuda::matmul(d_query, query_proj, d_query_hidden);
-    query_proj_grad += matmul(input_matrix.transpose(), d_query_hidden);
-    std::cout << "query_proj_grad dimensions: " << query_proj_grad.rows() << "x" << query_proj_grad.cols() << std::endl;
+    return combined;
+}
 
-    // Project attention scores back to hidden dimensions for key
-    Matrix d_key_hidden(d_key.rows(), input_matrix.cols());
-    cuda::matmul(d_key, key_proj, d_key_hidden);
-    key_proj_grad += matmul(input_matrix.transpose(), d_key_hidden);
-    std::cout << "key_proj_grad dimensions: " << key_proj_grad.rows() << "x" << key_proj_grad.cols() << std::endl;
+void MultiHeadAttention::initialize_weights() {
+    // Xavier/Glorot initialization
+    float scale = std::sqrt(2.0f / (hidden_size + head_dim));
+    
+    // Initialize projection matrices using parameter accessors
+    params_.query_weights.initialize_random(scale);
+    params_.key_weights.initialize_random(scale);
+    params_.value_weights.initialize_random(scale);
+    params_.output_weights.initialize_random(scale);
+    
+    // Initialize bias vectors with small values
+    params_.query_bias.initialize_constant(0.01f);
+    params_.key_bias.initialize_constant(0.01f);
+    params_.value_bias.initialize_constant(0.01f);
+    params_.output_bias.initialize_constant(0.01f);
+}
 
-    // Project attention scores back to hidden dimensions for value
-    Matrix d_value_hidden(d_value.rows(), input_matrix.cols());
-    cuda::matmul(d_value, value_proj, d_value_hidden);
-    value_proj_grad += matmul(input_matrix.transpose(), d_value_hidden);
-    std::cout << "value_proj_grad dimensions: " << value_proj_grad.rows() << "x" << value_proj_grad.cols() << std::endl;
-
-    // For output projection, we already have grad in hidden dimensions
-    output_proj_grad += matmul(grad.transpose(), input_matrix);  // This one is already correct
-    std::cout << "output_proj_grad dimensions: " << output_proj_grad.rows() << "x" << output_proj_grad.cols() << std::endl;
-
-    // Update bias gradients
-    Vector d_query_bias = d_query.row_sum();
-    std::cout << "d_query_bias dimensions: " << d_query_bias.size() << std::endl;   
-    Vector d_key_bias = d_key.row_sum();
-    std::cout << "d_key_bias dimensions: " << d_key_bias.size() << std::endl;
-    Vector d_value_bias = d_value.row_sum();
-    std::cout << "d_value_bias dimensions: " << d_value_bias.size() << std::endl;
-    Vector d_output_bias = grad.row_sum();
-    std::cout << "d_output_bias dimensions: " << d_output_bias.size() << std::endl;
-
-    // Update bias gradients element by element
-    std::cout << "Updating bias gradients..." << std::endl;
-    for (size_t i = 0; i < query_bias_grad.size(); ++i) {
-        query_bias_grad[i] += d_query_bias[i];
-        key_bias_grad[i] += d_key_bias[i];
-        value_bias_grad[i] += d_value_bias[i];
+float compute_grad_norm(const Matrix& grad) {
+    float norm = 0.0f;
+    #pragma omp parallel for reduction(+:norm)
+    for (size_t i = 0; i < grad.rows(); ++i) {
+        for (size_t j = 0; j < grad.cols(); ++j) {
+            norm += grad(i, j) * grad(i, j);
+        }
     }
-    std::cout << "Updated query bias gradients" << std::endl;
-    for (size_t i = 0; i < output_bias_grad.size(); ++i) {
-        output_bias_grad[i] += d_output_bias[i];
+    return std::sqrt(norm);
+}
+
+size_t count_params(const Matrix& param) {
+    return param.rows() * param.cols();
+}
+
+float MultiHeadAttention::get_cos_cached(size_t pos, size_t dim_idx) const {
+    if (pos >= cos_cached.rows() || dim_idx >= cos_cached.cols()) {
+        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
+                                 ", dim=" + std::to_string(dim_idx));
+    }
+    return cos_cached(pos, dim_idx);
+}
+
+float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
+    if (pos >= sin_cached.rows() || dim_idx >= sin_cached.cols()) {
+        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
+                                 ", dim=" + std::to_string(dim_idx));
+    }
+    return sin_cached(pos, dim_idx);
+}
+
+void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
+    // Process each row separately for proper attention distribution
+    for (size_t row = 0; row < x.rows(); row++) {
+        // Find max value in this row for numerical stability
+        float max_val = -std::numeric_limits<float>::infinity();
+        for (size_t col = 0; col < x.cols(); col++) {
+            max_val = std::max(max_val, x(row, col));
+        }
+
+        // Subtract max value and compute exp for this row
+        float row_sum = 0.0f;
+        for (size_t col = 0; col < x.cols(); col++) {
+            x(row, col) = std::exp(x(row, col) - max_val);
+            row_sum += x(row, col);
+        }
+
+        // Check for numerical instability in this row
+        if (row_sum < 1e-10) {
+            std::cerr << "WARNING: Row " << row << " has near-zero softmax sum\n";
+            // Fall back to uniform attention for this row only
+            float uniform_val = 1.0f / x.cols();
+            for (size_t col = 0; col < x.cols(); col++) {
+                x(row, col) = uniform_val;
+            }
+            continue;
+        }
+
+        // Normalize this row
+        for (size_t col = 0; col < x.cols(); col++) {
+            x(row, col) /= row_sum;
+        }
     }
 
-    // Convert gradients back to FP32 before returning
-    if (use_fp16) {
-        HalfPrecisionTraining::convert_to_fp32(grad);
+    // Validate results
+    float min_val = std::numeric_limits<float>::infinity();
+    float max_val = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < x.rows(); i++) {
+        float row_sum = 0.0f;
+        for (size_t j = 0; j < x.cols(); j++) {
+            min_val = std::min(min_val, x(i, j));
+            max_val = std::max(max_val, x(i, j));
+            row_sum += x(i, j);
+        }
+        if (std::abs(row_sum - 1.0f) > 1e-6) {
+            std::cerr << "WARNING: Row " << i << " softmax sum = " << row_sum << "\n";
+        }
     }
-
-    return d_input;
+    
+    std::cout << "Softmax output statistics:\n"
+              << "Min: " << min_val << "\n"
+              << "Max: " << max_val << "\n";
 }
 
 Tensor MultiHeadAttention::reshape_for_attention(const Matrix& x, size_t batch_size,
@@ -693,7 +623,7 @@ Matrix MultiHeadAttention::reshape_from_attention(const Tensor& x, size_t batch_
 }
 
 Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, const Matrix& V,
-                                             const AttentionMask& mask) {
+                                          const AttentionMask& mask) const {
     // Validate input dimensions
     if (Q.cols() != K.cols() || K.cols() != V.cols()) {
         throw std::runtime_error("Q, K, V dimension mismatch");
@@ -727,34 +657,47 @@ Matrix MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, c
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_size));
     scores *= scale;
 
-    if (!mask.mask.empty()) {
-        // Create expanded mask for all attention heads
-        Matrix expanded_mask(scores.rows(), scores.cols(), 1.0f);
-
-        // Repeat the mask for each attention head
-        for (size_t h = 0; h < num_heads; ++h) {
-            for (size_t i = 0; i < seq_len; ++i) {
-                for (size_t j = 0; j < seq_len; ++j) {
-                    expanded_mask(h * seq_len + i, h * seq_len + j) = mask.mask(i, j);
+    // Apply sliding window attention if enabled
+    if (use_sliding_window) {
+        const size_t half_window = window_size / 2;
+        std::cout << "Applying sliding window attention with window size " << window_size << std::endl;
+        
+        #pragma omp parallel for collapse(2)
+        for (size_t head = 0; head < num_heads; head++) {
+            for (size_t i = 0; i < seq_len; i++) {
+                size_t row_idx = head * seq_len + i;
+                
+                // Calculate window boundaries
+                size_t window_start = (i >= half_window) ? i - half_window : 0;
+                size_t window_end = std::min(i + half_window + 1, seq_len);
+                
+                // Mask out everything outside the window
+                for (size_t j = 0; j < seq_len; j++) {
+                    size_t col_idx = j;
+                    if (j < window_start || j >= window_end) {
+                        scores(row_idx, col_idx) = -std::numeric_limits<float>::infinity();
+                    }
                 }
             }
         }
-
-        std::cout << "Original mask shape: " << mask.mask.rows() << "x" << mask.mask.cols()
-                  << std::endl;
-        std::cout << "Expanded mask shape: " << expanded_mask.rows() << "x" << expanded_mask.cols()
-                  << std::endl;
-        std::cout << "Scores shape: " << scores.rows() << "x" << scores.cols() << std::endl;
-
-        apply_mask(scores, expanded_mask);
     }
 
+    // Apply attention mask if provided
+    for (size_t i = 0; i < scores.rows(); i++) {
+        for (size_t j = 0; j < scores.cols(); j++) {
+            if (mask.is_masked(i % seq_len, j % seq_len)) {
+                scores(i, j) = -std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+
+    // Apply softmax with improved numerical stability
     apply_stable_softmax(scores);
 
     // Compute attention output
-    Matrix attention = matmul(scores, V_mat); // [num_heads * seq_len, head_size]
+    Matrix attention = matmul(scores, V_mat);
 
-    // Reshape back to [seq_len, hidden_size]
+    // Reshape back to original dimensions
     std::vector<unsigned long> dims = {
         static_cast<unsigned long>(1), static_cast<unsigned long>(num_heads),
         static_cast<unsigned long>(seq_len), static_cast<unsigned long>(head_size)};
@@ -909,195 +852,94 @@ Tensor MultiHeadAttention::compute_attention(const Matrix& Q, const Matrix& K, c
     return Tensor(output, dims);
 }
 
-void MultiHeadAttention::initialize_rope_cache(size_t max_seq_len, size_t dim) {
-    std::cout << "Initializing RoPE cache:" << std::endl;
-    std::cout << "- max_seq_len: " << max_seq_len << std::endl;
-    std::cout << "- dim: " << dim << std::endl;
-    std::cout << "- num_heads: " << num_heads << std::endl;
+void MultiHeadAttention::save(std::ostream& os) const {
+    std::cout << "\n=== MultiHeadAttention::save START ===" << std::endl;
 
-    cos_cached = Matrix(max_seq_len, dim * num_heads);
-    sin_cached = Matrix(max_seq_len, dim * num_heads);
+    // Save dimensions and configuration
+    std::cout << "Saving configuration..." << std::endl;
+    std::cout << "- Number of heads: " << num_heads << std::endl;
+    std::cout << "- Head dimension: " << head_dim << std::endl;
+    os.write(reinterpret_cast<const char*>(&num_heads), sizeof(num_heads));
+    os.write(reinterpret_cast<const char*>(&head_dim), sizeof(head_dim));
+    os.write(reinterpret_cast<const char*>(&hidden_size), sizeof(hidden_size));
+    os.write(reinterpret_cast<const char*>(&dropout_prob), sizeof(dropout_prob));
+    os.write(reinterpret_cast<const char*>(&use_rope), sizeof(use_rope));
+    os.write(reinterpret_cast<const char*>(&use_flash), sizeof(use_flash));
+    os.write(reinterpret_cast<const char*>(&use_sliding_window), sizeof(use_sliding_window));
+    os.write(reinterpret_cast<const char*>(&window_size), sizeof(window_size));
+    os.write(reinterpret_cast<const char*>(&use_gqa), sizeof(use_gqa));
+    os.write(reinterpret_cast<const char*>(&num_kv_heads), sizeof(num_kv_heads));
+    os.write(reinterpret_cast<const char*>(&max_seq_length), sizeof(max_seq_length));
+    os.write(reinterpret_cast<const char*>(&use_fp16_), sizeof(use_fp16_));
 
-    std::cout << "Created cache matrices:" << std::endl;
-    std::cout << "- cos_cached: " << cos_cached.rows() << "x" << cos_cached.cols() << std::endl;
-    std::cout << "- sin_cached: " << sin_cached.rows() << "x" << sin_cached.cols() << std::endl;
+    // Save weight matrices
+    std::cout << "Saving weight matrices..." << std::endl;
+    params_.query_weights.save(os);
+    params_.key_weights.save(os);
+    params_.value_weights.save(os);
+    params_.output_weights.save(os);
 
-    for (size_t pos = 0; pos < max_seq_len; pos++) {
-        for (size_t h = 0; h < num_heads; h++) {
-            for (size_t i = 0; i < dim; i++) {
-                size_t idx = h * dim + i;
-                float theta = std::pow(10000.0f, -2.0f * i / dim);
-                cos_cached(pos, idx) = std::cos(pos * theta);
-                sin_cached(pos, idx) = std::sin(pos * theta);
-            }
-        }
-    }
+    // Save bias vectors
+    std::cout << "Saving bias vectors..." << std::endl;
+    os.write(reinterpret_cast<const char*>(params_.query_bias.data()), params_.query_bias.size() * sizeof(float));
+    os.write(reinterpret_cast<const char*>(params_.key_bias.data()), params_.key_bias.size() * sizeof(float));
+    os.write(reinterpret_cast<const char*>(params_.value_bias.data()), params_.value_bias.size() * sizeof(float));
+    os.write(reinterpret_cast<const char*>(params_.output_bias.data()), params_.output_bias.size() * sizeof(float));
+
+    std::cout << "=== MultiHeadAttention::save END ===\n" << std::endl;
 }
 
-float MultiHeadAttention::get_cos_cached(size_t pos, size_t dim_idx) const {
-    if (pos >= cos_cached.rows() || dim_idx >= cos_cached.cols()) {
-        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
-                                 ", dim=" + std::to_string(dim_idx));
-    }
-    return cos_cached(pos, dim_idx);
+std::unique_ptr<MultiHeadAttention> MultiHeadAttention::load(std::istream& is, const TransformerConfig& config) {
+    std::cout << "\n=== MultiHeadAttention::load START ===" << std::endl;
+
+    // Read configuration
+    size_t num_heads, head_dim, hidden_size;
+    float dropout_prob;
+    bool use_rope, use_flash, use_sliding_window, use_gqa, use_fp16;
+    size_t window_size, num_kv_heads, max_seq_length;
+
+    is.read(reinterpret_cast<char*>(&num_heads), sizeof(num_heads));
+    is.read(reinterpret_cast<char*>(&head_dim), sizeof(head_dim));
+    is.read(reinterpret_cast<char*>(&hidden_size), sizeof(hidden_size));
+    is.read(reinterpret_cast<char*>(&dropout_prob), sizeof(dropout_prob));
+    is.read(reinterpret_cast<char*>(&use_rope), sizeof(use_rope));
+    is.read(reinterpret_cast<char*>(&use_flash), sizeof(use_flash));
+    is.read(reinterpret_cast<char*>(&use_sliding_window), sizeof(use_sliding_window));
+    is.read(reinterpret_cast<char*>(&window_size), sizeof(window_size));
+    is.read(reinterpret_cast<char*>(&use_gqa), sizeof(use_gqa));
+    is.read(reinterpret_cast<char*>(&num_kv_heads), sizeof(num_kv_heads));
+    is.read(reinterpret_cast<char*>(&max_seq_length), sizeof(max_seq_length));
+    is.read(reinterpret_cast<char*>(&use_fp16), sizeof(use_fp16));
+
+    std::cout << "Loaded configuration:" << std::endl;
+    std::cout << "- Number of heads: " << num_heads << std::endl;
+    std::cout << "- Head dimension: " << head_dim << std::endl;
+    std::cout << "- Hidden size: " << hidden_size << std::endl;
+
+    // Create attention instance
+    auto attention = std::make_unique<MultiHeadAttention>(
+        hidden_size, num_heads, head_dim,
+        dropout_prob, use_flash, use_rope,
+        use_sliding_window, window_size,
+        use_gqa, num_kv_heads,
+        max_seq_length, use_fp16
+    );
+
+    // Load weight matrices
+    std::cout << "Loading weight matrices..." << std::endl;
+    attention->params_.query_weights = Matrix::load(is);
+    attention->params_.key_weights = Matrix::load(is);
+    attention->params_.value_weights = Matrix::load(is);
+    attention->params_.output_weights = Matrix::load(is);
+
+    // Load bias vectors
+    std::cout << "Loading bias vectors..." << std::endl;
+    is.read(reinterpret_cast<char*>(attention->params_.query_bias.data()), attention->params_.query_bias.size() * sizeof(float));
+    is.read(reinterpret_cast<char*>(attention->params_.key_bias.data()), attention->params_.key_bias.size() * sizeof(float));
+    is.read(reinterpret_cast<char*>(attention->params_.value_bias.data()), attention->params_.value_bias.size() * sizeof(float));
+    is.read(reinterpret_cast<char*>(attention->params_.output_bias.data()), attention->params_.output_bias.size() * sizeof(float));
+
+    std::cout << "=== MultiHeadAttention::load END ===\n" << std::endl;
+    return attention;
 }
 
-float MultiHeadAttention::get_sin_cached(size_t pos, size_t dim_idx) const {
-    if (pos >= sin_cached.rows() || dim_idx >= sin_cached.cols()) {
-        throw std::runtime_error("RoPE cache access out of bounds: pos=" + std::to_string(pos) +
-                                 ", dim=" + std::to_string(dim_idx));
-    }
-    return sin_cached(pos, dim_idx);
-}
-
-Matrix MultiHeadAttention::compute_attention_scores(const Matrix& Q, const Matrix& K) {
-    Matrix scores = matmul(Q, K.transpose());
-
-    // Scale scores with careful handling of numerical stability
-    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-
-    // Clip extremely large values to prevent overflow
-    const float max_score = 100.0f; // Prevent exp overflow
-
-    for (size_t i = 0; i < scores.rows(); ++i) {
-        // Find max for numerical stability in softmax
-        float row_max = -std::numeric_limits<float>::infinity();
-        for (size_t j = 0; j < scores.cols(); ++j) {
-            scores(i, j) *= scale;
-            scores(i, j) = std::min(scores(i, j), max_score);
-            row_max = std::max(row_max, scores(i, j));
-        }
-
-        // Compute softmax with improved numerical stability
-        float sum_exp = 0.0f;
-        for (size_t j = 0; j < scores.cols(); ++j) {
-            scores(i, j) = std::exp(scores(i, j) - row_max);
-            sum_exp += scores(i, j);
-        }
-
-        // Normalize with careful handling of small values
-        const float eps = 1e-6f;
-        if (sum_exp < eps)
-            sum_exp = eps;
-
-        for (size_t j = 0; j < scores.cols(); ++j) {
-            scores(i, j) /= sum_exp;
-        }
-    }
-
-    return scores;
-}
-
-void MultiHeadAttention::apply_stable_softmax(Matrix& x) const {
-    const float EPSILON = 1e-8f;
-    const float TEMPERATURE = 0.7f;
-    const float MIN_SCORE = -1e4f;
-
-    for (size_t i = 0; i < x.rows(); i++) {
-        // Find max for numerical stability
-        float max_val = MIN_SCORE;
-        for (size_t j = 0; j < x.cols(); j++) {
-            if (x(i, j) > MIN_SCORE) {
-                max_val = std::max(max_val, x(i, j));
-            }
-        }
-
-        // Apply temperature scaling and compute sum
-        float sum_exp = 0.0f;
-        for (size_t j = 0; j < x.cols(); j++) {
-            if (x(i, j) > MIN_SCORE) {
-                x(i, j) = std::exp((x(i, j) - max_val) / TEMPERATURE);
-                sum_exp += x(i, j);
-            } else {
-                x(i, j) = 0.0f;
-            }
-        }
-
-        // Normalize
-        if (sum_exp < EPSILON) {
-            // If sum is too small, use uniform distribution
-            float uniform_val = 1.0f / x.cols();
-            for (size_t j = 0; j < x.cols(); j++) {
-                x(i, j) = uniform_val;
-            }
-        } else {
-            // Normal normalization
-            for (size_t j = 0; j < x.cols(); j++) {
-                x(i, j) /= sum_exp;
-            }
-        }
-    }
-}
-
-Matrix MultiHeadAttention::compute_query_gradients(const Matrix& grad, const Matrix& input) {
-    // Should produce (seq_len x seq_len) for attention scores
-    int seq_len = input.rows();
-    Matrix d_query(seq_len, seq_len);  // Attention scores dimensions
-    
-    // First compute attention score gradients
-    cuda::compute_attention_scores(grad, input, d_query, 1.0f / std::sqrt(float(input.cols())), num_heads);
-    
-    std::cout << "compute_query_gradients dimensions:" << std::endl;
-    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "input: " << input.rows() << "x" << input.cols() << std::endl;
-    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
-
-    return d_query;
-}
-
-Matrix MultiHeadAttention::compute_key_gradients(const Matrix& grad, const Matrix& input) {
-    int seq_len = input.rows();
-    Matrix d_key(seq_len, seq_len);
-    cuda::matmul(grad, key_proj.transpose(), d_key);
-    
-    std::cout << "compute_key_gradients dimensions:" << std::endl;
-    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "key_proj: " << key_proj.rows() << "x" << key_proj.cols() << std::endl;
-    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
-    
-    return d_key;
-}
-
-Matrix MultiHeadAttention::compute_value_gradients(const Matrix& grad, const Matrix& input) {
-    int seq_len = input.rows();
-    Matrix d_value(seq_len, seq_len);
-    cuda::matmul(grad, value_proj.transpose(), d_value);
-    
-    std::cout << "compute_value_gradients dimensions:" << std::endl;
-    std::cout << "grad: " << grad.rows() << "x" << grad.cols() << std::endl;
-    std::cout << "value_proj: " << value_proj.rows() << "x" << value_proj.cols() << std::endl;
-    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
-    
-    return d_value;
-}
-
-Matrix MultiHeadAttention::combine_gradients(const Matrix& d_query, const Matrix& d_key, const Matrix& d_value) {
-    // Combine the gradients from Q, K, V projections
-    Matrix combined = d_query;
-    combined += d_key;
-    combined += d_value;
-    
-    std::cout << "combine_gradients dimensions:" << std::endl;
-    std::cout << "d_query: " << d_query.rows() << "x" << d_query.cols() << std::endl;
-    std::cout << "d_key: " << d_key.rows() << "x" << d_key.cols() << std::endl;
-    std::cout << "d_value: " << d_value.rows() << "x" << d_value.cols() << std::endl;
-    std::cout << "combined: " << combined.rows() << "x" << combined.cols() << std::endl;
-    
-    return combined;
-}
-
-void MultiHeadAttention::initialize_weights() {
-    // Initialize with small random values instead of zeros
-    float scale = sqrt(2.0f / (3 * hidden_size));
-    
-    query_proj.initialize_random(scale);
-    key_proj.initialize_random(scale);
-    value_proj.initialize_random(scale);
-    output_proj.initialize_random(scale);
-    
-    // Initialize biases to small non-zero values
-    query_bias.initialize_constant(0.01f);
-    key_bias.initialize_constant(0.01f);
-    value_bias.initialize_constant(0.01f);
-    output_bias.initialize_constant(0.01f);
-}

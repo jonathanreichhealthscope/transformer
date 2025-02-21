@@ -1,141 +1,95 @@
 #include "../include/lm_head.hpp"
+#include "../include/token_constants.hpp"
+#include "../include/cuda/matrix_ops.cuh"  // Add CUDA matrix operations header
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <algorithm>
 #include <random>
+#include <deque>
+#include <cassert>
 
-#ifdef USE_CUDA
+// Add minimum active tokens constant
+constexpr size_t MIN_ACTIVE_TOKENS = 1000;  // Reasonable default value
+
+// Only include CUDA headers if CUDA is available
+#if defined(USE_CUDA) && defined(CUDA_AVAILABLE)
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #endif
 
 LanguageModelHead::LanguageModelHead(size_t hidden_size, size_t vocab_size)
-    : hidden_size_(hidden_size), vocab_size_(vocab_size), projection(hidden_size, vocab_size),
-      bias(vocab_size, 0.0f), token_frequencies(vocab_size, 0.0f), pruning_threshold(1e-6f),
-      active_tokens(vocab_size, 1), training_steps(0)
-{
-    // Initialize with smaller scale due to large vocab size
-    float scale = std::sqrt(2.0f / hidden_size);  // Scale based on input dim only
-    projection.randomize(-scale, scale);
+    : hidden_size_(hidden_size), vocab_size_(vocab_size), 
+      projection(hidden_size, vocab_size),  // [hidden_size x vocab_size] for correct dimensionality
+      bias(vocab_size, 0.0f),  // [vocab_size] stays the same
+      token_frequencies(vocab_size, 0.0f),
+      pruning_threshold(1e-6f),
+      active_tokens(vocab_size, 1),
+      training_steps(0),
+      is_training_(false),
+      m_proj(hidden_size, vocab_size, 0.0f),  // Match projection dimensions
+      v_proj(hidden_size, vocab_size, 0.0f),  // Match projection dimensions
+      m_bias(vocab_size, 0.0f),
+      v_bias(vocab_size, 0.0f),
+      t(0),
+      beta1(0.9f),
+      beta2(0.999f),
+      eps(1e-8f),
+      current_lr(0.001f),
+      min_lr(0.0001f),
+      max_lr(0.01f),
+      lr_decay(0.99f) {
     
-    // Initialize bias to small negative values to encourage sparsity
-    for (size_t i = 0; i < vocab_size; i++) {
-        bias[i] = -0.1f;  // Small negative bias
+    // Initialize projection matrix with Xavier/Glorot initialization
+    float scale = std::sqrt(2.0f / (hidden_size + vocab_size));
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<float> dist(0.0f, scale);
+    
+    // Initialize projection weights
+    for (size_t i = 0; i < projection.rows(); i++) {
+        for (size_t j = 0; j < projection.cols(); j++) {
+            projection(i, j) = dist(gen);
+        }
     }
     
-    active_token_indices.reserve(vocab_size);
-    for (size_t i = 0; i < vocab_size; i++) {
-        active_token_indices.push_back(i);
-    }
-    
-    std::cout << "Initializing LM Head with vocab size " << vocab_size 
-              << " and hidden size " << hidden_size << std::endl;
+    std::cout << "Initialized LM Head with:" << std::endl;
+    std::cout << "- Hidden size: " << hidden_size << std::endl;
+    std::cout << "- Vocab size: " << vocab_size << std::endl;
+    std::cout << "- Projection matrix: " << projection.rows() << "x" << projection.cols() << std::endl;
+    std::cout << "- Projection matrix shape: [hidden_size x vocab_size] = [" << hidden_size << " x " << vocab_size << "]" << std::endl;
 }
 
-Matrix LanguageModelHead::forward_impl(const Matrix& hidden_states) {
-    size_t total_size = hidden_states.rows();
-    size_t hidden_dim = hidden_states.cols();
-    
-    if (hidden_dim != hidden_size_) {
-        throw std::runtime_error("Hidden dimension mismatch: " + std::to_string(hidden_dim) +
+Matrix LanguageModelHead::forward(const Matrix& hidden_states, bool training) {
+    if (hidden_states.cols() != hidden_size_) {
+        throw std::runtime_error("Hidden dimension mismatch: " + std::to_string(hidden_states.cols()) +
                                " != " + std::to_string(hidden_size_));
     }
     
-    // Debug hidden states
-    float min_hidden = std::numeric_limits<float>::infinity();
-    float max_hidden = -std::numeric_limits<float>::infinity();
-    float sum_hidden = 0.0f;
-    size_t nonzero_hidden = 0;
+    // Cache hidden states for backward pass
+    hidden_states_ = hidden_states;
     
-    for (size_t i = 0; i < hidden_states.rows(); i++) {
-        for (size_t j = 0; j < hidden_states.cols(); j++) {
-            float val = hidden_states(i, j);
-            min_hidden = std::min(min_hidden, val);
-            max_hidden = std::max(max_hidden, val);
-            sum_hidden += val;
-            if (std::abs(val) > 1e-6) nonzero_hidden++;
-        }
-    }
+    // Project hidden states to vocabulary space using CUDA matrix multiplication
+    // hidden_states: [batch_size x hidden_size]
+    // projection: [hidden_size x vocab_size]
+    // result: [batch_size x vocab_size]
+    std::cout << "\nLM Head matrix dimensions:" << std::endl;
+    std::cout << "hidden_states: " << hidden_states.rows() << "x" << hidden_states.cols() << std::endl;
+    std::cout << "projection: " << projection.rows() << "x" << projection.cols() << std::endl;
     
-    std::cout << "\nHidden States Statistics in forward_impl:\n"
-              << "Min hidden: " << min_hidden << "\n"
-              << "Max hidden: " << max_hidden << "\n"
-              << "Mean hidden: " << sum_hidden / (hidden_states.rows() * hidden_states.cols()) << "\n"
-              << "Nonzero hidden: " << nonzero_hidden << "/" 
-              << (hidden_states.rows() * hidden_states.cols()) << "\n\n";
+    Matrix logits(hidden_states.rows(), vocab_size_);  // Initialize with correct dimensions
+    std::cout << "pre-allocated logits: " << logits.rows() << "x" << logits.cols() << std::endl;
     
-    // Scale hidden states for better gradient flow
-    float scale_factor = std::sqrt(2.0f / hidden_size_);
-    Matrix scaled_hidden = hidden_states;
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
-        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
-            scaled_hidden(i, j) *= scale_factor;
-        }
-    }
+    cuda::matmul(hidden_states, projection, logits);  // Now cuda namespace should be recognized
     
-    // Debug projection matrix
-    float min_proj = std::numeric_limits<float>::infinity();
-    float max_proj = -std::numeric_limits<float>::infinity();
-    float sum_proj = 0.0f;
-    size_t nonzero_proj = 0;
-    
-    for (size_t i = 0; i < projection.rows(); i++) {
-        for (size_t j = 0; j < projection.cols(); j++) {
-            float val = projection(i, j);
-            min_proj = std::min(min_proj, val);
-            max_proj = std::max(max_proj, val);
-            sum_proj += val;
-            if (std::abs(val) > 1e-6) nonzero_proj++;
-        }
-    }
-    
-    std::cout << "Projection Matrix Statistics:\n"
-              << "Min proj: " << min_proj << "\n"
-              << "Max proj: " << max_proj << "\n"
-              << "Mean proj: " << sum_proj / (projection.rows() * projection.cols()) << "\n"
-              << "Nonzero proj: " << nonzero_proj << "/" 
-              << (projection.rows() * projection.cols()) << "\n\n";
-    
-    // Compute logits
-    Matrix logits = matmul(scaled_hidden, projection);
+    std::cout << "after matmul logits: " << logits.rows() << "x" << logits.cols() << std::endl;
     
     // Add bias
-    #pragma omp parallel for collapse(2)
     for (size_t i = 0; i < logits.rows(); ++i) {
         for (size_t j = 0; j < logits.cols(); ++j) {
             logits(i, j) += bias[j];
-            
-            // Apply a very small penalty to extremely rare tokens
-            if (token_frequencies[j] < 1e-6) {
-                logits(i, j) -= 0.01f;  // Much smaller penalty
-            }
         }
     }
-    
-    // Debug output for logit statistics
-    float min_logit = std::numeric_limits<float>::infinity();
-    float max_logit = -std::numeric_limits<float>::infinity();
-    float sum_logits = 0.0f;
-    size_t active_logits = 0;
-    
-    for (size_t i = 0; i < logits.rows(); i++) {
-        for (size_t j = 0; j < logits.cols(); j++) {
-            float val = logits(i, j);
-            min_logit = std::min(min_logit, val);
-            max_logit = std::max(max_logit, val);
-            sum_logits += val;
-            if (std::abs(val) > 0.1f) active_logits++;
-        }
-    }
-    
-    std::cout << "\nLogit Statistics in forward_impl:\n"
-              << "Min logit: " << min_logit << "\n"
-              << "Max logit: " << max_logit << "\n"
-              << "Mean logit: " << sum_logits / (logits.rows() * logits.cols()) << "\n"
-              << "Range: " << (max_logit - min_logit) << "\n"
-              << "Active logits: " << active_logits << "/" 
-              << (logits.rows() * logits.cols()) << "\n\n";
     
     return logits;
 }
@@ -150,163 +104,69 @@ Matrix LanguageModelHead::project_to_vocab(const Matrix& hidden_states) {
                                " != " + std::to_string(hidden_size_));
     }
     
-    return forward_impl(hidden_states);
+    return forward(hidden_states, false);
 }
 
 Matrix LanguageModelHead::backward(const Matrix& grad_output, const Matrix& target_distribution) {
-    size_t total_size = hidden_states.rows();
-    size_t batch_size = total_size / 2;
-    size_t seq_len = 2;
-    
-    // Scale gradients to match forward pass scaling
-    float scale_factor = std::sqrt(2.0f / hidden_size_);  // Match forward pass scaling
-    
-    Matrix loss_grad(grad_output.rows(), grad_output.cols());
-    
-    // First compute max logits for numerical stability
-    std::vector<float> max_logits(grad_output.rows(), -std::numeric_limits<float>::infinity());
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            max_logits[i] = std::max(max_logits[i], grad_output(i, j));
-        }
-    }
-    
-    // Compute sum of exponentials for each row
-    std::vector<float> sum_exp(grad_output.rows(), 0.0f);
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            sum_exp[i] += std::exp(grad_output(i, j) - max_logits[i]);
-        }
-    }
-    
-    // Print softmax statistics for debugging
-    std::cout << "\nSoftmax Statistics in backward:\n"
-              << "Max logit values: " << max_logits[0] << "\n"
-              << "Sum of exponentials: " << sum_exp[0] << "\n";
-    
-    // Compute gradients with proper softmax normalization
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            if (!target_distribution.empty() && target_distribution(i, j) > 0.0f) {
-                // Cross entropy gradient with numerical stability
-                float softmax = std::exp(grad_output(i, j) - max_logits[i]) / sum_exp[i];
-                loss_grad(i, j) = (softmax - target_distribution(i, j)) * scale_factor;
-            } else {
-                loss_grad(i, j) = grad_output(i, j) * scale_factor;
-            }
-        }
-    }
-
-    // Print gradient statistics
-    float min_grad = std::numeric_limits<float>::infinity();
-    float max_grad = -std::numeric_limits<float>::infinity();
-    float sum_grad = 0.0f;
-    size_t nonzero_count = 0;
-    for (size_t i = 0; i < loss_grad.rows(); i++) {
-        for (size_t j = 0; j < loss_grad.cols(); j++) {
-            float val = std::abs(loss_grad(i, j));
-            if (val > 1e-10) {
-                nonzero_count++;
-            }
-            min_grad = std::min(min_grad, val);
-            max_grad = std::max(max_grad, val);
-            sum_grad += val;
-        }
-    }
-    std::cout << "\nGradient Statistics in LM Head backward:\n"
-              << "Min gradient: " << min_grad << "\n"
-              << "Max gradient: " << max_grad << "\n"
-              << "Mean gradient: " << sum_grad / (loss_grad.rows() * loss_grad.cols()) << "\n"
-              << "Nonzero gradients: " << nonzero_count << "/" 
-              << (loss_grad.rows() * loss_grad.cols()) << "\n";
-
-    Matrix expanded_grad(total_size, vocab_size_);
-    expanded_grad.fill(0.0f);
-    
-    #pragma omp parallel for
-    for (size_t b = 0; b < batch_size; b++) {
-        size_t src_idx = b;
-        size_t dst_idx = (b * seq_len + (seq_len - 1));
-        for (size_t v = 0; v < vocab_size_; v++) {
-            expanded_grad(dst_idx, v) = loss_grad(src_idx, v);
-        }
-    }
-
-    backward_linear(expanded_grad);
-    
-    // Scale gradients for hidden states
-    Matrix hidden_grad = matmul(expanded_grad, projection.transpose());
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < hidden_grad.rows(); i++) {
-        for (size_t j = 0; j < hidden_grad.cols(); j++) {
-            hidden_grad(i, j) *= scale_factor;
-        }
-    }
-    
-    return hidden_grad;
+    return backward_pass(grad_output, hidden_states);  // Use the existing backward_pass implementation
 }
 
 void LanguageModelHead::backward_linear(const Matrix& grad_output) {
-    if (grad_output.rows() != hidden_states.rows()) {
-        throw std::runtime_error("Invalid matrix dimensions for gradient computation");
-    }
+    // Use backward_pass which already has Adam optimization
+    backward_pass(grad_output, hidden_states_);
+}
 
-    // Scale hidden states to match forward pass
-    Matrix scaled_hidden = hidden_states;
-    float scale_factor = std::sqrt(2.0f / hidden_size_);  // Match forward pass scaling
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < scaled_hidden.rows(); i++) {
-        for (size_t j = 0; j < scaled_hidden.cols(); j++) {
-            scaled_hidden(i, j) *= scale_factor;
-        }
+void LanguageModelHead::update_learning_rate(float current_loss) {
+    // Add loss to history
+    loss_history.push_back(current_loss);
+    if (loss_history.size() > LOSS_HISTORY_SIZE) {
+        loss_history.pop_front();
     }
-
-    Matrix grad_proj = matmul(scaled_hidden.transpose(), grad_output);
-    Vector grad_bias(bias.size(), 0.0f);
-
-    #pragma omp parallel for collapse(2) reduction(+:grad_bias[:bias.size()])
-    for (size_t i = 0; i < grad_output.rows(); i++) {
-        for (size_t j = 0; j < grad_output.cols(); j++) {
-            grad_bias[j] += grad_output(i, j);
-        }
-    }
-
-    // Use adaptive learning rate based on gradient magnitude
-    float grad_norm = 0.0f;
-    #pragma omp parallel for reduction(+:grad_norm)
-    for (size_t i = 0; i < grad_proj.rows(); i++) {
-        for (size_t j = 0; j < grad_proj.cols(); j++) {
-            grad_norm += grad_proj(i, j) * grad_proj(i, j);
-        }
-    }
-    grad_norm = std::sqrt(grad_norm);
     
-    // Clip learning rate based on gradient norm
-    const float base_lr = 0.01f;
-    float effective_lr = std::min(base_lr, base_lr / (1.0f + grad_norm));
-    
-    #pragma omp parallel for collapse(2)
-    for (size_t i = 0; i < projection.rows(); i++) {
-        for (size_t j = 0; j < projection.cols(); j++) {
-            projection(i, j) -= effective_lr * grad_proj(i, j);
+    // Only adjust learning rate if we have enough history
+    if (loss_history.size() >= 2) {
+        float avg_recent_loss = 0.0f;
+        float avg_old_loss = 0.0f;
+        size_t recent_count = loss_history.size() / 2;
+        
+        // Calculate average of recent and older losses
+        for (size_t i = 0; i < loss_history.size(); i++) {
+            if (i >= loss_history.size() - recent_count) {
+                avg_recent_loss += loss_history[i];
+            } else {
+                avg_old_loss += loss_history[i];
+            }
+        }
+        avg_recent_loss /= recent_count;
+        avg_old_loss /= (loss_history.size() - recent_count);
+        
+        // Adjust learning rate based on loss trend
+        if (avg_recent_loss < avg_old_loss) {
+            // Loss is decreasing, increase learning rate slightly
+            current_lr = std::min(max_lr, current_lr * lr_growth);
+        } else {
+            // Loss is increasing or stagnant, decrease learning rate
+            current_lr = std::max(min_lr, current_lr * lr_decay);
         }
     }
-
-    #pragma omp parallel for
-    for (size_t i = 0; i < bias.size(); i++) {
-        bias[i] -= effective_lr * grad_bias[i];
-    }
+    
+    prev_loss = current_loss;
 }
 
 void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens) {
     // Reset frequencies periodically to prevent over-accumulation
     if (training_steps % 1000 == 0) {  // Reset every 1000 steps
-        std::fill(token_frequencies.begin(), token_frequencies.end(), 0.0f);
+        #pragma omp parallel for
+        for (size_t i = 0; i < token_frequencies.size(); i++) {
+            token_frequencies[i] = 0.0f;
+        }
     }
     
-    for (int token : tokens) {
+    #pragma omp parallel for
+    for (size_t i = 0; i < tokens.size(); i++) {
+        int token = tokens[i];
         if (token >= 0 && static_cast<size_t>(token) < vocab_size_) {
+            #pragma omp atomic
             token_frequencies[token] += 1.0f;
         }
     }
@@ -316,8 +176,9 @@ void LanguageModelHead::update_token_frequencies(const std::vector<int>& tokens)
     if (!token_frequencies.empty()) {
         float max_freq = *std::max_element(token_frequencies.begin(), token_frequencies.end());
         if (max_freq > 0) {
-            for (float& freq : token_frequencies) {
-                freq /= max_freq;  // Normalize to [0,1] range
+            #pragma omp parallel for
+            for (size_t i = 0; i < token_frequencies.size(); i++) {
+                token_frequencies[i] /= max_freq;  // Normalize to [0,1] range
             }
         }
     }
@@ -345,17 +206,17 @@ void LanguageModelHead::update_active_tokens() {
     
     // Partial sort only what we need
     std::partial_sort(freq_pairs.begin(), 
-                     freq_pairs.begin() + MIN_ACTIVE_TOKENS,
+                     freq_pairs.begin() + std::min(MIN_ACTIVE_TOKENS, vocab_size_),
                      freq_pairs.end(),
-                     std::greater<>());
+                     [](const auto& a, const auto& b) { return a.first > b.first; });
     
     // Reset active tokens
     std::fill(active_tokens.begin(), active_tokens.end(), 0);
     active_token_indices.clear();
-    active_token_indices.reserve(MIN_ACTIVE_TOKENS);
+    active_token_indices.reserve(std::min(MIN_ACTIVE_TOKENS, vocab_size_));
     
     // Set active tokens based on sorted frequencies
-    for (size_t i = 0; i < MIN_ACTIVE_TOKENS; i++) {
+    for (size_t i = 0; i < std::min(MIN_ACTIVE_TOKENS, vocab_size_); i++) {
         size_t idx = freq_pairs[i].second;
         active_tokens[idx] = 1;
         active_token_indices.push_back(idx);
@@ -390,4 +251,158 @@ LanguageModelHead::~LanguageModelHead() {
     if (d_active_token_indices) cudaFree(d_active_token_indices);
     if (compute_stream) cudaStreamDestroy(compute_stream);
 #endif
+}
+
+void LanguageModelHead::set_training(bool training_mode) {
+    is_training_ = training_mode;
+}
+
+Matrix LanguageModelHead::backward_pass(const Matrix& grad_output, const Matrix& hidden_states) {
+    // Verify input dimensions
+    if (grad_output.cols() != vocab_size_) {
+        throw std::runtime_error("Gradient output dimension mismatch in backward pass. Expected vocab_size: " + 
+                               std::to_string(vocab_size_) + ", got: " + std::to_string(grad_output.cols()));
+    }
+    if (hidden_states.cols() != hidden_size_) {
+        throw std::runtime_error("Hidden states dimension mismatch in backward pass. Expected hidden_size: " + 
+                               std::to_string(hidden_size_) + ", got: " + std::to_string(hidden_states.cols()));
+    }
+
+    std::cout << "\nLM Head Backward Pass Dimensions:" << std::endl;
+    std::cout << "- grad_output: [" << grad_output.rows() << " x " << grad_output.cols() << "]" << std::endl;
+    std::cout << "- hidden_states: [" << hidden_states.rows() << " x " << hidden_states.cols() << "]" << std::endl;
+    std::cout << "- projection: [" << projection.rows() << " x " << projection.cols() << "]" << std::endl;
+    
+    // Compute gradients for projection matrix
+    // hidden_states.T: [hidden_size x batch_size]
+    // grad_output: [batch_size x vocab_size]
+    // grad_proj: [hidden_size x vocab_size]
+    Matrix hidden_states_t = hidden_states.transpose();
+    Matrix grad_proj = matmul(hidden_states_t, grad_output);
+    
+    // Compute bias gradients
+    Vector grad_bias = grad_output.row_sum();
+    
+    // Update parameters using Adam optimizer
+    t++;  // Increment time step
+    
+    // Constants for gradient clipping and stability
+    const float clip_threshold = 5.0f;
+    const float max_allowed_value = 100.0f;
+    const float scale_factor = std::sqrt(1.0f / hidden_size_);
+    const float max_update = 0.05f * scale_factor;
+    
+    bool has_unstable_update = false;
+    
+    // Update projection matrix using Adam optimizer
+    #pragma omp parallel for collapse(2) reduction(|:has_unstable_update)
+    for (size_t i = 0; i < grad_proj.rows(); ++i) {
+        for (size_t j = 0; j < grad_proj.cols(); ++j) {
+            if (!std::isfinite(grad_proj(i, j))) {
+                continue;
+            }
+            
+            // Clip gradient
+            float clipped_grad = grad_proj(i, j);
+            if (std::abs(clipped_grad) > clip_threshold) {
+                clipped_grad *= clip_threshold / std::abs(clipped_grad);
+            }
+            
+            // Update momentum
+            float new_m = beta1 * m_proj(i, j) + (1 - beta1) * clipped_grad;
+            if (!std::isfinite(new_m)) {
+                has_unstable_update = true;
+                continue;
+            }
+            m_proj(i, j) = new_m;
+            
+            // Update RMSprop
+            float grad_squared = clipped_grad * clipped_grad;
+            float new_v = beta2 * v_proj(i, j) + (1 - beta2) * grad_squared;
+            if (!std::isfinite(new_v)) {
+                has_unstable_update = true;
+                continue;
+            }
+            v_proj(i, j) = new_v;
+            
+            // Bias correction
+            float m_hat = m_proj(i, j) / (1 - std::pow(beta1, t));
+            float v_hat = v_proj(i, j) / (1 - std::pow(beta2, t));
+            
+            if (!std::isfinite(m_hat) || !std::isfinite(v_hat)) {
+                has_unstable_update = true;
+                continue;
+            }
+            
+            // Compute update
+            float denom = std::sqrt(v_hat) + eps;
+            if (denom < eps) denom = eps;
+            
+            float update = current_lr * m_hat / denom;
+            update *= scale_factor;
+            
+            if (!std::isfinite(update)) {
+                has_unstable_update = true;
+                continue;
+            }
+            
+            // Hard clip update
+            update = std::max(-max_update, std::min(max_update, update));
+            
+            // Compute proposed new value
+            float new_value = projection(i, j) - update;
+            
+            if (std::abs(new_value) > max_allowed_value) {
+                has_unstable_update = true;
+                continue;
+            }
+            
+            if (std::isfinite(new_value)) {
+                projection(i, j) = new_value;
+            }
+        }
+    }
+    
+    // Compute gradient with respect to input
+    // grad_output: [batch_size x vocab_size]
+    // projection.T: [vocab_size x hidden_size]
+    // result: [batch_size x hidden_size]
+    Matrix projection_t = projection.transpose();
+    Matrix grad_input = matmul(grad_output, projection_t);
+    
+    // Verify output dimensions
+    if (grad_input.cols() != hidden_size_) {
+        throw std::runtime_error("Output gradient dimension mismatch. Expected hidden_size: " + 
+                               std::to_string(hidden_size_) + ", got: " + std::to_string(grad_input.cols()));
+    }
+    
+    std::cout << "Gradient propagation dimensions:" << std::endl;
+    std::cout << "- Input gradient: [" << grad_input.rows() << " x " << grad_input.cols() << "]" << std::endl;
+    
+    return grad_input;
+}
+
+void LanguageModelHead::bias_completion_format(Matrix& logits) {
+    if (!tokenizer) {
+        return;  // Skip biasing if tokenizer is not set
+    }
+
+    // Get special token IDs from tokenizer
+    const int sep_token_id = tokenizer->get_sep_token_id();
+    
+    // Get the last predicted token
+    int last_token = -1;  // You'll need to track this
+    
+    // After separator token, boost probability of tokens that commonly start completions
+    if (last_token == sep_token_id) {
+        // Boost tokens that typically start completions (e.g., space token)
+        // This helps enforce the format where completions start with a space
+        const float boost_factor = 2.0f;
+        for (size_t i = 0; i < logits.rows(); i++) {
+            std::string token = tokenizer->decode({static_cast<int>(i)});
+            if (!token.empty() && token[0] == ' ') {
+                logits.data()[i] *= boost_factor;
+            }
+        }
+    }
 } 

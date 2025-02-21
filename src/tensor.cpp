@@ -167,3 +167,29 @@ void Tensor::validate_matrix_dimensions(const Tensor& other, const std::string& 
         }
     }
 }
+
+void Tensor::softmax() {
+    // Find max for each row separately for numerical stability
+    for (size_t i = 0; i < rows(); i++) {
+        // Find max in this row
+        float max_val = -std::numeric_limits<float>::infinity();
+        for (size_t j = 0; j < cols(); j++) {
+            max_val = std::max(max_val, operator()(i, j));
+        }
+        
+        // Compute exp(x - max) for numerical stability
+        float sum_exp = 0.0f;
+        for (size_t j = 0; j < cols(); j++) {
+            float val = std::exp(operator()(i, j) - max_val);
+            operator()(i, j) = val;
+            sum_exp += val;
+        }
+        
+        // Normalize to get probabilities
+        if (sum_exp > 0.0f) {  // Protect against division by zero
+            for (size_t j = 0; j < cols(); j++) {
+                operator()(i, j) /= sum_exp;
+            }
+        }
+    }
+}
